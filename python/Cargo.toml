@@ -1,7 +1,12 @@
 [package]
 name = "grobx-python"
+version = "0.73.0"
+description = "Reduced Gröbner bases of polynomial ideals over GF(p) and over the rationals"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
 publish = false
 
 # The extension module is `grobx`, so the cdylib's crate is named grobx, and

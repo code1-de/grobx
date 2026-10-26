@@ -1,0 +1,15 @@
+# The PyPI package grobx, built by maturin from this crate. The fields in
+# `dynamic` come from Cargo.toml.
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "grobx"
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+dynamic = ["version", "description", "license", "urls", "readme"]

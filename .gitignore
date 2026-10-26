@@ -1,1 +1,3 @@
 /target/
+# The public repo's instructions for Claude Code, which public-sync.sh keeps.
+/CLAUDE.md
