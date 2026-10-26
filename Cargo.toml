@@ -1,0 +1,74 @@
+[package]
+name = "grobx"
+version = "0.73.0"
+description = "Reduced Gröbner bases of polynomial ideals over GF(p) and over the rationals"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+exclude = ["maple/"]
+
+# f4-gfp.38 design -- the hash multipliers come from rand_xoshiro's Xoshiro256PlusPlus seeded by seed_from_u64, not from a generator written for the engine (not measured)
+[dependencies]
+grobx-checker = { path = "checker", version = "0.73.0" }
+libc = "0.2"
+# small-block-time.5 design -- mimalloc 0.1.52 with its default features, mimalloc 3, not the features v2, local_dynamic_tls, or no_thp (log 0053-1)
+mimalloc = "0.1.52"
+# q-lift.1 design -- the lift's integers past u128 come from a crate, not from arithmetic of the engine's own on limbs (not measured)
+# q-lift.2 design -- the crate is num-bigint, the checker's, under MIT or Apache-2.0, not malachite under LGPL-3.0-only (not measured)
+# q-lift.3 design -- the crate is num-bigint, not rug, whose GMP is built from C source (not measured)
+num-bigint = "0.5"
+num-integer = "0.1"
+num-traits = "0.2"
+rand_core = "0.10"
+rand_xoshiro = "0.8"
+sha2 = "0.11"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
+
+[workspace]
+members = ["checker", "python", "cli", "c"]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/code1-de/grobx"
+homepage = "https://grobx.com"
+
+# Every package of the workspace takes these by `[lints] workspace = true`.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Whether each #[inline(always)] of the hot paths pays off is a speed
+# question no measurement has answered attribute by attribute.
+inline_always = "allow"
+# Rules of CLAUDE.md, _Rust_, that clippy checks.
+# rule-breaches.14 design -- the lint check names a suppression without a reason, not a scan in the test code alone (not measured)
+allow_attributes_without_reason = "warn"
+expect_used = "warn"
+let_underscore_must_use = "warn"
+let_underscore_untyped = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+unwrap_used = "warn"
+wildcard_enum_match_arm = "warn"
+# Beside them: an unsafe block says in a SAFETY comment why it is sound.
+undocumented_unsafe_blocks = "warn"
+
+# OBJECTIVES.md, Language and build: every measurement runs on the release
+# profile, and the tests on `checked`.
+[profile.release]
+lto = "thin"
+codegen-units = 16
+
+[profile.checked]
+inherits = "release"
+debug-assertions = true
+lto = false
+opt-level = 1
+overflow-checks = true

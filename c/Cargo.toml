@@ -1,0 +1,19 @@
+[package]
+name = "grobx-c"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# c-interface.21 design -- the lib is a cdylib and an rlib, whose types and constants the test code reads, not a cdylib alone (not measured)
+# test-build-time.5 design -- the lib, which holds no unit test, is compiled as no test binary, not as a test binary that lists no test (log 0019-1)
+[lib]
+name = "grobxc"
+crate-type = ["cdylib", "rlib"]
+test = false
+doctest = false
+
+[dependencies]
+grobx = { path = ".." }
+
+[lints]
+workspace = true

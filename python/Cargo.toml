@@ -1,0 +1,25 @@
+[package]
+name = "grobx-python"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The extension module is `grobx`, so the cdylib's crate is named grobx, and
+# the core, whose crate is grobx too, comes in as grobx_core.
+[lib]
+name = "grobx"
+crate-type = ["cdylib"]
+# test-build-time.5 design -- the lib, which holds no unit test, is compiled as no test binary, not as a test binary that lists no test (log 0019-1)
+test = false
+
+# f4-gfp.32 design -- pyo3's abi3 for Python 3.12 and later, not a module built for the one interpreter found at build time (not measured)
+# f4-gfp.53 design -- pyo3's extension-module feature leaves libpython unlinked in every build, not the environment variable PYO3_BUILD_EXTENSION_MODULE that each build would have to set (not measured)
+[dependencies]
+grobx_core = { package = "grobx", path = ".." }
+pyo3 = { version = "0.29", features = ["abi3-py312", "extension-module"] }
+
+[dev-dependencies]
+grobx-checker = { path = "../checker" }
+
+[lints]
+workspace = true

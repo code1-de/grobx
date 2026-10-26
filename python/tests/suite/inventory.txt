@@ -1,0 +1,16 @@
+# The tests of grobx-python's 4 integration test binaries at master 52de611,
+# each file of grobx/python/tests/ a binary then, as `<binary> --list` named
+# them (test-build-time.7): 8 tests. A line holds the binary's name, a
+# tab, and the test's path in it. The suite names each `<binary>::<path>`,
+# and layout.rs checks that the suite lists every line. A test removed or
+# renamed on purpose takes its line with it, save wrapper's
+# order_threads_and_seed_are_required_keywords, whose line names the test
+# that replaced it, keywords_and_their_defaults.
+large_primes	large_primes_through_python
+orders	the_orders_through_python
+q	q_through_python
+wrapper	cofactors_and_the_checker
+wrapper	errors_are_grobx_error
+wrapper	every_bound_stops_the_run
+wrapper	keywords_and_their_defaults
+wrapper	the_measured_call

@@ -1,0 +1,24 @@
+[package]
+name = "grobx-checker"
+version = "0.73.0"
+description = "Checks a Gröbner basis and its cofactors against the ideal's generators, over GF(p) and over the rationals"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+# checker-gfp.1 design -- the checker is a crate of its own that depends on no crate of the workspace (not measured)
+[dependencies]
+# checker-q.1 design -- integers of any size come from a crate, not from arithmetic of the checker's own (not measured)
+# checker-q.2 design -- the crate is num-bigint, pure Rust under MIT or Apache-2.0, not malachite (not measured)
+# checker-q.3 design -- the crate is num-bigint, not rug, whose GMP is built from C source (not measured)
+num-bigint = "0.5"
+num-integer = "0.1"
+num-traits = "0.2"
+# checker-cheap.11 design -- the cheap mode's random numbers come from a crate, not from a generator written for the checker (not measured)
+# checker-cheap.12 design -- the crate is rand_xoshiro, its Xoshiro256PlusPlus seeded by seed_from_u64, not rand_chacha, which pulls in ppv-lite86 (not measured)
+rand_core = "0.10"
+rand_xoshiro = "0.8"
+
+[lints]
+workspace = true

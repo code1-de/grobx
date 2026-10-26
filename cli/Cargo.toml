@@ -1,0 +1,27 @@
+[package]
+name = "grobx-cli"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# cli.1 design -- a library reads the arguments and the outcome, and the binary reads the files, calls, writes, and takes SIGINT, not the binary alone (not measured)
+# test-build-time.5 design -- the lib, which holds no unit test, is compiled as no test binary, not as a test binary that lists no test (log 0019-1)
+[lib]
+name = "grobx_cli"
+test = false
+doctest = false
+
+# The binary is named grobx, as the core's lib is: doc = false keeps their
+# documentation from colliding.
+[[bin]]
+name = "grobx"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+grobx = { path = ".." }
+libc = "0.2"
+
+[lints]
+workspace = true
