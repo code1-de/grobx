@@ -2,10 +2,9 @@
 //! the resident set (`OBJECTIVES.md`, _Call parameters_), the counts of its
 //! row operations, and the call report where the call asks for it.
 
-use std::fs::File;
-use std::os::unix::fs::FileExt;
 use std::time::Instant;
 
+use crate::os::Resident;
 use crate::report::{Report, Stage};
 use crate::{Cancel, Error, Params, Stop};
 
@@ -140,11 +139,11 @@ impl Budget {
             return Err(Stop::Deadline);
         }
         if let Some((ceiling, resident)) = &mut self.memory
-            && resident.above(*ceiling)
+            && above(resident, *ceiling)
         {
             release();
             trim();
-            if resident.above(*ceiling) {
+            if above(resident, *ceiling) {
                 return Err(Stop::Memory);
             }
         }
@@ -275,56 +274,17 @@ impl Budget {
     }
 }
 
-// f4-gfp.28 design -- the resident set is read from /proc/self/statm, its second field times the page size, not getrusage's ru_maxrss, a high-water mark (not measured)
-/// The process's resident set, read from `/proc/self/statm`.
-struct Resident {
-    file: File,
-    /// The page size in bytes.
-    page: u64,
-}
-
-impl Resident {
-    /// None where the resident set cannot be read.
-    fn open() -> Option<Resident> {
-        let file = File::open("/proc/self/statm").ok()?;
-        let resident = Resident {
-            file,
-            page: page_size()?,
-        };
-        resident.bytes()?;
-        Some(resident)
-    }
-
-    /// The resident set in bytes.
-    fn bytes(&self) -> Option<u64> {
-        // The fields are seven counts of pages; 128 bytes hold them.
-        let mut buf = [0u8; 128];
-        let n = self.file.read_at(&mut buf, 0).ok()?;
-        let text = std::str::from_utf8(&buf[..n]).ok()?;
-        let pages: u64 = text.split_ascii_whitespace().nth(1)?.parse().ok()?;
-        pages.checked_mul(self.page)
-    }
-
-    // f4-gfp.50 design -- a resident set that cannot be read after the start counts as above the ceiling, not as below it (not measured)
-    /// Whether the resident set is above `ceiling`. A resident set that can
-    /// no longer be read is.
-    fn above(&self, ceiling: u64) -> bool {
-        self.bytes().is_none_or(|b| b > ceiling)
-    }
-}
-
-/// The system's page size in bytes; None where sysconf gives none.
-pub(crate) fn page_size() -> Option<u64> {
-    // SAFETY: sysconf reads a constant of the system and touches no memory
-    // of ours.
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    u64::try_from(page).ok().filter(|&p| p > 0)
+// f4-gfp.50 design -- a resident set that cannot be read after the start counts as above the ceiling, not as below it (not measured)
+/// Whether the resident set is above `ceiling`. A resident set that can
+/// no longer be read is.
+fn above(resident: &Resident, ceiling: u64) -> bool {
+    resident.bytes().is_none_or(|b| b > ceiling)
 }
 
 // f4-gfp.29 design -- before a memory stop the run gives back what it can rebuild and glibc's malloc_trim(0) gives free memory back to the system, not the buffers freed alone (not measured)
 // small-block-time.6 design -- before a memory stop mimalloc gives its free memory back as well, by mi_collect(true), not glibc's malloc_trim(0) alone (log 0053-1)
 /// Gives the allocators' free memory back to the system: glibc's, and
-/// mimalloc's (`blocks::collect`).
+/// mimalloc's on Linux (`blocks::collect`).
 pub(crate) fn trim() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: malloc_trim only returns free memory of glibc's heap to the
@@ -332,22 +292,6 @@ pub(crate) fn trim() {
     unsafe {
         libc::malloc_trim(0);
     }
+    #[cfg(target_os = "linux")]
     crate::blocks::collect();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A read at offset 0 reads the resident set anew: 64 MiB written raise
-    /// it by about that much.
-    #[test]
-    fn the_resident_set_follows_allocations() {
-        let resident = Resident::open().expect("/proc/self/statm is readable here");
-        let before = resident.bytes().unwrap();
-        let block = std::hint::black_box(vec![1u8; 64 << 20]);
-        let after = resident.bytes().unwrap();
-        assert!(after >= before + (60 << 20), "{before} B, then {after} B");
-        drop(block);
-    }
 }

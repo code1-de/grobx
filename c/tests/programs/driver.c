@@ -11,12 +11,16 @@
  * stopped, certified, the basis text's digest, and the version, a line
  * each. The result is freed twice. Exits 0, or 99 where the arguments or
  * the file cannot be read, an allocation fails, a text cannot be written
- * to the out dir, or pthread_create or grobx_digest fails.
+ * to the out dir, or the thread or grobx_digest fails.
  */
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,8 +81,12 @@ static size_t *sizes(const char *s, size_t *n) {
     if (!out || !copy) {
         fail("malloc");
     }
-    char *save;
-    for (char *k = strtok_r(copy, ",", &save); k; k = strtok_r(NULL, ",", &save)) {
+    /* strtok_r is POSIX's, missing on Windows. */
+    for (char *k = copy, *comma; k; k = comma ? comma + 1 : NULL) {
+        comma = strchr(k, ',');
+        if (comma) {
+            *comma = '\0';
+        }
         out[(*n)++] = (size_t)number(k);
     }
     free(copy);
@@ -102,13 +110,27 @@ struct later {
     uint64_t ms;
 };
 
-static void *raise_later(void *arg) {
-    struct later *l = arg;
+static void raise_after(struct later *l) {
+#ifdef _WIN32
+    Sleep((DWORD)l->ms);
+#else
     struct timespec t = {(time_t)(l->ms / 1000), (long)(l->ms % 1000) * 1000000L};
     nanosleep(&t, NULL);
+#endif
     grobx_cancel_set(l->cancel);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI raise_later(LPVOID arg) {
+    raise_after(arg);
+    return 0;
+}
+#else
+static void *raise_later(void *arg) {
+    raise_after(arg);
     return NULL;
 }
+#endif
 
 int main(int argc, char **argv) {
     if (argc != 12) {
@@ -131,7 +153,11 @@ int main(int argc, char **argv) {
         p.points = (uint32_t)number(argv[8]);
     }
     p.cofactors = !strcmp(argv[9], "1");
+#ifdef _WIN32
+    HANDLE thread = NULL;
+#else
     pthread_t thread;
+#endif
     struct later later = {NULL, 0};
     int threaded = 0;
     if (strcmp(argv[10], "-")) {
@@ -141,16 +167,28 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[10], "never")) {
             later.cancel = p.cancel;
             later.ms = number(argv[10]);
+#ifdef _WIN32
+            thread = CreateThread(NULL, 0, raise_later, &later, 0, NULL);
+            if (!thread) {
+                fail("CreateThread");
+            }
+#else
             if (pthread_create(&thread, NULL, raise_later, &later)) {
                 fail("pthread_create");
             }
+#endif
             threaded = 1;
         }
     }
     grobx_result r;
     int status = grobx_groebner(text, &p, &r);
     if (threaded) {
+#ifdef _WIN32
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
+#else
         pthread_join(thread, NULL);
+#endif
     }
     char digest[65] = "-";
     if (r.basis && grobx_digest(r.basis, digest) != GROBX_OK) {

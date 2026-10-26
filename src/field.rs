@@ -451,7 +451,7 @@ impl Field for Gf31 {
         // SAFETY: as above.
         #[cfg(not(target_arch = "x86_64"))]
         unsafe {
-            sub_mul_band_scalar(band, cols, coefs, c, self.p, self.p2)
+            sub_mul_band_scalar(band, cols, coefs, c, self.p, self.p2);
         }
     }
 
@@ -582,7 +582,7 @@ unsafe fn sub_mul_band_scalar(
         // SAFETY: the caller's guarantee, col < band.len().
         let e = unsafe { entry(band, col) };
         for (e, &c) in e.iter_mut().zip(c) {
-            *e -= c as i64 * v as i64;
+            *e -= i64::from(c) * i64::from(v);
             if !delays(p) && *e < 0 {
                 *e += p2;
             }

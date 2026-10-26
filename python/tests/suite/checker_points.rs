@@ -14,8 +14,8 @@ fn many_points_stop_at_the_deadline() {
     run_with(
         &[("LONG", &dense(8, 3, 65521, 1))],
         r#"
-import signal
-signal.alarm(20)
+import faulthandler
+faulthandler.dump_traceback_later(20, exit=True)
 r = grobx.groebner(LONG, order="grevlex", threads=1, seed=7, checker=4294967295, deadline=300)
 assert r.stopped == "deadline", r.stopped
 assert r.basis is None and r.certified is None and r.flaw is None, (r.basis, r.certified, r.flaw)

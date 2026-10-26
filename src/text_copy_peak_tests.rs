@@ -9,7 +9,7 @@ use std::num::NonZeroUsize;
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::budget::page_size;
+use crate::os::page_size;
 use crate::text::hand_over;
 
 /// A text of `len` drawn ASCII bytes, NUL and the control bytes among

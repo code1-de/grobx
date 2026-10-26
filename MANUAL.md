@@ -3,12 +3,15 @@
 grobx computes reduced Gröbner bases of polynomial ideals over prime fields
 GF(p), p a prime below 2^64, and over the rationals ℚ. It is a Rust crate
 with a Python extension module, a command-line program, `grobx`, and a C
-interface, `libgrobxc.so` and `grobx.h`. All
+interface, the library `grobxc` and its header `grobx.h`. All
 four take the ideal's generators as text and return the basis as text.
+The Maple package `Grobx` runs the command-line program (_Maple_ below).
 
-grobx is written and tested on Linux on x86-64 alone. The memory ceiling
-reads the resident set from `/proc/self/statm`, so a call with a ceiling
-returns `Error::Memory` where that file is missing.
+grobx runs on Linux and Windows on x86-64. It builds for macOS on Apple
+Silicon, where it is untested. The memory ceiling
+reads the resident set from `/proc/self/statm` on Linux, by `proc_pidinfo`
+on macOS, and as the working set on Windows, so a call with a ceiling
+returns `Error::Memory` where the system gives none.
 
 This manual is for a caller of the library. _Interfaces_ says how to call
 it, _Formats_ what goes in and what comes out, and _Computation_ how a call
@@ -121,7 +124,8 @@ A call that returns an `Error` returns no report.
 
 `Allocator` serves a request of at most `SMALL`, 1024 bytes, from mimalloc
 and a larger one from the system's malloc (_Small blocks from mimalloc_
-below). The Python module, the C library, and the CLI set it as their
+below), on Linux; on Windows and macOS the system's allocator serves both.
+The Python module, the C library, and the CLI set it as their
 global allocator. A Rust program sets it by
 
 ```rust
@@ -291,13 +295,19 @@ opens its output files, stops the call at its first check. A second
 SIGINT ends the process by SIGINT, with no exit status. Where SIGINT is
 ignored when `grobx` starts, as a shell has it for a command run in the
 background, `grobx` leaves it ignored.
+On Windows, Ctrl-C does what SIGINT does here. A second Ctrl-C ends the
+process as Ctrl-C does, and a Ctrl-C that is ignored when `grobx` starts,
+as in a new process group, stays ignored.
 
 ### C
 
-The package `grobx-c` builds the shared library `libgrobxc.so`:
+The package `grobx-c` builds the shared library `libgrobxc.so` on Linux,
+`libgrobxc.dylib` on macOS, and `grobxc.dll` on Windows:
 `cargo build --release -p grobx-c` writes it to
 `target/release/`. Its header is `c/grobx.h`. A C program
-includes the header and links with `-lgrobxc`. A C++ program includes the
+includes the header and links with `-lgrobxc`, on Windows against the
+import library `grobxc.dll.lib`, and there finds the DLL beside itself or
+on the `PATH`. A C++ program includes the
 same header as it stands.
 
 ```c
@@ -397,6 +407,23 @@ raises it. Each of the three takes NULL and does nothing, and
 not UTF-8.
 
 `grobx_version()` returns the crate version, a static NUL-terminated text.
+
+### Maple
+
+The Maple package `Grobx`, the one file `maple/Grobx.mpl`, runs the
+command-line program `grobx` (_CLI_ above). Its `Grobx:-Basis` is called as
+Maple's `Groebner:-Basis` is, for the orders and fields grobx computes in,
+and raises an error for anything else:
+
+```maple
+read "/path/to/Grobx.mpl":
+with(Grobx):
+Basis([x^2 + y, x*y - 1], tdeg(x, y), characteristic = 7);
+# [y^2 + x, x*y + 6, x^2 + y]
+```
+
+`maple/README.md` describes the package: where it finds the program, its
+orders and options, and its errors.
 
 ### Errors
 
@@ -577,7 +604,8 @@ values.
   there is a basis, and `time` the whole call's.
   `process-rss-start` is the process's resident set at the call's start,
   `process-rss-peak` its peak resident set at the end, and
-  `process-rss-grown` the peak less the start, all in bytes as mimalloc's `mi_process_info` reads them.
+  `process-rss-grown` the peak less the start, all in bytes as mimalloc's `mi_process_info` reads them
+  on Linux, and on Windows and macOS as the system reads them, 0 where it cannot.
   The peak is the process's, so a call after a larger one in the same
   process reads that one's.
 
@@ -2464,6 +2492,11 @@ full reasons, the alternatives rejected, and what was measured.
   the tuning set's 116 instances. Over the 112 that both builds solve,
   it took 0.989 over the 63 over GF(65521), 0.949 over the 49 over ℚ,
   and 0.951 over the 35 below 10 ms, and its peak memory took 0.954.
+- **mimalloc on Linux alone** (port.26). mimalloc serves the small blocks
+  on Linux, where small-block-time was measured. On Windows and macOS the
+  system's allocator serves every request, and `mi_collect` is not
+  called. mimalloc 3.3.2 failed with an access violation as it reserved
+  its first arena, before `main`, in a Windows 11 guest under KVM.
 - **The heap padded at the first call** (page-fault-time.1–.9). A call's
   first writes to memory new to the process fault page by page, and the
   kernel's time for the faults is part of the call's. The first call of a
@@ -2536,6 +2569,9 @@ full reasons, the alternatives rejected, and what was measured.
   Before the instance is read, SIGINT keeps its default action, so that it
   ends a `grobx` that waits on its input, where a watch from the start of
   `main` would hold it for a call that has not begun.
+  On Windows (port.7, .8) a console control handler takes Ctrl-C and
+  raises the flag, and it passes a second Ctrl-C on to the system's
+  handler, which ends the process.
 
 ### C interface
 
@@ -2671,7 +2707,8 @@ full reasons, the alternatives rejected, and what was measured.
   `WORK` units of work (_Units of work_, _Texts' units of work_, _Cofactors' units of work_
   below), and at the start of each round.
   It reads the resident set
-  from `/proc/self/statm`. Before a memory
+  from `/proc/self/statm` on Linux, by `proc_pidinfo` on macOS, and as
+  the working set on Windows (port.3, .4). Before a memory
   stop it returns free memory to the system, and at the start of a round
   it first shrinks its arrays and gives back its matrices' buffers. Where
   the resident set can no longer be read after the start, the run counts it as past the ceiling.

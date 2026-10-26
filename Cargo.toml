@@ -1,8 +1,9 @@
 [package]
 name = "grobx"
-version = "0.73.0"
+version = "0.73.1"
 description = "Reduced Gröbner bases of polynomial ideals over GF(p) and over the rationals"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -10,10 +11,8 @@ exclude = ["maple/"]
 
 # f4-gfp.38 design -- the hash multipliers come from rand_xoshiro's Xoshiro256PlusPlus seeded by seed_from_u64, not from a generator written for the engine (not measured)
 [dependencies]
-grobx-checker = { path = "checker", version = "0.73.0" }
+grobx-checker = { path = "checker", version = "0.73.1" }
 libc = "0.2"
-# small-block-time.5 design -- mimalloc 0.1.52 with its default features, mimalloc 3, not the features v2, local_dynamic_tls, or no_thp (log 0053-1)
-mimalloc = "0.1.52"
 # q-lift.1 design -- the lift's integers past u128 come from a crate, not from arithmetic of the engine's own on limbs (not measured)
 # q-lift.2 design -- the crate is num-bigint, the checker's, under MIT or Apache-2.0, not malachite under LGPL-3.0-only (not measured)
 # q-lift.3 design -- the crate is num-bigint, not rug, whose GMP is built from C source (not measured)
@@ -23,6 +22,20 @@ num-traits = "0.2"
 rand_core = "0.10"
 rand_xoshiro = "0.8"
 sha2 = "0.11"
+
+# small-block-time.5 design -- mimalloc 0.1.52 with its default features, mimalloc 3, not the features v2, local_dynamic_tls, or no_thp (log 0053-1)
+# port.26 design -- mimalloc serves the small blocks on Linux alone, where small-block-time was measured; elsewhere every request is the system's, not mimalloc with its arena reservation turned off, nor a hook before main that sets it (not measured)
+[target.'cfg(target_os = "linux")'.dependencies]
+mimalloc = "0.1.52"
+
+# port.1 design -- the calls to Windows come from windows-sys, not from the windows crate's wrappers or from declarations of the engine's own (not measured)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 serde_json = "1"
@@ -35,6 +48,7 @@ members = ["checker", "python", "cli", "c"]
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.97"
 license = "GPL-3.0-only"
 repository = "https://github.com/code1-de/grobx"
 homepage = "https://grobx.com"

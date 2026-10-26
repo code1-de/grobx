@@ -4,9 +4,12 @@
 //! the resident set (plan.md, _Test code_, 6 to 9).
 
 use std::num::NonZeroU32;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
-use grobx::{CheckerMode, Stop};
+use grobx::CheckerMode;
+#[cfg(target_os = "linux")]
+use grobx::Stop;
 use grobx_checker::Mode;
 
 use crate::common::{P, assert_accepted, dense, params, random_square, run, with_cofactors};
@@ -106,6 +109,7 @@ fn the_checker_certifies_a_run() {
 }
 
 /// The process's resident set in bytes, `VmRSS` of `/proc/self/status`.
+#[cfg(target_os = "linux")]
 fn resident() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap();
     let line = status
@@ -117,6 +121,7 @@ fn resident() -> u64 {
 }
 
 /// The variable that tells a child process to run the calls.
+#[cfg(target_os = "linux")]
 const CHILD: &str = "GROBX_ROUND_MEMORY_CHILD";
 
 /// Test 9: in a child process of the suite's binary, which runs this test
@@ -125,6 +130,7 @@ const CHILD: &str = "GROBX_ROUND_MEMORY_CHILD";
 /// call returns the basis of the call without a ceiling or stops on the
 /// memory bound, and none returns another basis. The parent runs the
 /// child.
+#[cfg(target_os = "linux")]
 #[test]
 fn ceilings_near_the_resident_set() {
     if std::env::var_os(CHILD).is_some() {

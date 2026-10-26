@@ -15,12 +15,14 @@ use crate::q::accepted_q;
 /// The deadline of the calls here that set one, far past what each takes.
 const DEADLINE: Duration = Duration::from_secs(60);
 
+#[cfg(target_os = "linux")]
 unsafe extern "C" {
     /// mimalloc's `mi_is_in_heap_region`: whether the pointer lies in
     /// mimalloc's heap region.
     fn mi_is_in_heap_region(p: *const std::ffi::c_void) -> bool;
 }
 
+#[cfg(target_os = "linux")]
 fn mimalloc_holds<T>(p: *const T) -> bool {
     // SAFETY: mi_is_in_heap_region reads mimalloc's own bookkeeping alone.
     unsafe { mi_is_in_heap_region(p.cast()) }
@@ -28,14 +30,17 @@ fn mimalloc_holds<T>(p: *const T) -> bool {
 
 /// Test 6, small-block-time.1, .2, .4: the suite's binary runs under
 /// `grobx::Allocator`, a block of at most `grobx::SMALL` bytes in
-/// mimalloc's heap region and a larger one outside it; and calls over
-/// GF(65521) and over ℚ return one basis under three seeds.
+/// mimalloc's heap region and a larger one outside it, on Linux; and
+/// calls over GF(65521) and over ℚ return one basis under three seeds.
 #[test]
 fn the_allocator_and_three_seeds() {
-    let small = std::hint::black_box(vec![0u8; grobx::SMALL]);
-    let large = std::hint::black_box(vec![0u8; grobx::SMALL + 1]);
-    assert!(mimalloc_holds(small.as_ptr()));
-    assert!(!mimalloc_holds(large.as_ptr()));
+    #[cfg(target_os = "linux")]
+    {
+        let small = std::hint::black_box(vec![0u8; grobx::SMALL]);
+        let large = std::hint::black_box(vec![0u8; grobx::SMALL + 1]);
+        assert!(mimalloc_holds(small.as_ptr()));
+        assert!(!mimalloc_holds(large.as_ptr()));
+    }
     for text in [
         dense(4, 3, P, 1),
         random_square(P, 1),

@@ -14,7 +14,7 @@ use num_bigint::BigUint;
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::budget::{self, Budget};
+use crate::budget::Budget;
 use crate::field::{Field, Gf31, Gf64, U64_DIGITS, decimal_value};
 use crate::id::MonoId;
 use crate::lehmer;
@@ -22,6 +22,7 @@ use crate::module::{Module, Rank1};
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::narrow::{self, Narrow};
 use crate::order::{Grevlex, Order};
+use crate::os;
 use crate::poly::Poly;
 use crate::table::{Limit, Table};
 use crate::{Error, Stop};
@@ -1533,20 +1534,20 @@ fn trimmed(x: &[u64]) -> &[u64] {
 /// each with its offset in the text, and gives back to the system the
 /// whole pages of the text behind each chunk, so that the text and what
 /// `put` builds of it stand about once. Each chunk is checked ASCII before
-/// it is handed. The text is consumed: a page given back reads as zero.
+/// it is handed. The text is consumed.
 ///
 /// # Errors
 ///
 /// `InvalidData` where a byte is past ASCII, the chunk that holds it not
 /// handed; `Unsupported` where the page size cannot be read; and the
-/// error of `madvise` where it fails.
+/// error of `os::discard` where the system refuses pages back.
 pub fn hand_over(
     text: String,
     chunk: NonZeroUsize,
     mut put: impl FnMut(usize, &[u8]),
 ) -> io::Result<()> {
     // text-copy-peak.9 practice: page size from sysconf -- the page size is the system's, read by sysconf, not 4096 as a constant
-    let page = budget::page_size()
+    let page = os::page_size()
         .and_then(|p| usize::try_from(p).ok())
         .filter(|p| p.is_power_of_two())
         .ok_or_else(|| {
@@ -1571,22 +1572,9 @@ pub fn hand_over(
         // The end of the last whole page within bytes[..to].
         let end = ((base + to) / page * page).saturating_sub(base);
         if end > given {
-            // SAFETY: bytes[given..end] are whole pages of the vector's
-            // buffer, which this function owns, and `put` has been handed
-            // them; nothing reads them again before the drop. madvise
-            // changes no memory but those pages' bytes, which a vector of
-            // bytes may hold whatever they are: zero in private anonymous
-            // memory (madvise-2, MADV_DONTNEED).
-            let r = unsafe {
-                libc::madvise(
-                    bytes.as_mut_ptr().add(given).cast(),
-                    end - given,
-                    libc::MADV_DONTNEED,
-                )
-            };
-            if r != 0 {
-                return Err(io::Error::last_os_error());
-            }
+            // `put` has been handed bytes[given..end], and nothing reads
+            // them again before the drop.
+            os::discard(&mut bytes[given..end], page)?;
             given = end;
         }
         from = to;

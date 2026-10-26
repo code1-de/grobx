@@ -33,6 +33,7 @@ static GLOBAL: grobx::Allocator = grobx::Allocator;
 // test-build-time.3 design -- the shared modules stay where they were, declared here by #[path], not moved into tests/suite/ (not measured)
 #[path = "../common/mod.rs"]
 mod common;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "../common/heap.rs"]
 mod heap;
 #[path = "../large/mod.rs"]
@@ -87,6 +88,8 @@ mod orders_random;
 mod orders_replay;
 mod orders_tuning;
 mod outgrown_round_size;
+// page-fault-time tests glibc's malloc.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod page_fault_time;
 mod pair_work_handover;
 mod pair_work_ratio;

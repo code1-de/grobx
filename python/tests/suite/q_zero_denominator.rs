@@ -10,8 +10,8 @@ use crate::wrapper::run;
 #[test]
 fn a_denominator_0_raises() {
     run(r#"
-import signal
-signal.alarm(20)
+import faulthandler
+faulthandler.dump_traceback_later(20, exit=True)
 for text, line in [("x\n0\nx+1/0\n", 3), ("x,y\n0\nx+1/2,\ny-1/0\n", 4)]:
     for deadline in [None, 60000]:
         try:

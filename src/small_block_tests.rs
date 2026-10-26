@@ -11,9 +11,10 @@
 )]
 
 use std::alloc::{GlobalAlloc, Layout};
-use std::process::Command;
 
 use crate::blocks::mimalloc_holds;
+use crate::child_tests;
+use crate::os::resident;
 use crate::{Allocator, SMALL};
 
 /// The alignments tests 1 to 3 take a block at.
@@ -189,27 +190,13 @@ fn the_unit_tests_run_under_the_allocator() {
     assert!(v.iter().enumerate().all(|(k, &x)| x == entry(k)));
 }
 
-/// The process's resident set in bytes, `VmRSS` of `/proc/self/status`.
-fn resident() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap();
-    let line = status
-        .lines()
-        .find(|l| l.starts_with("VmRSS:"))
-        .expect("a VmRSS line");
-    let kib: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
-    kib * 1024
-}
-
-/// The variable that tells a child process to measure.
-const CHILD: &str = "GROBX_SMALL_BLOCK_CHILD";
-
 /// Test 5, small-block-time.6: in a child process of this test binary,
 /// which runs this test alone, 65,536 blocks of 1000 bytes, 62.5 MiB,
 /// written and freed, leave the resident set at least 32 MiB higher than the budget's
 /// trim does. The parent runs the child.
 #[test]
 fn the_trim_gives_mimallocs_free_memory_back() {
-    if std::env::var_os(CHILD).is_some() {
+    if child_tests::running() {
         let blocks: Vec<Vec<u8>> = (0..1 << 16).map(|k| vec![k as u8; 1000]).collect();
         assert!(blocks.iter().all(|b| mimalloc_holds(b.as_ptr())));
         drop(std::hint::black_box(blocks));
@@ -222,18 +209,5 @@ fn the_trim_gives_mimallocs_free_memory_back() {
         );
         return;
     }
-    let exe = std::env::current_exe().expect("the test binary knows its path");
-    let out = Command::new(&exe)
-        .args([
-            "small_block_tests::the_trim_gives_mimallocs_free_memory_back",
-            "--exact",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(CHILD, "1")
-        .output()
-        .unwrap_or_else(|e| panic!("{exe}: {e}", exe = exe.display()));
-    let said = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "the child failed: {out:?}");
-    assert!(said.contains("1 passed"), "the child ran no test: {said}");
+    child_tests::run("small_block_tests::the_trim_gives_mimallocs_free_memory_back");
 }

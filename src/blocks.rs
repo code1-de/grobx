@@ -1,7 +1,8 @@
 //! Where the blocks of memory come from: `Allocator`, the global allocator
 //! the Python module, the C library, the CLI, and the crate's tests set,
 //! serves a request of at most `SMALL`
-//! bytes from mimalloc and a larger one from the system's malloc. A program
+//! bytes from mimalloc and a larger one from the system's malloc, on Linux;
+//! elsewhere the system's allocator serves both. A program
 //! that sets no global allocator runs the crate under its own, and
 //! `collect` then finds nothing of mimalloc's to give back. `pad_heap`
 //! sets, at a call's entry, how glibc's malloc grows its heap and which
@@ -12,13 +13,27 @@ use std::ptr;
 use std::sync::OnceLock;
 
 use libc::c_int;
+#[cfg(target_os = "linux")]
 use mimalloc::MiMalloc;
 
 use crate::Error;
+#[cfg(not(target_os = "linux"))]
+use crate::os::{Resident, peak};
 
 // small-block-time.2 tuned -- the largest request mimalloc serves is 1024 bytes, not 256, 2048, 4096, 16384, or 65536 (log 0053-1)
 /// The largest request, in bytes, that mimalloc serves.
 pub const SMALL: usize = 1024;
+
+// port.26 design -- mimalloc serves the small blocks on Linux alone, where small-block-time was measured; elsewhere every request is the system's, not mimalloc with its arena reservation turned off, nor a hook before main that sets it (not measured)
+// mimalloc 3.3.2 failed with an access violation as it reserved its first
+// arena, before main, in a Windows 11 guest under KVM; on Windows 10 on the
+// machine itself it ran.
+/// The allocator of the requests of at most `SMALL` bytes: mimalloc on
+/// Linux, the system's allocator elsewhere.
+#[cfg(target_os = "linux")]
+const SMALL_SIDE: MiMalloc = MiMalloc;
+#[cfg(not(target_os = "linux"))]
+const SMALL_SIDE: System = System;
 
 // page-fault-time.3 tuned -- the heap's pad is 16 MiB, not 4, 32, or 64 MiB (log 0090-1)
 // A larger pad took no more time off and put more peaks past their
@@ -44,8 +59,8 @@ pub const MMAP_THRESHOLD: c_int = 2 << 20;
 // small-block-time.1 design -- a request of at most SMALL bytes is served by mimalloc and a larger one by the system's malloc, not every request by one of the two, nor the small ones by free lists of the crate's own (log 0053-1)
 // small-block-time.4 design -- the crate exports the allocator and the Python module, the C library, the CLI, and the crate's tests set it as their global allocator, not the crate setting it for every program that links it (not measured)
 /// A global allocator: a request of at most `SMALL` bytes is served by
-/// mimalloc, and a larger one by the system's allocator, `System`. A
-/// program sets it by
+/// mimalloc, and a larger one by the system's allocator, `System`; off
+/// Linux `System` serves both (`SMALL_SIDE`). A program sets it by
 ///
 /// ```
 /// #[global_allocator]
@@ -57,7 +72,7 @@ pub struct Allocator;
 
 // small-block-time.3 design -- a block is freed and resized by the allocator its layout's size names, and a resize across SMALL moves it to the other, not a lookup of the pointer in mimalloc's heap region (not measured)
 // SAFETY: every block is served, freed, and resized by the allocator its
-// layout's size names, mimalloc or `System`, each of which keeps
+// layout's size names, `SMALL_SIDE` or `System`, each of which keeps
 // `GlobalAlloc`'s contract, and a resize across `SMALL` moves the block.
 unsafe impl GlobalAlloc for Allocator {
     #[inline]
@@ -65,7 +80,7 @@ unsafe impl GlobalAlloc for Allocator {
         // SAFETY: the caller's layout, handed on.
         unsafe {
             if layout.size() <= SMALL {
-                MiMalloc.alloc(layout)
+                SMALL_SIDE.alloc(layout)
             } else {
                 System.alloc(layout)
             }
@@ -77,7 +92,7 @@ unsafe impl GlobalAlloc for Allocator {
         // SAFETY: the caller's layout, handed on.
         unsafe {
             if layout.size() <= SMALL {
-                MiMalloc.alloc_zeroed(layout)
+                SMALL_SIDE.alloc_zeroed(layout)
             } else {
                 System.alloc_zeroed(layout)
             }
@@ -93,7 +108,7 @@ unsafe impl GlobalAlloc for Allocator {
         // layout.
         unsafe {
             if layout.size() <= SMALL {
-                MiMalloc.dealloc(ptr, layout);
+                SMALL_SIDE.dealloc(ptr, layout);
             } else {
                 System.dealloc(ptr, layout);
             }
@@ -110,8 +125,8 @@ unsafe impl GlobalAlloc for Allocator {
         let was = layout.size() <= SMALL;
         let will = new_size <= SMALL;
         if was && will {
-            // SAFETY: mimalloc served the block at this layout.
-            return unsafe { MiMalloc.realloc(ptr, layout, new_size) };
+            // SAFETY: SMALL_SIDE served the block at this layout.
+            return unsafe { SMALL_SIDE.realloc(ptr, layout, new_size) };
         }
         if !was && !will {
             // SAFETY: the system's allocator served the block at this
@@ -136,6 +151,7 @@ unsafe impl GlobalAlloc for Allocator {
 }
 
 // small-block-time.7 design -- mi_collect, mi_process_info, and mi_is_in_heap_region are declared here, not through libmimalloc-sys's feature extended, which depends on the crate cty that the cargo cache lacks (not measured)
+#[cfg(target_os = "linux")]
 unsafe extern "C" {
     /// mimalloc's `mi_collect`: gives free memory back to the system,
     /// all of it where `force` is set.
@@ -161,6 +177,7 @@ unsafe extern "C" {
 
 // small-block-time.6 design -- before a memory stop mimalloc gives its free memory back by mi_collect(true), not left to its own purge beside glibc's malloc_trim(0) (log 0053-1)
 /// Gives mimalloc's free memory back to the system.
+#[cfg(target_os = "linux")]
 pub(crate) fn collect() {
     // SAFETY: mi_collect frees no live block and moves none.
     unsafe { mi_collect(true) }
@@ -207,6 +224,7 @@ fn set_parameters() -> Option<&'static str> {
 
 /// The process's resident set and its peak in bytes, as mimalloc reads
 /// them from the system.
+#[cfg(target_os = "linux")]
 pub(crate) fn rss() -> (usize, usize) {
     let (mut current, mut peak) = (0, 0);
     let null = std::ptr::null_mut();
@@ -227,8 +245,17 @@ pub(crate) fn rss() -> (usize, usize) {
     (current, peak)
 }
 
+/// The process's resident set and its peak in bytes, as the system reads
+/// them (`os`): each 0 where it cannot be read, as `mi_process_info`
+/// leaves it on Linux.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn rss() -> (usize, usize) {
+    let bytes = |b: Option<u64>| b.and_then(|b| usize::try_from(b).ok()).unwrap_or(0);
+    (bytes(Resident::open().and_then(|r| r.bytes())), bytes(peak()))
+}
+
 /// Whether mimalloc's heap region holds `p`.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn mimalloc_holds<T>(p: *const T) -> bool {
     // SAFETY: mi_is_in_heap_region reads mimalloc's own bookkeeping alone.
     unsafe { mi_is_in_heap_region(p.cast()) }

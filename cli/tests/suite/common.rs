@@ -1,11 +1,17 @@
 //! Test code shared by the CLI's tests: the binary, an instance file and a
 //! FIFO in a scratch directory, a run of the binary, the crate's call for
-//! the same arguments, and SIGINT's bit in `/proc/<pid>/status`.
+//! the same arguments, and SIGINT's bit in `/proc/<pid>/status`. The FIFO
+//! and SIGINT are Unix's alone.
 
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs;
-use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::io;
+use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -36,6 +42,7 @@ pub fn write_instance(dir: &Path, name: &str, text: &str) -> PathBuf {
 
 /// A FIFO `name` in `dir`. A child that opens it to write waits until the
 /// test opens it to read.
+#[cfg(unix)]
 pub fn fifo(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
     let c = CString::new(path.as_os_str().as_bytes()).unwrap();
@@ -46,23 +53,33 @@ pub fn fifo(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-/// How a child starts with SIGINT.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Sigint {
-    /// The default action, unblocked, whatever this process inherited.
-    Default,
-    /// Ignored.
-    Ignored,
-}
-
-/// The binary with `args`, SIGINT as `sigint`, and pipes for its three
-/// streams.
-pub fn command<S: AsRef<std::ffi::OsStr>>(args: &[S], sigint: Sigint) -> Command {
+/// The binary with `args` and pipes for its three streams. On Unix SIGINT
+/// starts at its default action, unblocked, whatever this process
+/// inherited.
+pub fn command<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Command {
     let mut cmd = Command::new(BIN);
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    sigint_as(&mut cmd, libc::SIG_DFL);
+    cmd
+}
+
+/// As `command`, with SIGINT ignored.
+#[cfg(unix)]
+pub fn ignoring_sigint<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Command {
+    let mut cmd = command(args);
+    // The child runs pre_exec's closures in the order they were added, so
+    // this one's SIG_IGN follows command's SIG_DFL.
+    sigint_as(&mut cmd, libc::SIG_IGN);
+    cmd
+}
+
+/// Has the child of `cmd` start with SIGINT unblocked and at `action`.
+#[cfg(unix)]
+fn sigint_as(cmd: &mut Command, action: libc::sighandler_t) {
     // SAFETY: the closure runs in the child between fork and exec and calls
     // sigemptyset, sigaddset, sigprocmask, and signal alone, each
     // async-signal-safe.
@@ -74,17 +91,12 @@ pub fn command<S: AsRef<std::ffi::OsStr>>(args: &[S], sigint: Sigint) -> Command
             if libc::sigprocmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut()) != 0 {
                 return Err(io::Error::last_os_error());
             }
-            let action = match sigint {
-                Sigint::Default => libc::SIG_DFL,
-                Sigint::Ignored => libc::SIG_IGN,
-            };
             if libc::signal(libc::SIGINT, action) == libc::SIG_ERR {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
         });
     }
-    cmd
 }
 
 /// What a run of the binary gave.
@@ -148,7 +160,7 @@ pub fn grobx<S: AsRef<std::ffi::OsStr>>(args: &[S], stdin: &str) -> Ran {
 
 /// As `grobx`, in the working directory `dir` where it is given.
 pub fn grobx_in<S: AsRef<std::ffi::OsStr>>(args: &[S], stdin: &str, dir: Option<&Path>) -> Ran {
-    let mut cmd = command(args, Sigint::Default);
+    let mut cmd = command(args);
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }
@@ -185,6 +197,7 @@ pub fn verdict(outcome: &Outcome) -> String {
 /// Whether SIGINT's bit is set in the mask `field` of `/proc/<pid>/status`:
 /// `SigBlk`, the main thread's blocked signals, or `ShdPnd`, the signals
 /// pending for the process.
+#[cfg(unix)]
 pub fn sigint_in(pid: u32, field: &str) -> bool {
     let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
     let line = status
@@ -196,6 +209,7 @@ pub fn sigint_in(pid: u32, field: &str) -> bool {
 }
 
 /// Waits until `cond` holds, at most 10 s.
+#[cfg(unix)]
 pub fn until(what: &str, mut cond: impl FnMut() -> bool) {
     let start = Instant::now();
     while !cond() {
@@ -208,6 +222,7 @@ pub fn until(what: &str, mut cond: impl FnMut() -> bool) {
 }
 
 /// Sends SIGINT to `child`.
+#[cfg(unix)]
 pub fn sigint(child: &Child) {
     // SAFETY: kill sends a signal to the child's process id, which the child
     // holds until it is waited for.

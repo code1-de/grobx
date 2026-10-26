@@ -230,13 +230,20 @@ fn members() -> &'static [String] {
 }
 
 /// The crates a package's code names as external in its `use`s: its
-/// dependencies of every kind, and its own package and library for its
-/// tests, each with `_` for `-`.
+/// dependencies of every kind, a target's included, and its own package
+/// and library for its tests, each with `_` for `-`.
 pub fn external_crates(package: &str) -> BTreeSet<String> {
     let text = manifest(package);
+    let targets = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("[target.") && l.ends_with("dependencies]"))
+        .map(|l| l[1..l.len() - 1].to_string());
     let mut names: BTreeSet<String> = ["dependencies", "dev-dependencies", "build-dependencies"]
-        .iter()
-        .flat_map(|table| table_keys(&text, table))
+        .map(str::to_string)
+        .into_iter()
+        .chain(targets)
+        .flat_map(|table| table_keys(&text, &table))
         .collect();
     for table in ["package", "lib"] {
         names.extend(table_value(&text, table, "name"));

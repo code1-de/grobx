@@ -1,9 +1,10 @@
 //! The item's test code: the Python module end to end. The test builds the
 //! extension in this test's profile, into the target directory this test
-//! was built in, copies `libgrobx.so` as `grobx.so` into a scratch
-//! directory, and runs `python3` on scripts that import it. Where `python3`
-//! does not run, the test fails.
+//! was built in, copies the library as `MODULE` into a scratch directory,
+//! and runs `PYTHON` on scripts that import it. Where `PYTHON` does not
+//! run, the test fails.
 
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,6 +14,16 @@ use grobx_core::VERSION;
 
 use crate::systems::dense;
 
+/// The interpreter the scripts run under.
+const PYTHON: &str = if cfg!(windows) { "python" } else { "python3" };
+/// The file the module is imported from. Python on Windows imports an
+/// extension module from a `.pyd` file alone.
+const MODULE: &str = if cfg!(windows) {
+    "grobx.pyd"
+} else {
+    "grobx.so"
+};
+
 /// The profile directory this test was built in, the one above `deps/`,
 /// where the test binary lies.
 fn profile_dir() -> PathBuf {
@@ -20,13 +31,23 @@ fn profile_dir() -> PathBuf {
     exe.parent().unwrap().parent().unwrap().to_path_buf()
 }
 
-/// The directory `grobx.so` is imported from.
+/// The directory `MODULE` is imported from.
 fn module_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let profile_dir = profile_dir();
         let target = profile_dir.parent().unwrap();
-        let profile = profile_dir.file_name().unwrap().to_string_lossy().into_owned();
+        let name = profile_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        // Cargo builds the profile dev into debug/.
+        let profile = if name == "debug" {
+            "dev".to_string()
+        } else {
+            name
+        };
         let status = Command::new(env!("CARGO"))
             .args([
                 "build",
@@ -43,24 +64,24 @@ fn module_dir() -> &'static Path {
             .status()
             .expect("cargo runs");
         assert!(status.success(), "the extension does not build: {status}");
-        let built = profile_dir.join("libgrobx.so");
+        let built = profile_dir.join(format!("{DLL_PREFIX}grobx{DLL_SUFFIX}"));
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("python-module");
         fs::create_dir_all(&dir).unwrap();
-        fs::copy(&built, dir.join("grobx.so"))
+        fs::copy(&built, dir.join(MODULE))
             .unwrap_or_else(|e| panic!("{built}: {e}", built = built.display()));
         dir
     })
 }
 
-/// Runs `script` under `python3` with the module importable; fails with
+/// Runs `script` under `PYTHON` with the module importable; fails with
 /// its output where it fails.
 pub(crate) fn python(script: &str) {
-    let out = Command::new("python3")
+    let out = Command::new(PYTHON)
         .arg("-c")
         .arg(script)
         .env("PYTHONPATH", module_dir())
         .output()
-        .unwrap_or_else(|e| panic!("python3 does not run: {e}"));
+        .unwrap_or_else(|e| panic!("{PYTHON} does not run: {e}"));
     assert!(
         out.status.success(),
         "the script failed: {status}\n--- stdout\n{stdout}\n--- stderr\n{stderr}",

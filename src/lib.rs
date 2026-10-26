@@ -37,6 +37,8 @@ mod catch_up_tests;
 #[cfg(test)]
 mod chain_tests;
 #[cfg(test)]
+mod child_tests;
+#[cfg(test)]
 mod cofactor_stop_tests;
 pub mod cofactors;
 #[cfg(test)]
@@ -108,6 +110,7 @@ pub mod monomial;
 mod mqrr_tests;
 mod narrow;
 pub mod order;
+mod os;
 #[cfg(test)]
 mod outgrown_round_tests;
 #[cfg(test)]
@@ -168,7 +171,7 @@ mod sig_tests;
 mod signature_zero_tests;
 #[cfg(test)]
 mod slack_tests;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod small_block_tests;
 #[cfg(test)]
 #[path = "../tests/common/systems.rs"]

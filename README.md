@@ -5,7 +5,8 @@ GF(p), p a prime below 2^64, and over the rationals ℚ. It is a Rust crate
 with a command-line program, a Python extension module, and a C interface.
 All four take the ideal's generators as text and return the basis as text.
 
-grobx is written and tested on Linux on x86-64 alone.
+grobx runs on Linux and Windows on x86-64. It builds for macOS on Apple
+Silicon, where it is untested.
 
 ## Rust
 
@@ -45,6 +46,9 @@ cargo build --release -p grobx-python
 cp target/release/libgrobx.so grobx.so
 ```
 
+On macOS the library is `libgrobx.dylib`, copied as `grobx.so`; on Windows
+it is `grobx.dll`, copied as `grobx.pyd`.
+
 ```python
 import grobx
 
@@ -53,8 +57,9 @@ r.basis    # '[y^2+x,\nx*y+6,\nx^2+y]:\n'
 ```
 
 The C library: `cargo build --release -p grobx-c` writes
-`target/release/libgrobxc.so`. A C program includes `c/grobx.h` and links
-with `-lgrobxc`.
+`target/release/libgrobxc.so`, `libgrobxc.dylib` on macOS, or `grobxc.dll`
+on Windows. A C program includes `c/grobx.h` and links with `-lgrobxc`, on
+Windows against the import library `grobxc.dll.lib`.
 
 The Maple package `maple/Grobx.mpl`, which runs the command-line program
 from the `PATH` or from the path in `GROBX`:

@@ -4,6 +4,7 @@
 //! for the same arguments.
 
 use std::collections::HashMap;
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -17,26 +18,56 @@ use grobxc::*;
 pub const HEADER_DIR: &str = env!("CARGO_MANIFEST_DIR");
 /// The C and C++ programs of the test code.
 pub const PROGRAMS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
+/// The C compiler. On Windows clang takes the flags cc takes and links
+/// against the C runtime of Visual Studio.
+const CC: &str = if cfg!(windows) { "clang" } else { "cc" };
+/// The C++ compiler.
+const CXX: &str = if cfg!(windows) { "clang++" } else { "c++" };
 
-/// The directory of `libgrobxc.so`: `deps/`, where the test binary lies,
-/// and where cargo builds the cdylib with it.
+/// The file of the C interface's library: `libgrobxc.so`,
+/// `libgrobxc.dylib`, or `grobxc.dll`.
+fn lib_file() -> String {
+    format!("{DLL_PREFIX}grobxc{DLL_SUFFIX}")
+}
+
+/// The directory of the library: `deps/`, where the test binary lies, and
+/// where cargo builds the cdylib with it.
 pub fn lib_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let exe = std::env::current_exe().unwrap();
         let dir = exe.parent().unwrap().to_path_buf();
+        let file = lib_file();
         assert!(
-            dir.join("libgrobxc.so").is_file(),
-            "{dir}/libgrobxc.so",
+            dir.join(&file).is_file(),
+            "{dir}/{file}",
             dir = dir.display()
         );
         dir
     })
 }
 
+/// The directory the programs are built in. On Windows it holds a copy of
+/// the library, which a program finds beside itself, copied before the
+/// first program runs: Windows refuses to overwrite a loaded library.
+fn programs_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("c-programs");
+        fs::create_dir_all(&dir).unwrap();
+        #[cfg(windows)]
+        {
+            let file = lib_file();
+            fs::copy(lib_dir().join(&file), dir.join(&file))
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+        }
+        dir
+    })
+}
+
 /// The program `programs/<file>`, compiled once per run against
-/// `grobx.h` and linked against `libgrobxc.so`: a `.c` file by `cc`, a
-/// `.cpp` file by `c++`, every warning an error.
+/// `grobx.h` and linked against the library: a `.c` file by `CC`, a
+/// `.cpp` file by `CXX`, every warning an error.
 pub fn program(file: &str) -> PathBuf {
     static BUILT: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
     let mut built = BUILT.get_or_init(Default::default).lock().unwrap();
@@ -44,30 +75,38 @@ pub fn program(file: &str) -> PathBuf {
         return exe.clone();
     }
     let lib = lib_dir();
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("c-programs");
-    fs::create_dir_all(&dir).unwrap();
+    let dir = programs_dir();
     let (stem, cpp) = match file.strip_suffix(".cpp") {
         Some(stem) => (stem, true),
         None => (file.strip_suffix(".c").expect("a .c or .cpp file"), false),
     };
-    let exe = dir.join(stem);
-    let mut cmd = Command::new(if cpp { "c++" } else { "cc" });
+    let exe = dir.join(format!("{stem}{EXE_SUFFIX}"));
+    let compiler = if cpp { CXX } else { CC };
+    let mut cmd = Command::new(compiler);
     if cpp {
         cmd.args(["-std=c++17"]);
     } else {
-        cmd.args(["-std=c11", "-pthread"]);
+        cmd.args(["-std=c11"]);
+        #[cfg(unix)]
+        cmd.arg("-pthread");
     }
     cmd.args(["-Wall", "-Wextra", "-Werror", "-pedantic", "-I", HEADER_DIR])
-        .arg(Path::new(PROGRAMS).join(file))
-        .arg("-L")
+        .arg(Path::new(PROGRAMS).join(file));
+    #[cfg(unix)]
+    cmd.arg("-L")
         .arg(lib)
         .arg(format!("-Wl,-rpath,{lib}", lib = lib.display()))
-        .arg("-lgrobxc")
-        .arg("-o")
-        .arg(&exe);
+        .arg("-lgrobxc");
+    // The C runtime of Visual Studio deprecates strdup and fopen, among
+    // others, in favour of its own names. The program links against the
+    // library's import library, which cargo writes beside the DLL.
+    #[cfg(windows)]
+    cmd.args(["-D_CRT_SECURE_NO_WARNINGS", "-D_CRT_NONSTDC_NO_DEPRECATE"])
+        .arg(lib.join(format!("{file}.lib", file = lib_file())));
+    cmd.arg("-o").arg(&exe);
     let out = cmd
         .output()
-        .unwrap_or_else(|e| panic!("the compiler does not run ({e}): the test code needs it"));
+        .unwrap_or_else(|e| panic!("{compiler} does not run ({e}): the test code needs it"));
     assert!(
         out.status.success(),
         "{file} does not compile: {status}\n{stderr}",

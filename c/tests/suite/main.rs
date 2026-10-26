@@ -21,11 +21,15 @@ mod call_report;
 mod calls;
 mod checker_points;
 mod common;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "../../../tests/common/heap.rs"]
 mod heap;
 mod misuse;
+// page-fault-time tests glibc's malloc.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod page_fault_time;
 mod q_zero_denominator;
+#[cfg(target_os = "linux")]
 mod small_block_time;
 #[path = "../../../tests/common/systems.rs"]
 mod systems;

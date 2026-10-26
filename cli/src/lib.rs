@@ -7,7 +7,6 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -307,7 +306,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Usage
     let mut operand: Option<OsString> = None;
     let mut ended = false;
     while let Some(arg) = args.next() {
-        let bytes = arg.as_bytes();
+        let bytes = arg.as_encoded_bytes();
         if ended || bytes == b"-" || !bytes.starts_with(b"-") {
             if let Some(first) = &operand {
                 return Err(Usage(format!(
@@ -326,10 +325,13 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Usage
         }
         // cli.3 practice: GNU long options -- a switch takes its value as --name value or --name=value, not in one form alone
         let (name, inline) = match bytes.iter().position(|&b| b == b'=') {
-            Some(at) if bytes.starts_with(b"--") => (
-                &bytes[..at],
-                Some(OsStr::from_bytes(&bytes[at + 1..]).to_owned()),
-            ),
+            Some(at) if bytes.starts_with(b"--") => {
+                // SAFETY: the bytes start right after `=`, and bytes of
+                // as_encoded_bytes may be split right after any ASCII byte
+                // (OsStr::from_encoded_bytes_unchecked, Safety).
+                let value = unsafe { OsStr::from_encoded_bytes_unchecked(&bytes[at + 1..]) };
+                (&bytes[..at], Some(value.to_owned()))
+            }
             Some(_) | None => (bytes, None),
         };
         // cli.7 design -- --help and --version act where the reading reaches them, and an error before them is returned, not either one anywhere on the line before every error (not measured)

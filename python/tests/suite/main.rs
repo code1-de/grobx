@@ -22,6 +22,7 @@ mod layout;
 mod orders;
 mod q;
 mod q_zero_denominator;
+#[cfg(target_os = "linux")]
 mod small_block_time;
 #[path = "../../../tests/common/systems.rs"]
 mod systems;

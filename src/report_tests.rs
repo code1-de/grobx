@@ -8,6 +8,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::budget::Budget;
+use crate::child_tests;
 use crate::f4::Handover;
 use crate::report::{Report, Stage};
 use crate::{MonomialOrder, Params, Threads};
@@ -163,20 +164,26 @@ fn the_cpu_brand() {
     }
 }
 
-/// The `end` line's resident sets: 64 MiB written after the report began
-/// raise the peak above the start by at least that much.
+/// The `end` line's resident sets: in a child process of this test binary,
+/// which runs this test alone, 64 MiB written after the report began raise
+/// the peak above the start by at least that much. The parent runs the
+/// child.
 #[test]
 fn the_resident_sets() {
-    let report = Report::new(Instant::now(), None);
-    let size = 64 << 20;
-    let block = vec![1u8; size];
-    let (start, peak) = report.rss();
-    assert!(start > 0, "no resident set at the start");
-    assert!(
-        peak - start >= size,
-        "peak {peak} start {start} below {size}"
-    );
-    drop(std::hint::black_box(block));
+    if child_tests::running() {
+        let report = Report::new(Instant::now(), None);
+        let size = 64 << 20;
+        let block = vec![1u8; size];
+        let (start, peak) = report.rss();
+        assert!(start > 0, "no resident set at the start");
+        assert!(
+            peak - start >= size,
+            "peak {peak} start {start} below {size}"
+        );
+        drop(std::hint::black_box(block));
+        return;
+    }
+    child_tests::run("report_tests::the_resident_sets");
 }
 
 fn budget() -> Budget {

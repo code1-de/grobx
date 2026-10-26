@@ -17,19 +17,17 @@ use std::time::Duration;
 use grobx::{MonomialOrder, Params, Threads};
 
 use crate::common::{
-    Sigint, command, crate_call, fifo, finish, scratch, sigint, sigint_in, until, write_instance,
+    command, crate_call, fifo, finish, ignoring_sigint, scratch, sigint, sigint_in, until,
+    write_instance,
 };
 use crate::systems::dense;
 
 #[test]
 fn sigint_stops_a_running_call() {
     let long = write_instance(&scratch("sigint-running"), "long", &dense(8, 3, 65521, 1));
-    let child = command(
-        &[OsStr::new("--seed"), "1".as_ref(), long.as_os_str()],
-        Sigint::Default,
-    )
-    .spawn()
-    .expect("the binary starts");
+    let child = command(&[OsStr::new("--seed"), "1".as_ref(), long.as_os_str()])
+        .spawn()
+        .expect("the binary starts");
     until("SIGINT blocked", || sigint_in(child.id(), "SigBlk"));
     thread::sleep(Duration::from_millis(300));
     sigint(&child);
@@ -41,7 +39,7 @@ fn sigint_stops_a_running_call() {
 
 #[test]
 fn sigint_during_the_read_ends_the_process() {
-    let child = command(&["--seed", "1"], Sigint::Default)
+    let child = command(&["--seed", "1"])
         .spawn()
         .expect("the binary starts");
     thread::sleep(Duration::from_millis(300));
@@ -62,16 +60,13 @@ fn sigint_before_the_call_stops_it() {
     for (stem, text) in [("p65521", dense(8, 3, 65521, 1)), ("q", dense(5, 3, 0, 1))] {
         let instance = write_instance(&dir, stem, &text);
         let output = fifo(&dir, &format!("{stem}.out"));
-        let child = command(
-            &[
-                OsStr::new("--seed"),
-                "1".as_ref(),
-                "--output".as_ref(),
-                output.as_os_str(),
-                instance.as_os_str(),
-            ],
-            Sigint::Default,
-        )
+        let child = command(&[
+            OsStr::new("--seed"),
+            "1".as_ref(),
+            "--output".as_ref(),
+            output.as_os_str(),
+            instance.as_os_str(),
+        ])
         .spawn()
         .expect("the binary starts");
         let pid = child.id();
@@ -95,16 +90,13 @@ fn a_second_sigint_ends_the_process() {
     let dir = scratch("sigint-second");
     let instance = write_instance(&dir, "short", &dense(3, 3, 65521, 1));
     let output = fifo(&dir, "short.out");
-    let mut child = command(
-        &[
-            OsStr::new("--seed"),
-            "1".as_ref(),
-            "--output".as_ref(),
-            output.as_os_str(),
-            instance.as_os_str(),
-        ],
-        Sigint::Default,
-    )
+    let mut child = command(&[
+        OsStr::new("--seed"),
+        "1".as_ref(),
+        "--output".as_ref(),
+        output.as_os_str(),
+        instance.as_os_str(),
+    ])
     .spawn()
     .expect("the binary starts");
     let pid = child.id();
@@ -124,7 +116,7 @@ fn a_second_sigint_ends_the_process() {
 #[test]
 fn an_ignored_sigint_stays_ignored() {
     let text = dense(3, 3, 65521, 1);
-    let mut child = command(&["--seed", "1"], Sigint::Ignored)
+    let mut child = ignoring_sigint(&["--seed", "1"])
         .spawn()
         .expect("the binary starts");
     thread::sleep(Duration::from_millis(300));

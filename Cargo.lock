@@ -76,7 +76,7 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "grobx"
-version = "0.73.0"
+version = "0.73.1"
 dependencies = [
  "grobx-checker",
  "libc",
@@ -88,6 +88,7 @@ dependencies = [
  "rand_xoshiro",
  "serde_json",
  "sha2",
+ "windows-sys",
 ]
 
 [[package]]
@@ -99,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "grobx-checker"
-version = "0.73.0"
+version = "0.73.1"
 dependencies = [
  "num-bigint",
  "num-integer",
@@ -114,15 +115,17 @@ version = "0.0.0"
 dependencies = [
  "grobx",
  "libc",
+ "windows-sys",
 ]
 
 [[package]]
 name = "grobx-python"
-version = "0.73.0"
+version = "0.73.1"
 dependencies = [
  "grobx",
  "grobx-checker",
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
@@ -404,6 +407,21 @@ name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+
+[[package]]
+name = "windows-link"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-sys"
+version = "0.61.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+dependencies = [
+ "windows-link",
+]
 
 [[package]]
 name = "zmij"

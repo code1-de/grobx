@@ -5,6 +5,7 @@
 //! (plan.md, _Test code_, 6, 8, and 9).
 
 use std::num::NonZeroU32;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
 use grobx::CheckerMode;
@@ -74,6 +75,7 @@ fn the_checker_certifies_in_the_cheap_mode() {
 }
 
 /// The process's resident set in bytes, `VmRSS` of `/proc/self/status`.
+#[cfg(target_os = "linux")]
 fn resident() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap();
     let line = status
@@ -85,6 +87,7 @@ fn resident() -> u64 {
 }
 
 /// The variable that tells a child process to run the call.
+#[cfg(target_os = "linux")]
 const CHILD: &str = "GROBX_SLACK_CHILD";
 
 /// Test 9: in a child process of the suite's binary, which runs this test
@@ -92,6 +95,7 @@ const CHILD: &str = "GROBX_SLACK_CHILD";
 /// matrix passes `RESERVE_PAST` entries, returns a basis under a memory
 /// ceiling of the resident set before the call plus 24 MiB. A reservation
 /// spans 32 MiB. The parent runs the child.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_ceiling_past_the_written_pages_holds() {
     if std::env::var_os(CHILD).is_some() {

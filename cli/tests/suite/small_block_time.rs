@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use crate::common::{Sigint, command, crate_call, finish, scratch, write_instance};
+use crate::common::{command, crate_call, finish, scratch, write_instance};
 use crate::systems::dense;
 
 /// Test 10, small-block-time.4: with `MIMALLOC_VERBOSE=1` mimalloc reports
@@ -16,10 +16,7 @@ fn the_binary_runs_under_the_allocator() {
     let dir = scratch("small-block-time");
     for (stem, text) in [("p65521", dense(4, 3, 65521, 1)), ("q", dense(3, 3, 0, 1))] {
         let file = write_instance(&dir, stem, &text);
-        let mut cmd = command(
-            &["--seed".as_ref(), "3".as_ref(), file.as_os_str()],
-            Sigint::Default,
-        );
+        let mut cmd = command(&["--seed".as_ref(), "3".as_ref(), file.as_os_str()]);
         cmd.env("MIMALLOC_VERBOSE", "1");
         let ran = finish(
             cmd.spawn().expect("the binary starts"),

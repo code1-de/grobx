@@ -21,8 +21,10 @@ mod call_report;
 mod checker_points;
 mod common;
 mod exits;
+#[cfg(unix)]
 mod interrupt;
 mod q_zero_denominator;
+#[cfg(target_os = "linux")]
 mod small_block_time;
 mod switches;
 #[path = "../../../tests/common/systems.rs"]

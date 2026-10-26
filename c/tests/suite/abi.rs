@@ -133,7 +133,7 @@ fn the_header_matches_the_library() {
     }
 }
 
-/// `linkage.cpp` includes `grobx.h` in C++, links against `libgrobxc.so`
+/// `linkage.cpp` includes `grobx.h` in C++, links against the library
 /// by the functions' C names, and prints the crate version.
 #[test]
 fn a_cpp_program_links() {

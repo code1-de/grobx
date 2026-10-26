@@ -5,19 +5,20 @@
 //! 5).
 
 use std::num::NonZeroUsize;
-use std::process::Command;
 use std::time::Instant;
 
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
+use crate::child_tests;
 use crate::field::{Field, Gf31};
 use crate::id::{ElementId, MonoId, RowId};
 use crate::matrix::{self, Matrix, RESERVATION, RESERVE_PAST, make_room};
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Format};
 use crate::order::Grevlex;
+use crate::os::resident;
 use crate::poly::{Basis, Poly};
 use crate::table::Table;
 use crate::trace::RowSource;
@@ -259,27 +260,13 @@ fn a_kept_matrix_gives_its_reservation_back() {
     );
 }
 
-/// The process's resident set in bytes, `VmRSS` of `/proc/self/status`.
-fn resident() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap();
-    let line = status
-        .lines()
-        .find(|l| l.starts_with("VmRSS:"))
-        .expect("a VmRSS line");
-    let kib: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
-    kib * 1024
-}
-
-/// The variable that tells a child process to measure.
-const CHILD: &str = "GROBX_SLACK_CHILD";
-
 /// Test 5, matrix-slack.3, .4: in a child process of this test binary,
 /// which runs this test alone, building the matrix of 300,300 entries,
 /// 1.2 MB of columns, raises the resident set by less than 16 MiB, where
 /// its reservation spans 32 MiB. The parent runs the child.
 #[test]
 fn the_reservation_is_resident_as_written() {
-    if std::env::var_os(CHILD).is_some() {
+    if child_tests::running() {
         let (_, mut table, basis) = element();
         let before = resident();
         let (m, _) = multiples(&mut table, &basis, 60, 1);
@@ -293,18 +280,5 @@ fn the_reservation_is_resident_as_written() {
         );
         return;
     }
-    let exe = std::env::current_exe().expect("the test binary knows its path");
-    let out = Command::new(&exe)
-        .args([
-            "slack_tests::the_reservation_is_resident_as_written",
-            "--exact",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(CHILD, "1")
-        .output()
-        .unwrap_or_else(|e| panic!("{exe}: {e}", exe = exe.display()));
-    let said = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "the child failed: {out:?}");
-    assert!(said.contains("1 passed"), "the child ran no test: {said}");
+    child_tests::run("slack_tests::the_reservation_is_resident_as_written");
 }
