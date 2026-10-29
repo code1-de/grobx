@@ -752,7 +752,9 @@ pub(crate) fn write_basis<'p, F: Field, M: Format, D: Module + 'p>(
     // result-time.11 design -- the basis text over GF(p) is reserved once, before its `[`, at the sum of its terms' longest texts and its brackets and separators, not grown by doubling from the first term's reservation or as a String grows (log 0042-1)
     let k = polys.clone().count();
     let terms: usize = polys.clone().map(|g| g.len().max(1)).sum();
-    out.reserve(4 + 2 * k.saturating_sub(1) + terms * term_longest(names));
+    out.reserve(reservation(
+        (4 + 2 * k.saturating_sub(1)).saturating_add(terms.saturating_mul(term_longest(names))),
+    ));
     out.push('[');
     let mut texts = Texts::new(table.len(), names.len());
     for (k, p) in polys.enumerate() {
@@ -967,6 +969,20 @@ pub(crate) const TERM_MARKS: usize = 2;
 /// The bytes of a variable's text in a monomial beside its name and its
 /// exponent: a `*` and a `^`.
 const POWER_MARKS: usize = 2;
+
+// text-reserve.1 design -- a basis text reserves at once its bound or RESERVE_CAP, whichever is less, and grows past it as its terms reserve their room, not its whole bound, which counts a coefficient of the widest field and ten digits for each variable's exponent in every term (not measured)
+// The whole bound passed the machine's memory in one request on
+// katsura-16 over p65521, whose basis text fits it, and the allocator's
+// refusal aborted the process (the call report of grobx 0.73.2).
+/// The bytes a basis text reserves at once at most: 1 GiB. A text past it
+/// grows by doubling, so that its largest request stays within about twice
+/// its length.
+pub(crate) const RESERVE_CAP: usize = 1 << 30;
+
+/// The bytes a basis text of at most `bound` bytes reserves at once.
+pub(crate) fn reservation(bound: usize) -> usize {
+    bound.min(RESERVE_CAP)
+}
 
 /// The longest text of a term over GF(p) on these names: a `+`, a
 /// coefficient below 2^64 of at most 20 digits, and a `*`, then per

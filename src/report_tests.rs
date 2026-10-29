@@ -3,15 +3,20 @@
 //! and as added, and what the handover's tests read
 //! (`iterations/0064-call-report/plan.md`, _Test code_, 1, 2, and 4).
 
+use std::alloc::{GlobalAlloc, Layout};
+use std::io;
 use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use crate::blocks::{Allocator, LARGE, watch};
 use crate::budget::Budget;
 use crate::child_tests;
+use crate::entry::report_error;
 use crate::f4::Handover;
-use crate::report::{Report, Stage};
-use crate::{MonomialOrder, Params, Threads};
+use crate::report::{Report, Stage, field_value};
+use crate::{Error, MonomialOrder, Params, ReportSink, Threads};
 
 /// One line of a report: its time, its kind, and its fields.
 #[derive(Clone, Debug, PartialEq)]
@@ -161,6 +166,172 @@ fn the_cpu_brand() {
         );
     } else {
         assert_eq!(brand, None);
+    }
+}
+
+/// error-report.1: a text as a value of the grammar, its words joined by
+/// `_`, whatever whitespace stood between them, and each `=` an `_`.
+#[test]
+fn a_field_value() {
+    for (text, value) in [
+        ("", ""),
+        ("one", "one"),
+        ("line 3: a degree", "line_3:_a_degree"),
+        ("  lead\tand\ntrail  ", "lead_and_trail"),
+        ("a=b c==d", "a_b_c__d"),
+        ("ℚ über GF(p)\u{200b} x", "ℚ_über_GF(p)\u{200b}_x"),
+    ] {
+        assert_eq!(field_value(text), value, "{text:?}");
+    }
+}
+
+/// A writer whose bytes the test reads back.
+#[derive(Clone, Default)]
+struct Shared(Arc<Mutex<Vec<u8>>>);
+
+impl Shared {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl io::Write for Shared {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// error-report.1: a call that returns an error ends the report on its sink
+/// with the `error` line, its message one value; with the report off the
+/// sink hears nothing; an error before the call's budget, which holds no
+/// report yet, is written by a report of its own.
+#[test]
+fn the_error_line() {
+    let overflow = "x\n7\nx^2147483648\n";
+    for report in [true, false] {
+        let sink = Shared::default();
+        let mut params = Params::new(MonomialOrder::Grevlex, Threads::Count(NonZeroUsize::MIN), 1);
+        params.report = report;
+        params.report_sink = Some(ReportSink::new(sink.clone()));
+        let got = crate::groebner(overflow, &params);
+        assert_eq!(got, Err(Error::Overflow { line: Some(3) }));
+        if !report {
+            assert_eq!(sink.text(), "", "the report off");
+            continue;
+        }
+        let l = lines(&sink.text());
+        assert_eq!(l.first().map(|l| l.kind.as_str()), Some("call"), "{l:?}");
+        let last = l.last().expect("a line");
+        assert!(
+            last.is(
+                "error",
+                &[
+                    ("error", "Overflow"),
+                    (
+                        "message",
+                        "line_3:_a_degree_past_the_widest_monomial_format"
+                    )
+                ]
+            ),
+            "{last:?}"
+        );
+    }
+    let sink = Shared::default();
+    let mut params = Params::new(MonomialOrder::Grevlex, Threads::Count(NonZeroUsize::MIN), 1);
+    params.report = true;
+    params.report_sink = Some(ReportSink::new(sink.clone()));
+    report_error(None, &params, Instant::now(), &Error::Memory);
+    let l = lines(&sink.text());
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert!(
+        l[0].is(
+            "error",
+            &[
+                ("error", "Memory"),
+                (
+                    "message",
+                    "a_memory_ceiling_where_the_resident_set_cannot_be_read"
+                )
+            ]
+        ),
+        "{l:?}"
+    );
+}
+
+/// error-report.4, .6: while a call watches, a request of `LARGE` bytes
+/// or more, served by `alloc`, `alloc_zeroed`, or `realloc`, and a refused
+/// one are `alloc` lines on its sink, each with its stack on Linux; a
+/// request below `LARGE` is none, and no request is one before the watch
+/// or after it. The blocks of `LARGE` bytes are never written, so they
+/// take no memory.
+#[test]
+fn the_alloc_lines() {
+    let sink = Shared::default();
+    let below = Layout::from_size_align(LARGE - 1, 8).unwrap();
+    let large = Layout::from_size_align(LARGE, 8).unwrap();
+    let refused = Layout::from_size_align(1 << 62, 8).unwrap();
+    // SAFETY: each block is freed at the layout it was served at.
+    let unwatched = |sink: &Shared| unsafe {
+        let before = sink.text();
+        let p = Allocator.alloc(large);
+        assert!(!p.is_null());
+        Allocator.dealloc(p, large);
+        assert_eq!(sink.text(), before, "a request heard without a watch");
+    };
+    unwatched(&sink);
+    let watch = watch(Instant::now(), ReportSink::new(sink.clone()));
+    // SAFETY: each block is freed at the layout it was served or last
+    // resized at.
+    unsafe {
+        let p = Allocator.alloc(below);
+        assert!(!p.is_null());
+        Allocator.dealloc(p, below);
+        assert_eq!(sink.text(), "", "a request below LARGE heard");
+        let p = Allocator.alloc(large);
+        assert!(!p.is_null());
+        let grown = Allocator.realloc(p, large, LARGE + 4096);
+        assert!(!grown.is_null());
+        Allocator.dealloc(grown, Layout::from_size_align(LARGE + 4096, 8).unwrap());
+        let p = Allocator.alloc_zeroed(large);
+        assert!(!p.is_null());
+        Allocator.dealloc(p, large);
+        assert!(Allocator.alloc(refused).is_null(), "2^62 bytes served");
+    }
+    drop(watch);
+    unwatched(&sink);
+    let l = lines(&sink.text());
+    let large = LARGE.to_string();
+    let expected: [&[(&str, &str)]; 4] = [
+        &[("kind", "alloc"), ("bytes", &large), ("result", "served")],
+        &[
+            ("kind", "realloc"),
+            ("bytes", &(LARGE + 4096).to_string()),
+            ("from", &large),
+            ("result", "served"),
+        ],
+        &[("kind", "zeroed"), ("bytes", &large), ("result", "served")],
+        &[
+            ("kind", "alloc"),
+            ("bytes", &(1_u64 << 62).to_string()),
+            ("result", "refused"),
+        ],
+    ];
+    assert_eq!(l.len(), expected.len(), "{l:?}");
+    for (line, fields) in l.iter().zip(expected) {
+        assert!(line.is("alloc", fields), "{line:?}");
+        let stack = line.get("stack");
+        if cfg!(all(target_os = "linux", target_env = "gnu")) {
+            let stack = stack.expect("a stack on Linux");
+            assert!(stack.split(',').all(|f| f.contains("0x")), "{stack}");
+            assert!(stack.contains("+0x"), "no frame in an object: {stack}");
+        } else {
+            assert_eq!(stack, None, "{line:?}");
+        }
     }
 }
 

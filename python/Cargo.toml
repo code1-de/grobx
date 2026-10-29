@@ -1,6 +1,6 @@
 [package]
 name = "grobx-python"
-version = "0.73.1"
+version = "0.73.3"
 description = "Reduced Gröbner bases of polynomial ideals over GF(p) and over the rationals"
 edition.workspace = true
 rust-version.workspace = true

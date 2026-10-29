@@ -179,7 +179,7 @@ mod wired {
     use crate::rational::{Rational, term_bound_q, write_cofactor_q, write_poly_q};
     use crate::systems::dense;
     use crate::table::Table;
-    use crate::text::{Header, term_longest, write_basis};
+    use crate::text::{Header, RESERVE_CAP, term_longest, write_basis};
     use crate::trace::{NoLearner, NoTrace};
     use crate::{MonomialOrder, Params, Threads};
 
@@ -350,7 +350,8 @@ mod wired {
 
     /// result-time.1, .3 to .5, .11: `write_basis` writes what the reference
     /// writer writes, after a prefix that stays, within the reservation it
-    /// makes before its first byte.
+    /// makes before its first byte. text-reserve.1: a basis whose bound
+    /// passes `RESERVE_CAP` reserves the cap alone, and writes the same text.
     #[test]
     fn basis_text_over_gfp_as_a_reference_writes_it() {
         for n in COUNTS8 {
@@ -362,6 +363,44 @@ mod wired {
         for n in COUNTS32 {
             basis_text_agrees_in::<Dense32>(n);
         }
+        // Copies of the unit monomial and the 17 variables at the degree
+        // bound: each term's text is short, its bound counts all 17 names
+        // with ten-digit exponents and a twenty-digit coefficient.
+        let n = 17;
+        let (table, ids) = table_with::<Dense8>(n, 0x0d3);
+        let owned = names(n);
+        let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let field = Gf31::new(65521).unwrap();
+        let mut terms: Vec<_> = ids[..=n]
+            .iter()
+            .map(|&id| (id, field.coef(65520)))
+            .collect();
+        let g = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
+        let copies = 120_000;
+        let bound = 4 + 2 * (copies - 1) + copies * g.len() * term_longest(&names);
+        assert!(bound > RESERVE_CAP, "the bound {bound} within the cap");
+        let mut out = String::new();
+        write_basis(
+            &mut out,
+            &names,
+            &table,
+            &field,
+            std::iter::repeat_n(&g, copies),
+            &mut Budget::unbounded(),
+        )
+        .expect("a budget without bounds never stops");
+        assert!(
+            out.len() < RESERVE_CAP,
+            "the text of {len} bytes past the cap",
+            len = out.len()
+        );
+        let one = reference_poly(&names, &table, &field, &g);
+        let want = format!(
+            "[{polys}]:\n",
+            polys = vec![one.as_str(); copies].join(",\n")
+        );
+        assert!(out == want, "the capped text differs from the reference's");
+        assert_eq!(out.capacity(), RESERVE_CAP, "a bound of {bound}");
     }
 
     /// Terms over ℚ as the canonical texts spell them: sign, numerator,

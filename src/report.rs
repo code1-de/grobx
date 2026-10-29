@@ -106,8 +106,17 @@ pub(crate) fn on(b: bool) -> &'static str {
     if b { "on" } else { "off" }
 }
 
-/// The processor's brand string from CPUID, its words joined by `_` so
-/// the field holds no space; None off x86-64 or where CPUID has no brand.
+/// `text` as a field's value: its words joined by `_`, and each `=` an
+/// `_`, so the value holds no space, line feed, or `=`.
+pub(crate) fn field_value(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<&str>>()
+        .join("_")
+        .replace('=', "_")
+}
+
+/// The processor's brand string from CPUID as a field's value
+/// (`field_value`); None off x86-64 or where CPUID has no brand.
 pub(crate) fn cpu() -> Option<String> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -119,13 +128,8 @@ pub(crate) fn cpu() -> Option<String> {
             .flat_map(|r| [r.eax, r.ebx, r.ecx, r.edx])
             .flat_map(u32::to_le_bytes)
             .collect();
-        let brand = String::from_utf8_lossy(&bytes);
-        let words: Vec<&str> = brand.trim_matches('\0').split_whitespace().collect();
-        if words.is_empty() {
-            None
-        } else {
-            Some(words.join("_"))
-        }
+        let brand = field_value(String::from_utf8_lossy(&bytes).trim_matches('\0'));
+        if brand.is_empty() { None } else { Some(brand) }
     }
     #[cfg(not(target_arch = "x86_64"))]
     {

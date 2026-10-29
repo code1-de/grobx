@@ -59,7 +59,7 @@ use crate::rational::{
 };
 use crate::report::{Opt, Secs, Stage, on};
 use crate::shape::Kept;
-use crate::text::{Header, decimal_units, limbs};
+use crate::text::{Header, decimal_units, limbs, reservation};
 use crate::trace::{NoLearner, Record, Recording, Trace};
 use crate::{Error, Outcome, Params, Stats, Stop};
 
@@ -2386,7 +2386,7 @@ fn finish(
             bound += term_bound_q(names, num.bits() + bits - r.dens[*den as usize].bits() + 1);
         }
     }
-    let mut basis = String::with_capacity(bound);
+    let mut basis = String::with_capacity(reservation(bound));
     basis.push('[');
     let mut matrix = String::from("[");
     let mut exponents = Vec::new();

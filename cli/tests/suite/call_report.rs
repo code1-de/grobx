@@ -36,7 +36,8 @@ fn kinds(report: &str) -> Vec<&str> {
 
 /// `--report FILE` writes the report to FILE, the instance read from a
 /// file or from standard input, beside the basis on standard output; no
-/// switch, no file; an error writes none. Over GF(65521) and over ℚ.
+/// switch, no file; an error's report ends with its `error` line. Over
+/// GF(65521) and over ℚ.
 #[test]
 fn the_switch_writes_the_report() {
     let dir = scratch("call-report");
@@ -75,7 +76,15 @@ fn the_switch_writes_the_report() {
     let report = format!("--report={report}", report = file.display());
     let ran = grobx(&["--seed", "3", report.as_str()], "x\n7\nx^2147483648\n");
     assert_eq!(ran.code(), 2, "{ran:?}");
-    assert!(!file.exists(), "an error writes no report");
+    let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("an error's report: {e}"));
+    assert_eq!(kinds(&text).first(), Some(&"call"), "{text}");
+    let last = text.lines().last().unwrap_or_default();
+    assert!(
+        last.contains(
+            " error error=Overflow message=line_3:_a_degree_past_the_widest_monomial_format"
+        ),
+        "the error's line: {text}"
+    );
 }
 
 /// A deadline that stops the call: exit 1, and a report that ends with the

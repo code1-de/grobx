@@ -99,7 +99,8 @@ fn execute(mut run: Run) -> u8 {
     let Ok(cofactors) = create(run.cofactors.as_deref()) else {
         return ERROR;
     };
-    // call-report.25 design -- the report's file is created with the other output files before the call (cli.17), and removed where the call returns an error and the file is a regular file, not created after the call returns an outcome (not measured)
+    // call-report.25 design -- the report's file is created with the other output files before the call (cli.17), not created after the call returns an outcome (not measured)
+    // error-report.2 design -- where the call returns an error, the report's file stays, ending in the error line, not removed (not measured)
     let Ok(report) = create(run.report.as_deref()) else {
         return ERROR;
     };
@@ -125,9 +126,6 @@ fn execute(mut run: Run) -> u8 {
         // cli.16 design -- an error the crate returns is written as the input's name and the error's Display, not with the error's variant first (not measured)
         Err(e) => {
             say(&format!("{name}: {e}"));
-            if let Some(path) = &run.report {
-                remove(path);
-            }
             return ERROR;
         }
     };
@@ -164,16 +162,6 @@ fn create(path: Option<&Path>) -> Result<Option<File>, ()> {
     File::create(path).map(Some).map_err(|e| {
         say(&format!("{path}: {e}", path = path.display()));
     })
-}
-
-/// Removes the file at `path` where it is a regular file, so that a device
-/// or a link named in its place stays; a failure is said on standard error.
-fn remove(path: &Path) {
-    if fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
-        && let Err(e) = fs::remove_file(path)
-    {
-        say(&format!("{path}: {e}", path = path.display()));
-    }
 }
 
 /// Writes `text` to `file`, created at `path`: `Err` once it has said why

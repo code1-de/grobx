@@ -9,7 +9,10 @@ use crate::wrapper::run_with;
 /// call's and last line its end, beside the basis the call without it
 /// returns, over GF(65521) and over ℚ; `report=False` and no keyword
 /// return None; a call a deadline stops returns a report that ends with
-/// its stop; an error raises grobx.Error as without the report. The
+/// its stop; an error raises grobx.Error as without the report.
+/// `report_file`, a str or a path, holds the report `report` returns; an
+/// error leaves it ending with the `error` line; a file that cannot be
+/// created raises `OSError`, and a value that is no path `TypeError`. The
 /// stopped call runs on `dense(8, 3, 65521, 1)`, which runs for seconds
 /// without the deadline.
 #[test]
@@ -57,6 +60,28 @@ assert r.report.split("\n")[-2].split(" ")[2] == "result=stopped"
 
 raises(grobx.Error, lambda: grobx.groebner("x\n7\nx^2147483648\n", order="grevlex",
                                            threads=1, seed=5, report=True))
+
+import os, pathlib, tempfile
+d = tempfile.mkdtemp()
+for path in [os.path.join(d, "ok.report"), pathlib.Path(d) / "ok-path.report"]:
+    r = grobx.groebner(P, order="grevlex", threads=1, seed=5, report_file=path)
+    with open(path) as f:
+        written = f.read()
+    assert written == r.report, (written, r.report)
+    assert kinds(written)[-1] == "end", written
+
+failed = os.path.join(d, "error.report")
+raises(grobx.Error, lambda: grobx.groebner("x\n7\nx^2147483648\n", order="grevlex",
+                                           threads=1, seed=5, report_file=failed))
+with open(failed) as f:
+    written = f.read()
+k = kinds(written)
+assert k[0] == "call" and k[-1] == "error", k
+assert written.split("\n")[-2].split(" ")[2:] == [
+    "error=Overflow", "message=line_3:_a_degree_past_the_widest_monomial_format"], written
+
+raises(OSError, lambda: grobx.groebner(P, report_file=os.path.join(d, "missing", "x.report")))
+raises(TypeError, lambda: grobx.groebner(P, report_file=5))
 "#,
     );
 }

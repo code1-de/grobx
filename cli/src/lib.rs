@@ -58,8 +58,8 @@ Switches:
                     the call considerably slower
   --report FILE     writes the call report to FILE: a log of every step of
                     the computation, with its sizes and times, which shows
-                    where the call spends its time; a stopped call writes
-                    one too
+                    where the call spends its time; a stopped or failed
+                    call writes one too
   --output FILE     writes the basis text to FILE, not to standard output
   -h, --help        prints this help and exits
   --version         prints the version and exits

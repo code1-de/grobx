@@ -1,6 +1,6 @@
 [package]
 name = "grobx-checker"
-version = "0.73.1"
+version = "0.73.3"
 description = "Checks a Gröbner basis and its cofactors against the ideal's generators, over GF(p) and over the rationals"
 edition.workspace = true
 rust-version.workspace = true

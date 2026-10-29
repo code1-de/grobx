@@ -1,6 +1,6 @@
 [package]
 name = "grobx"
-version = "0.73.1"
+version = "0.73.3"
 description = "Reduced Gröbner bases of polynomial ideals over GF(p) and over the rationals"
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ exclude = ["maple/"]
 
 # f4-gfp.38 design -- the hash multipliers come from rand_xoshiro's Xoshiro256PlusPlus seeded by seed_from_u64, not from a generator written for the engine (not measured)
 [dependencies]
-grobx-checker = { path = "checker", version = "0.73.1" }
+grobx-checker = { path = "checker", version = "0.73.3" }
 libc = "0.2"
 # q-lift.1 design -- the lift's integers past u128 come from a crate, not from arithmetic of the engine's own on limbs (not measured)
 # q-lift.2 design -- the crate is num-bigint, the checker's, under MIT or Apache-2.0, not malachite under LGPL-3.0-only (not measured)

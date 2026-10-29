@@ -7,8 +7,7 @@ interface, the library `grobxc` and its header `grobx.h`. All
 four take the ideal's generators as text and return the basis as text.
 The Maple package `Grobx` runs the command-line program (_Maple_ below).
 
-grobx runs on Linux and Windows on x86-64. It builds for macOS on Apple
-Silicon, where it is untested. The memory ceiling
+grobx runs on Linux and Windows on x86-64 and on macOS on Apple Silicon. The memory ceiling
 reads the resident set from `/proc/self/statm` on Linux, by `proc_pidinfo`
 on macOS, and as the working set on Windows, so a call with a ceiling
 returns `Error::Memory` where the system gives none.
@@ -80,7 +79,7 @@ cofactors, signatures on, the echelon on, and no report. `Params::default()` is
 | `signatures` | `bool` | Whether a run prunes pairs by signatures. |
 | `echelon` | `bool` | Whether a run takes the generators in reduced row echelon form before it computes. |
 | `report` | `bool` | Whether the outcome carries the call report (_Report text_ below). |
-| `report_sink` | `Option<ReportSink>` | Where `report` is on, a writer that takes each report line as the call meets it, flushed after the line, so a call that dies leaves its report so far. The first write error ends the writing; the outcome's report holds every line either way. |
+| `report_sink` | `Option<ReportSink>` | Where `report` is on, a writer that takes each report line as the call meets it, flushed after the line, so a call that dies leaves its report so far. The first write error ends the writing; the outcome's report holds every line either way, save the `alloc` lines, which the sink alone takes (_Report text_). |
 
 `signatures` chooses the engine. On, the run prunes pairs by the signatures
 of its rows and hands the call to the plain F4 engine, started over, where
@@ -157,7 +156,7 @@ r.digest   # SHA-256 of r.basis, 64 lowercase hex digits
 ```
 
 `grobx.groebner(text, *, order="grevlex", threads=0, seed=None, deadline=None, cancel=None,
-memory=None, checker=None, cofactors=False, report=False)` takes the fields of `Params`
+memory=None, checker=None, cofactors=False, report=False, report_file=None)` takes the fields of `Params`
 (_Rust_ above) as keywords. Every parameter but `text` is a keyword, and
 `seed=None` draws one, as `Params::default()` does. Where a keyword's type
 differs from the field's:
@@ -170,9 +169,14 @@ differs from the field's:
 | `deadline` | `int` in milliseconds, or `None` |
 | `cancel` | `grobx.Cancel` or `None` |
 | `checker` | `"exact"`, an `int` from 1 to 2^32 − 1 for the cheap mode's points, or `None` |
+| `report_file` | a path, `str` or `os.PathLike`, or `None`; the file `report_sink` writes to |
 
-`signatures`, `echelon`, and `report_sink` are no keywords: a Python
-call runs with both on, and with no sink.
+`signatures` and `echelon` are no keywords: a Python call runs with both
+on. `report_file` turns `report` on, and the call creates the file at
+its start and writes each report line there as it meets it, unbuffered,
+so a call that raises or never returns leaves its report so far. A call
+that raises leaves it ending with its `error` line. A file that cannot be
+created raises `OSError`.
 
 The call releases the GIL while it computes, so another Python thread can
 raise `cancel`. `grobx.Cancel()` has the methods of `Cancel`. The first
@@ -251,8 +255,8 @@ refused, leaves them empty.
 The file `--report` names is created with them. Each report line goes
 there as the call meets it, so a process that dies leaves the report so
 far; a call that returns writes the file whole again at its end. A
-stopped call writes its report there. A call the crate refuses removes the file where it is a
-regular file, and leaves a device or a link in its place.
+stopped call writes its report there. A call the crate refuses leaves
+its report there, ending with its `error` line.
 Two lines stand above the call report (_Report text_ below): `version`
 and the crate version, then `command grobx` and the arguments as given,
 each in single quotes where it is empty or holds more than ASCII letters,
@@ -555,7 +559,10 @@ value  = 1*(any byte but SP, LF, and "=")
 - A value is a decimal integer, a duration in seconds with six decimals,
   a word, or a list of those joined by `,`. A field that does not apply
   to the event is left out.
-- The first line's kind is `call`, and the last line's is `end`.
+- The first line's kind is `call`, and the last line's is `end`, or
+  `error` where the call returns an error. An error before the report
+  began, of glibc's parameters or of the memory ceiling, is a report of
+  its `error` line alone.
 
 The call of _Rust_ above with seed 1, one thread, and the report on,
 through Python:
@@ -608,6 +615,19 @@ values.
   on Linux, and on Windows and macOS as the system reads them, 0 where it cannot.
   The peak is the process's, so a call after a larger one in the same
   process reads that one's.
+- `error error=<variant> message=<text>`: the call returns the error
+  `Error::<variant>`, whose message is `message`, its words joined by `_`
+  and each `=` an `_`.
+- `alloc kind=<alloc|zeroed|realloc> bytes=<b> from=<b>
+  result=<served|refused> stack=<frame>,…`: a request for a block of 1
+  GiB or more (`LARGE`), or one the allocator refused, which then aborts
+  the process. Only `grobx::Allocator` writes it, and only to
+  `report_sink`, not to the outcome's report. `from` is the old block's
+  bytes where `realloc` resizes one. `stack` gives on Linux the request's
+  return addresses, each as its object's file name, `+0x`, and the
+  offset into the object, which `addr2line -f -C -e <object>` maps to a
+  function. A request that comes while the sink writes another line has
+  no line.
 
 **A run.** Each run of the engine writes a `run` line as it starts and a
 `ran` line as it ends, and its rounds' lines between them. Over ℚ every

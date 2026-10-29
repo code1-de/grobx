@@ -31,7 +31,7 @@ use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::narrow;
 use crate::order::{Block, Grevlex, Lex, MonomialOrder, Order};
 use crate::poly::Poly;
-use crate::report::{self as call_report, Opt, Secs, Stage, cpu, on};
+use crate::report::{self as call_report, Opt, Secs, Stage, cpu, field_value, on};
 use crate::shape::{Built, Kept, Shape, Shaping};
 use crate::sig::Pairs;
 use crate::table::Table;
@@ -129,7 +129,8 @@ pub(crate) fn replay_in<T: Trace>(
 /// `Error::Characteristic` where there is a record or `learner` listens.
 /// It sets glibc's parameters first (`blocks::pad_heap`), so that the
 /// call's runs, the lift's among them, run on the padded heap, and a
-/// refusal returns before the call allocates.
+/// refusal returns before the call allocates. An error ends the call
+/// report with its `error` line (`report_error`).
 fn call<T: Trace, L: Learner>(
     text: &str,
     params: &Params,
@@ -139,10 +140,63 @@ fn call<T: Trace, L: Learner>(
     learner: &mut L,
 ) -> Result<Outcome, Error> {
     debug_assert!(first <= last);
-    blocks::pad_heap()?;
     let start = Instant::now();
+    let mut held: Option<Budget> = None;
+    let called = (|| {
+        blocks::pad_heap()?;
+        let _watch = match &params.report_sink {
+            Some(sink) if params.report => Some(blocks::watch(start, sink.clone())),
+            Some(_) | None => None,
+        };
+        let budget = held.insert(Budget::new(start, params)?);
+        call_budgeted(text, params, record, (first, last), budget, trace, learner)
+    })();
+    if let Err(e) = &called {
+        report_error(held.as_mut(), params, start, e);
+    }
+    called
+}
+
+// error-report.1 design -- a call that returns an error ends its report with an error line, which the sink keeps, not the report dropped with the error (not measured)
+/// The call report's `error` line of `e`: the variant's name and its
+/// message as one value (`field_value`). The budget's report writes it,
+/// and where the error came before there was one, a report of its own on
+/// the call's sink.
+pub(crate) fn report_error(
+    budget: Option<&mut Budget>,
+    params: &Params,
+    start: Instant,
+    e: &Error,
+) {
+    let mut own = None;
+    let report = match budget.and_then(Budget::report) {
+        Some(report) => report,
+        None if params.report => {
+            own.insert(call_report::Report::new(start, params.report_sink.clone()))
+        }
+        None => return,
+    };
+    report.line(
+        "error",
+        format_args!(
+            " error={name} message={message}",
+            name = e.name(),
+            message = field_value(&e.to_string())
+        ),
+    );
+}
+
+/// `call` once its budget stands.
+fn call_budgeted<T: Trace, L: Learner>(
+    text: &str,
+    params: &Params,
+    record: Option<&Record>,
+    (first, last): (Width, Width),
+    budget: &mut Budget,
+    trace: &mut T,
+    learner: &mut L,
+) -> Result<Outcome, Error> {
     let named = &params.order;
-    let mut budget = Budget::new(start, params)?;
     let entry = if L::LISTENS {
         "learn"
     } else if record.is_some() {
@@ -150,14 +204,11 @@ fn call<T: Trace, L: Learner>(
     } else {
         "groebner"
     };
-    report_call(&mut budget, params, entry, T::LISTENS);
+    report_call(budget, params, entry, T::LISTENS);
     // f4-gfp.30 design -- the run takes one thread, whatever threads allows, not several that share the reduction of a matrix's rows (not measured)
     let _: Threads = params.threads;
 
-    // call-report.9 design -- a call that returns an error returns no report, not the report carried by the error (not measured)
-    // Every `?` below drops the budget and its report.
     let header = Header::read(text)?;
-    let budget = &mut budget;
     let outcome = if header.rational() {
         // q-lift.30 design -- learn and replay refuse characteristic 0, and the lift's records stay inside the call, not learn over Q returning the record of its learn prime (not measured)
         if record.is_some() || L::LISTENS {

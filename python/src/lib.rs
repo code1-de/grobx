@@ -2,13 +2,17 @@
 //! one API every measurement goes through (`OBJECTIVES.md`, _Measurement_).
 
 use std::ffi::CStr;
+use std::fs::File;
 use std::num::{NonZeroU32, NonZeroUsize};
+use std::path::PathBuf;
 use std::ptr;
 use std::time::Duration;
 
-use grobx_core::{CheckerMode, Error as CoreError, MonomialOrder, Params, Stop, Threads, VERSION};
+use grobx_core::{
+    CheckerMode, Error as CoreError, MonomialOrder, Params, ReportSink, Stop, Threads, VERSION,
+};
 use pyo3::create_exception;
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyString};
@@ -90,10 +94,14 @@ impl Answer {
 /// `threads` 0 is all the machine has, `seed` None draws one
 /// (`grobx_core::random_seed`), `deadline` is in milliseconds,
 /// `memory` in bytes, and `checker` is "exact" or the number of points of
-/// the cheap mode. `report` asks for the call report.
+/// the cheap mode. `report` asks for the call report. `report_file`, a
+/// path, asks for it too, and the file, created at the call's start,
+/// takes each line as the call meets it, unbuffered, so a call that raises
+/// or never returns leaves its report so far, a raising call's ending with
+/// its `error` line.
 #[pyfunction]
 #[pyo3(signature = (text, *, order="grevlex", threads=0, seed=None, deadline=None, cancel=None,
-                    memory=None, checker=None, cofactors=false, report=false))]
+                    memory=None, checker=None, cofactors=false, report=false, report_file=None))]
 #[allow(
     clippy::too_many_arguments,
     reason = "the keywords of grobx.groebner, which pyo3 takes as one argument each"
@@ -110,6 +118,7 @@ fn groebner(
     checker: Option<Bound<'_, PyAny>>,
     cofactors: bool,
     report: bool,
+    report_file: Option<PathBuf>,
 ) -> PyResult<Answer> {
     // f4-gfp.31 design -- threads = 0 means all the machine has, not None (not measured)
     let threads = match NonZeroUsize::new(threads) {
@@ -124,7 +133,13 @@ fn groebner(
     params.memory = memory;
     params.checker = checker.map(|c| checker_mode(&c)).transpose()?;
     params.cofactors = cofactors;
-    params.report = report;
+    params.report = report || report_file.is_some();
+    // error-report.3 design -- Python's report_file names a file the call writes each report line to as it meets it, unbuffered, not the report returned in Result.report alone, which a raising or aborted call never returns (not measured)
+    if let Some(path) = report_file {
+        let file = File::create(&path)
+            .map_err(|e| PyOSError::new_err(format!("{path}: {e}", path = path.display())))?;
+        params.report_sink = Some(ReportSink::new(file));
+    }
     // f4-gfp.33 practice: releasing the GIL -- the call releases the GIL while it computes, so another Python thread can raise the flag
     let outcome = py
         .detach(|| grobx_core::groebner(text, &params))
@@ -262,16 +277,16 @@ fn raised(e: &CoreError) -> PyErr {
 /// `Malloc`, and for a variant the crate adds later.
 fn variant(e: &CoreError) -> &'static str {
     match e {
-        CoreError::Syntax { .. } => "Syntax",
-        CoreError::UnknownVariable { .. } => "UnknownVariable",
-        CoreError::RepeatedVariable { .. } => "RepeatedVariable",
-        CoreError::Characteristic { .. } => "Characteristic",
-        CoreError::Overflow { .. } => "Overflow",
-        CoreError::Size => "Size",
-        CoreError::NoInverse { .. } => "NoInverse",
-        CoreError::Order { .. } => "Order",
-        CoreError::Memory => "Memory",
-        CoreError::Drops { .. } => "Drops",
+        CoreError::Syntax { .. }
+        | CoreError::UnknownVariable { .. }
+        | CoreError::RepeatedVariable { .. }
+        | CoreError::Characteristic { .. }
+        | CoreError::Overflow { .. }
+        | CoreError::Size
+        | CoreError::NoInverse { .. }
+        | CoreError::Order { .. }
+        | CoreError::Memory
+        | CoreError::Drops { .. } => e.name(),
         CoreError::Misfit { .. } | CoreError::Malloc { .. } | _ => "Error",
     }
 }

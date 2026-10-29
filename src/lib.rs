@@ -476,6 +476,15 @@ impl ReportSink {
         w.write_all(line.as_bytes())?;
         w.flush()
     }
+
+    /// As `put`, where the writer is free: the allocator writes its lines
+    /// (`blocks::heard`) by this, since its thread may hold the writer as
+    /// the request comes, and waiting for it would never end. A busy
+    /// writer is `None`.
+    pub(crate) fn try_put(&self, line: &str) -> Option<std::io::Result<()>> {
+        let mut w = self.0.try_lock().ok()?;
+        Some(w.write_all(line.as_bytes()).and_then(|()| w.flush()))
+    }
 }
 
 impl fmt::Debug for ReportSink {
@@ -628,6 +637,28 @@ pub enum Error {
     Malloc {
         param: &'static str,
     },
+}
+
+impl Error {
+    /// The variant's name, which the call report's `error` line and the
+    /// Python module's `grobx.Error` give.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Error::Syntax { .. } => "Syntax",
+            Error::UnknownVariable { .. } => "UnknownVariable",
+            Error::RepeatedVariable { .. } => "RepeatedVariable",
+            Error::Characteristic { .. } => "Characteristic",
+            Error::Overflow { .. } => "Overflow",
+            Error::Size => "Size",
+            Error::NoInverse { .. } => "NoInverse",
+            Error::Order { .. } => "Order",
+            Error::Memory => "Memory",
+            Error::Misfit { .. } => "Misfit",
+            Error::Drops { .. } => "Drops",
+            Error::Malloc { .. } => "Malloc",
+        }
+    }
 }
 
 impl fmt::Display for Error {
