@@ -11,22 +11,15 @@
 
 use std::cmp::Ordering;
 
-use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::budget::Budget;
 use crate::divisibility_tests::mask_of;
 use crate::id::MonoId;
 use crate::monomial::{Dense8, Dense16, Dense32, Format, Overflow};
 use crate::order::{Block, Grevlex, Lex, Order};
+use crate::shared_tests::{below, rng};
 use crate::table::{Limit, Table};
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
-
-fn below(rng: &mut Xoshiro256PlusPlus, n: u64) -> u64 {
-    rng.next_u64() % n
-}
 
 /// The bits of a lane of format `M`: 8, 16, or 32 (monomial-time.1).
 fn bits<M: Format>() -> u32 {
@@ -181,7 +174,7 @@ fn pair<M: Format>(rng: &mut Xoshiro256PlusPlus, n: usize, kind: u64) -> (Vec<u3
     }
 }
 
-fn mono<M: Format>(f: &M, e: &[u32]) -> (Vec<M::Word>, u32) {
+pub(crate) fn mono<M: Format>(f: &M, e: &[u32]) -> (Vec<M::Word>, u32) {
     let mut m = vec![M::Word::default(); f.words()];
     let d = f.encode(e, &mut m).expect("a monomial of the format");
     (m, d)
@@ -321,7 +314,7 @@ fn agree<M: Format<Word = u64>>(f: &M, a: &[u32], b: &[u32], case: &str) {
     );
 }
 
-fn operations<M: Format<Word = u64>>(seed: u64) {
+pub(crate) fn operations<M: Format<Word = u64>>(seed: u64) {
     let mut rng = rng(seed);
     for n in counts(lanes::<M>()) {
         let f = M::new(n);
@@ -348,7 +341,7 @@ fn the_operations_agree_with_the_exponents() {
 
 // --- test 2 ---
 
-fn bound<M: Format<Word = u64>>() {
+pub(crate) fn bound<M: Format<Word = u64>>() {
     let max = M::MAX_DEGREE;
     let l = lanes::<M>();
     let n = 2 * l + 1;
@@ -493,7 +486,7 @@ fn a_borrow_does_not_hide_a_failing_lane() {
 
 // --- test 4 ---
 
-fn table_agrees<M: Format<Word = u64>>(seed: u64) {
+pub(crate) fn table_agrees<M: Format<Word = u64>>(seed: u64) {
     let max = u64::from(M::MAX_DEGREE);
     for n in [7, 8, 9, 17, 54] {
         let mut t = Table::new(M::new(n), &mut rng(seed ^ n as u64));
@@ -501,7 +494,7 @@ fn table_agrees<M: Format<Word = u64>>(seed: u64) {
         let mut ids = Vec::new();
         for k in 0..300 {
             let e = draw(&mut draws, n, if k % 7 == 0 { max } else { max / 2 }, 4);
-            let id = t.intern(&e).unwrap();
+            let id = t.intern(&e, &mut Budget::unbounded()).unwrap();
             ids.push((e, id));
         }
         let back =
@@ -512,24 +505,31 @@ fn table_agrees<M: Format<Word = u64>>(seed: u64) {
             let case = format!("{n} variables: {a:?} {b:?}");
             let product: Vec<u32> = a.iter().zip(b).map(|(p, q)| p + q).collect();
             let len = t.len();
-            if let Ok(p) = t.mul(x, y) {
+            if let Ok(p) = t.mul(x, y, &mut Budget::unbounded()) {
                 assert_eq!(back(&t, p), product, "{case}");
-                assert_eq!(t.intern(&product), Ok(p), "{case}");
-                assert_eq!(t.div(p, y), Ok(x), "{case}");
-                assert_eq!(t.div(p, x), Ok(y), "{case}");
+                assert_eq!(
+                    t.intern(&product, &mut Budget::unbounded()),
+                    Ok(p),
+                    "{case}"
+                );
+                assert_eq!(t.div(p, y, &mut Budget::unbounded()), Ok(x), "{case}");
+                assert_eq!(t.div(p, x, &mut Budget::unbounded()), Ok(y), "{case}");
             } else {
                 assert!(degree(&product) > max, "{case}");
                 assert_eq!(t.len(), len, "{case}: an overflow stores nothing");
             }
             let lcm: Vec<u32> = a.iter().zip(b).map(|(p, q)| *p.max(q)).collect();
             assert_eq!(u64::from(t.lcm_degree(x, y)), degree(&lcm), "{case}");
-            match t.lcm(x, y) {
+            match t.lcm(x, y, &mut Budget::unbounded()) {
                 Ok(l) => {
                     assert_eq!(back(&t, l), lcm, "{case}");
                     assert!(t.divides(x, l) && t.divides(y, l), "{case}");
                 }
                 Err(Limit::Overflow) => assert!(degree(&lcm) > max, "{case}"),
                 Err(Limit::Size) => panic!("{case}: the table is full"),
+                Err(Limit::Stop(stop)) => {
+                    panic!("{case}: a budget without bounds stopped: {stop:?}")
+                }
             }
             assert_eq!(
                 t.divides(x, y),
@@ -563,7 +563,7 @@ fn the_table_agrees_with_interning_in_every_width() {
 
 // --- test 5 ---
 
-fn infinity<M: Format<Word = u64>>(seed: u64) {
+pub(crate) fn infinity<M: Format<Word = u64>>(seed: u64) {
     let max = M::MAX_DEGREE;
     let mut rng = rng(seed);
     for n in counts(lanes::<M>()) {

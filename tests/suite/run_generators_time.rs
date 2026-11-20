@@ -8,23 +8,9 @@
 use grobx::Error;
 use grobx_checker::Mode;
 
-use crate::common::{P, P31, assert_accepted, params, run, with_cofactors};
+use crate::common::{EDGE_GENERATORS, P, P31, assert_accepted, params, run, with_cofactors};
 use crate::input_redundancy::{redundant, text};
 use crate::q::accepted_q;
-
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name and generators.
-pub(crate) const EDGE: [(&str, &str); 7] = [
-    ("the zero ideal", "0"),
-    ("F = (0, 0)", "0,\n0"),
-    ("no generator", ""),
-    ("the unit ideal", "x*z-1,\nx"),
-    ("already a Gröbner basis", "x+z,\nz^2+1"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-    ),
-    ("an eliminable variable", "x-y^2-z,\ny*z-1,\nz^2-y"),
-];
 
 /// Over GF(p): the call without cofactors returns the basis text of the
 /// call with them, which the exact checker accepts.
@@ -46,7 +32,7 @@ fn same_over_q(case: &str, instance: &str) {
 /// Test 7: the edge cases over GF(65521) and over ℚ.
 #[test]
 fn the_edge_cases() {
-    for (case, gens) in EDGE {
+    for (case, gens) in EDGE_GENERATORS {
         same_over_gfp(case, &format!("x,y,z\n{P}\n{gens}\n"));
         same_over_q(case, &format!("x,y,z\n0\n{gens}\n"));
     }

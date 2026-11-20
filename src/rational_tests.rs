@@ -9,33 +9,11 @@ use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
-use crate::field::Gf31;
 use crate::mixed_radix_tests::converted;
 use crate::rational::{
     Crt, Rational, bound, reconstruct, residue, scale, write_cofactor_q, write_poly_q,
 };
-
-/// A random prime of [2^30, 2^31) not among `used`, by `Gf31::new`'s test.
-fn prime(rng: &mut Xoshiro256PlusPlus, used: &[u64]) -> u64 {
-    loop {
-        let mut c = (1u64 << 30) + (rng.next_u64() >> 34);
-        while c < 1 << 31 && Gf31::new(c).is_none() {
-            c += 1;
-        }
-        if c < 1 << 31 && !used.contains(&c) {
-            return c;
-        }
-    }
-}
-
-/// A random integer below 2^bits.
-fn integer(rng: &mut Xoshiro256PlusPlus, bits: u64) -> BigUint {
-    let mut x = BigUint::zero();
-    for _ in 0..bits.div_ceil(64) {
-        x = (x << 64u32) + BigUint::from(rng.next_u64());
-    }
-    x >> (bits.div_ceil(64) * 64 - bits)
-}
+use crate::shared_tests::{integer, prime};
 
 fn big(digits: &str) -> BigUint {
     BigUint::parse_bytes(digits.as_bytes(), 10).unwrap()

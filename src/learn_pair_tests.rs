@@ -10,34 +10,25 @@
 )]
 
 use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use num_bigint::BigUint;
-use num_traits::ToPrimitive;
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
-use crate::entry::{Imaged, image_in};
+use crate::call::built;
+use crate::entry::{Image, Imaged, image_in};
 use crate::field::{Field, Gf31, Gf31Pair};
 use crate::id::MonoId;
-use crate::lift::{Image, Learns, Reconstruct, Replays, Report, lift_text_as};
+use crate::lift::{Learns, Reconstruct, Replays, Report, lift_text_as};
+use crate::shared_tests::{L1, L2, L3, L4, LIFT_DEADLINE, basis, residue_of, what};
 use crate::systems::{dense, random_square};
 use crate::text::Header;
 use crate::trace::{NoLearner, NoTrace, Record, Recording};
 use crate::{Error, MonomialOrder, Outcome, Params, Threads};
 
-/// Primes below 2^31 from the top down, and the least past 2^30.
-const L1: u64 = 2_147_483_647;
-const L2: u64 = 2_147_483_629;
-const L3: u64 = 2_147_483_587;
-const L4: u64 = 2_147_483_579;
+/// The least prime past 2^30.
 const N1: u64 = 1_073_741_827;
-
-/// Every lift's deadline, far past what each takes: a fault that keeps the
-/// lift from completing stops it there and fails the test. A fault that
-/// makes it learn afresh ends it in `Error::Drops` before.
-const DEADLINE: Duration = Duration::from_secs(60);
 
 /// The systems over Q of tests 2 and 4 in grevlex, here and in
 /// `later_runs_tests.rs`: random square systems on two to four variables,
@@ -52,14 +43,14 @@ pub(crate) fn systems() -> Vec<(String, String)> {
     list
 }
 
-// test-mq-systems.11 design -- the system in lex and block:2 is random_square(0, 0), three variables of degrees 3, 2, and 1, not the dense cubic system on three variables, whose lift in block:2 with cofactors runs past DEADLINE (log 0084-2)
+// test-mq-systems.11 design-checked -- the system in lex and block:2 is random_square(0, 0), three variables of degrees 3, 2, and 1, not the dense cubic system on three variables, whose lift in block:2 with cofactors runs past LIFT_DEADLINE (log 0084-2)
 /// The system over Q of tests 2 and 4 in lex and `block:2`: three
 /// variables, of which `block:2` leaves one to its second block.
 fn ordered() -> String {
     random_square(0, 0)
 }
 
-fn params_in(order: &str, seed: u64) -> Params {
+pub(crate) fn params_in(order: &str, seed: u64) -> Params {
     let mut p = Params::new(
         order
             .parse::<MonomialOrder>()
@@ -67,7 +58,7 @@ fn params_in(order: &str, seed: u64) -> Params {
         Threads::Count(NonZeroUsize::new(1).unwrap()),
         seed,
     );
-    p.deadline = Some(DEADLINE);
+    p.deadline = Some(LIFT_DEADLINE);
     p
 }
 
@@ -81,30 +72,15 @@ fn with_cofactors_in(order: &str, seed: u64) -> Params {
     p
 }
 
-fn basis(outcome: &Outcome) -> &str {
-    outcome.basis.as_deref().unwrap()
-}
-
-/// What `image_in` returned, for a message.
-fn what(got: &Result<Imaged, Error>) -> String {
-    match got {
-        Ok(Imaged::Image(_)) => "an image".to_string(),
-        Ok(Imaged::Lanes(images)) => format!("{len} lanes", len = images.len()),
-        Ok(Imaged::Pair(_)) => "a pair image".to_string(),
-        Ok(Imaged::Stopped(o)) => format!("a stop: {o:?}"),
-        Err(e) => format!("{e:?}"),
-    }
-}
-
 /// A run over `text`, an instance over Q, in `field`, with no record,
 /// telling `learner` what it records.
-fn run_in<F: Field, L: crate::trace::Learner>(
+pub(crate) fn run_in<F: Field, L: crate::trace::Learner>(
     field: F,
     text: &str,
     params: &Params,
     learner: &mut L,
 ) -> Result<Imaged, Error> {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let named = params.order.clone();
     let mut budget = Budget::new(Instant::now(), params).unwrap();
     image_in(
@@ -123,7 +99,7 @@ fn run_in<F: Field, L: crate::trace::Learner>(
 
 /// The pair learn at (p, q): its two images and its record, or what it
 /// returned instead.
-fn pair_learn(
+pub(crate) fn pair_learn(
     text: &str,
     params: &Params,
     (p, q): (u64, u64),
@@ -145,7 +121,7 @@ fn pair_learn(
 }
 
 /// The learn run at the prime p alone: its image and its record.
-fn learn_alone(text: &str, params: &Params, p: u64) -> (Image, Record) {
+pub(crate) fn learn_alone(text: &str, params: &Params, p: u64) -> (Image, Record) {
     let mut recording = Recording::new();
     match run_in(Gf31::prime(p), text, params, &mut recording) {
         Ok(Imaged::Image(image)) => (image, recording.finish(params.order.clone())),
@@ -157,7 +133,7 @@ fn learn_alone(text: &str, params: &Params, p: u64) -> (Image, Record) {
 }
 
 /// The run at the prime q with no learner, as the verification's.
-fn run_at(text: &str, params: &Params, q: u64) -> Image {
+pub(crate) fn run_at(text: &str, params: &Params, q: u64) -> Image {
     match run_in(Gf31::prime(q), text, params, &mut NoLearner) {
         Ok(Imaged::Image(image)) => image,
         other @ (Ok(Imaged::Lanes(_) | Imaged::Pair(_) | Imaged::Stopped(_)) | Err(_)) => panic!(
@@ -187,13 +163,6 @@ fn lift(text: &str, params: &Params, forced: &[u64], learns: Learns) -> Outcome 
         "the lift stopped: {outcome:?}\n{report:?}"
     );
     outcome
-}
-
-/// x mod p, x written in decimal.
-fn residue_of(digits: &str, p: u64) -> u64 {
-    (BigUint::parse_bytes(digits.as_bytes(), 10).unwrap() % p)
-        .to_u64()
-        .unwrap()
 }
 
 // --- 1: the lanes ---
@@ -353,7 +322,7 @@ fn a_pair_learn_is_the_two_runs() {
 
 /// The texts whose pair learn at (L1, L2) disagrees: each case, its text,
 /// its order, and which prime breaks it.
-fn disagreements() -> Vec<(&'static str, String, &'static str, u64)> {
+pub(crate) fn disagreements() -> Vec<(&'static str, String, &'static str, u64)> {
     vec![
         (
             "a leading coefficient q",
@@ -430,6 +399,9 @@ fn pairs_against_alone() {
             for cofactors in [false, true] {
                 let mut p = params(seed);
                 p.cofactors = cofactors;
+                if built(&p).is_err() {
+                    continue;
+                }
                 let case = format!("{name}, seed {seed}, cofactors {cofactors}");
                 let alone = lift(&text, &p, &[], Learns::Alone);
                 let paired = lift(&text, &p, &[], Learns::Pairs);
@@ -444,6 +416,9 @@ fn pairs_against_alone() {
     let text = ordered();
     for order in ["lex", "block:2"] {
         for p in [params_in(order, 1), with_cofactors_in(order, 1)] {
+            if built(&p).is_err() {
+                continue;
+            }
             let case = format!("{order}, cofactors {cofactors}", cofactors = p.cofactors);
             let alone = lift(&text, &p, &[], Learns::Alone);
             let paired = lift(&text, &p, &[], Learns::Pairs);
@@ -531,6 +506,9 @@ fn the_edge_cases_in_both_modes() {
         let text = format!("x,y,z\n0\n{generators}\n");
         for order in ["grevlex", "lex", "block:1"] {
             for p in [params_in(order, 1), with_cofactors_in(order, 1)] {
+                if built(&p).is_err() {
+                    continue;
+                }
                 let name = format!(
                     "{case} in {order}, cofactors {cofactors}",
                     cofactors = p.cofactors

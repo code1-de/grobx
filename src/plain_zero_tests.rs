@@ -11,20 +11,17 @@
 )]
 
 use crate::Stop;
+use crate::band_tests::setup_units;
+use crate::budget::Budget;
 use crate::cofactors::NoCofactors;
-use crate::cyclic_gap_tests::{Echelon, Random, Shape, led, long, rows, with_rest};
-use crate::f4::Halt;
+use crate::cyclic_gap_tests::{Echelon, Random, Shape, led, long, with_rest};
 use crate::field::{BAND, Field, Gf31};
-use crate::id::RowId;
+use crate::halt::Halt;
+use crate::id::{RowId, RowSource};
 use crate::matrix::{self, BLOCK, Combine, GROWN_PIVOTS, Reduction, ZEROS};
 use crate::monomial::Dense16;
-use crate::plain_band_tests::passed_after;
+use crate::shared_tests::{COMBINING, budget, passed_after, rows};
 use crate::systems::Rng;
-use crate::trace::RowSource;
-
-/// The primes of the combinations: below 2^16 and the largest below 2^31,
-/// each past the combinations' bound of 46341.
-const COMBINING: [u64; 2] = [65521, 2_147_483_647];
 
 /// A block of the item's rule as the reference made it: its first row,
 /// its rows, the pivots it made, whether it holds more than `BLOCK` rows,
@@ -43,6 +40,7 @@ fn sparse(m: &Random, r: usize) -> Vec<(usize, u64)> {
     let coefs = &m.basis.element(m.matrix.rows[r].element).coefs;
     m.matrix
         .row(RowId::at(r))
+        .to_wide()
         .iter()
         .zip(coefs)
         .map(|(&c, &a)| (c.index(), u64::from(a)))
@@ -158,7 +156,7 @@ pub(crate) fn assert_blocks(name: &str, reduction: &Reduction<Gf31>, want: &[Blo
 /// halves, which lead at their lcms, farther left.
 fn zeros_first(p: u64, seed: u64, shape: &Shape, copies: usize) -> Random {
     Random::with_rows(p, seed, shape, |table, basis, mut rows| {
-        let one = table.intern(&[0; 4]).unwrap();
+        let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
         for &g in basis.min() {
             for _ in 0..=copies {
                 rows.push(RowSource {
@@ -280,7 +278,7 @@ fn the_edges_of_the_sizes() {
     let p = 65521;
     let mut cases: Vec<(String, Random, u64)> = Vec::new();
     let no_row = Random::with_rows(p, 0, &led(5, 0), |table, basis, _| {
-        let one = table.intern(&[0; 4]).unwrap();
+        let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
         basis
             .min()
             .iter()
@@ -356,12 +354,13 @@ fn the_edges_of_the_sizes() {
 
 /// Test 3: a deadline inside the grown blocks. Matrices of test 1 at
 /// 65521 whose reference holds a grown block, of short rows and of long
-/// rows; a deadline passed and unchecked, the setup's units and `T` more
-/// between two full checks, for `T` an eighth to seven eighths of the
-/// units past the setup's that the reduction spends unbounded: the
-/// reduction stops with `Deadline` after one full check and at most `T` +
-/// `BAND`·W units past the setup's, W the matrix's width, which bounds a
-/// row the reduction made as well as the matrix's rows.
+/// rows; a deadline passed and unchecked, the setup's units
+/// (`band_tests::setup_units`) and `T` more between two full checks, for
+/// `T` an eighth to seven eighths of the units past the setup's that the
+/// reduction spends unbounded: the reduction stops with `Deadline` after
+/// one full check and at most `T` + `BAND`·W units past the setup's, W the
+/// matrix's width, which bounds a row the reduction made as well as the
+/// matrix's rows.
 #[test]
 fn a_deadline_stops_a_grown_block() {
     let mut cases = 0;
@@ -371,9 +370,9 @@ fn a_deadline_stops_a_grown_block() {
             if !blocks(&m, seed).iter().any(|b| b.grown) {
                 continue;
             }
-            let setup = (m.matrix.rows.len() + m.matrix.columns()) as u64;
+            let setup = setup_units(&m.matrix);
             let width = m.matrix.columns() as u64;
-            let mut b = crate::cyclic_gap_tests::budget();
+            let mut b = budget();
             m.reduce_in(Some(&mut Combine::new(seed)), &mut b).unwrap();
             let past = b.spent() - setup;
             for eighth in 1..8 {

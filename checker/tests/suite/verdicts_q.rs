@@ -1,18 +1,8 @@
 //! Hand-built results whose verdicts are known, over Q.
 
-use grobx_checker::{Flaw, Mode, Order, Verdict, check};
+use grobx_checker::{Flaw, Mode, Order, check};
 
-fn verdict(instance: &str, basis: &str, cofactors: &str) -> Verdict {
-    check(instance, basis, cofactors, &Order::Grevlex, Mode::Exact)
-        .unwrap_or_else(|e| panic!("refused {basis:?} with {cofactors:?}: {e:?}"))
-}
-
-fn holds() -> Verdict {
-    Verdict {
-        groebner: Ok(()),
-        reduced: Ok(()),
-    }
-}
+use crate::common::{INSTANCE_Q, holds, verdict};
 
 /// Over Q, S(xy + 65521y², x²) reduces to −65521²·y³, which no leading term
 /// divides. Over GF(65521) the same text is {xy, x²}, a Gröbner basis.
@@ -66,7 +56,8 @@ fn cofactor_off_by_a_tiny_fraction() {
     assert_eq!(v.reduced, Ok(()));
 }
 
-const HUGE: &str = "x,y\n0\nx-340282366920938463463374607431768211457*y,\ny^2-1180591620717411303427\n";
+const HUGE: &str =
+    "x,y\n0\nx-340282366920938463463374607431768211457*y,\ny^2-1180591620717411303427\n";
 const HUGE_COFACTORS: &str = "[[1,0],\n[0,1]]:\n";
 
 /// Coefficients 2^128 + 1 and 2^70 + 3.
@@ -104,8 +95,6 @@ fn coefficient_off_by_2_128() {
     assert_eq!(v.reduced, Ok(()));
 }
 
-const INSTANCE: &str = "x,y\n0\nx+y,\ny^2+1\n";
-
 /// A Gröbner basis whose element is not scaled as the canonical text: a common
 /// factor, a negative leading coefficient, fractions.
 #[test]
@@ -117,7 +106,7 @@ fn not_scaled() {
         ("[x+y,\n1/3*y^2+1/3]:\n", "[[1,0],\n[0,1/3]]:\n", 1),
     ];
     for (basis, cofactors, i) in cases {
-        let v = verdict(INSTANCE, basis, cofactors);
+        let v = verdict(INSTANCE_Q, basis, cofactors);
         assert_eq!(v.groebner, Ok(()), "{basis:?}");
         assert_eq!(v.reduced, Err(Flaw::Scale(i)), "{basis:?}");
     }
@@ -273,7 +262,34 @@ fn positive_dimensional() {
 /// A zero denominator is an error in each of the three texts.
 #[test]
 fn zero_denominator() {
-    assert!(check("x\n0\n1/0*x\n", "[x]:\n", "[[1]]:\n", &Order::Grevlex, Mode::Exact).is_err());
-    assert!(check("x\n0\nx\n", "[1/0*x]:\n", "[[1]]:\n", &Order::Grevlex, Mode::Exact).is_err());
-    assert!(check("x\n0\nx\n", "[x]:\n", "[[1/0]]:\n", &Order::Grevlex, Mode::Exact).is_err());
+    assert!(
+        check(
+            "x\n0\n1/0*x\n",
+            "[x]:\n",
+            "[[1]]:\n",
+            &Order::Grevlex,
+            Mode::Exact
+        )
+        .is_err()
+    );
+    assert!(
+        check(
+            "x\n0\nx\n",
+            "[1/0*x]:\n",
+            "[[1]]:\n",
+            &Order::Grevlex,
+            Mode::Exact
+        )
+        .is_err()
+    );
+    assert!(
+        check(
+            "x\n0\nx\n",
+            "[x]:\n",
+            "[[1/0]]:\n",
+            &Order::Grevlex,
+            Mode::Exact
+        )
+        .is_err()
+    );
 }

@@ -3,10 +3,9 @@
 //! GNU `factor` as the oracle on primality. Nothing here leans on the
 //! engine.
 
-
 use std::process::Command;
 
-// gfp-large-primes.13 practice: boundary-value testing -- the test code's primes are the least past 2^31, those on either side of 2^32 and of 2^63, the largest below 2^62, and the largest below 2^64, not random primes
+// gfp-large-primes.13 practice-checked: boundary-value testing -- the test code's primes are the least past 2^31, those on either side of 2^32 and of 2^63, the largest below 2^62, and the largest below 2^64, not random primes
 /// The primes of the test code: 2^31 + 11, 2^32 − 5, 2^32 + 15, 2^62 − 57,
 /// 2^63 − 25, 2^63 + 29, and 2^64 − 59.
 pub const LARGE: [u64; 7] = [
@@ -19,11 +18,13 @@ pub const LARGE: [u64; 7] = [
     18_446_744_073_709_551_557,
 ];
 
-/// The least prime past 2^31.
+// hygiene.22 design-checked -- the suite's `P64`, the same prime, is this constant, not a constant beside it under a name of its own (not measured)
+/// The least prime past 2^31, whose field `Gf64` takes no band.
 pub const LEAST: u64 = 2_147_483_659;
 /// The largest prime below 2^64.
 pub const LARGEST: u64 = 18_446_744_073_709_551_557;
 
+// hygiene.22 design-checked -- the suite's six other `over`, which give the same for every text, are this one, though their tokens differ and the scan pairs two of them with no copy, not a shared definition beside it nor the two left in their files (not measured)
 /// The instance `text` with its characteristic line replaced by `p`.
 pub fn over(text: &str, p: u64) -> String {
     let mut lines = text.splitn(3, '\n');
@@ -33,7 +34,7 @@ pub fn over(text: &str, p: u64) -> String {
     format!("{names}\n{p}\n{rest}")
 }
 
-// gfp-large-primes.11 design -- the test code's oracle on primality is GNU coreutils' factor, run as a black box, not a list of primes and composites written by hand (not measured)
+// gfp-large-primes.11 design-checked -- the test code's oracle on primality is GNU coreutils' factor, run as a black box, not a list of primes and composites written by hand (not measured)
 /// Whether each of `numbers` is prime, as GNU `factor` says: one factor,
 /// the number itself. `factor` is run once per thousand of them.
 pub fn factor_says_prime(numbers: &[u64]) -> Vec<bool> {
@@ -65,4 +66,3 @@ pub fn factor_says_prime(numbers: &[u64]) -> Vec<bool> {
     }
     verdicts
 }
-

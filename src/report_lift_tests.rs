@@ -7,16 +7,10 @@ use std::num::NonZeroUsize;
 
 use crate::lift::{Learns, Reconstruct, Replays, Report, lift_text_as};
 use crate::report_tests::{Line, lines};
+use crate::shared_tests::{L1, L2, L3, U1, U2};
+use crate::substitute::SUBSTITUTE;
 use crate::trace::NoTrace;
 use crate::{MonomialOrder, Outcome, Params, Threads};
-
-/// Two primes near 2^30.5 that the test code makes unlucky.
-const U1: u64 = 1_518_500_279;
-const U2: u64 = 1_518_500_293;
-/// Primes near 2^31, lucky for every instance here.
-const L1: u64 = 2_147_483_647;
-const L2: u64 = 2_147_483_629;
-const L3: u64 = 2_147_483_587;
 
 fn params(seed: u64) -> Params {
     let mut p = Params::new(
@@ -116,8 +110,9 @@ fn agrees(read: &[Line], report: &Report, text: &str) {
 
 /// The kinds of the lift's lines, in order, leaving out the runs' own.
 fn lift_kinds(read: &[Line]) -> Vec<&str> {
-    const RUN: [&str; 8] = [
-        "run", "inputs", "echelon", "round", "handover", "constant", "inter", "ran",
+    const RUN: [&str; 10] = [
+        "run", "inputs", "echelon", "carry", "enter", "round", "handover", "constant", "inter",
+        "ran",
     ];
     read.iter()
         .map(|l| l.kind.as_str())
@@ -175,7 +170,12 @@ fn misfits_and_drops() {
     assert!(learns.len() >= 2 && learns[1] > drop, "{kinds:?}");
 
     let n = U1 * U2;
+    // The substitution of ccode-newton-gap makes x·y zero at a prime that
+    // divides n and keeps it at the others, so the replays would misfit at
+    // the inputs before the verification compares the leading monomials.
+    SUBSTITUTE.set(false);
     let (_, read, report) = lift(&format!("x,y\n0\nx+{n},\nx*y\n"), &[U1, U2], Learns::Alone);
+    SUBSTITUTE.set(true);
     let differ = read
         .iter()
         .position(|l| l.is("verify", &[("outcome", "leads-differ")]))

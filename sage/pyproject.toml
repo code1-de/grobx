@@ -1,0 +1,44 @@
+# The PyPI package grobx-sage: the module grobx_sage, Sage's interface to grobx's Python module.
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "grobx-sage"
+version = "0.73.3"
+description = "Fast reduced Gröbner (Groebner) bases for SageMath polynomial ideals, computed by grobx"
+readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = ["grobx>=0.73.3"]
+keywords = [
+    "sagemath",
+    "sage",
+    "groebner",
+    "gröbner",
+    "groebner basis",
+    "polynomial ideal",
+    "computer algebra",
+    "f4",
+    "gf2",
+    "boolean polynomial",
+    "grobx",
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.urls]
+Homepage = "https://grobx.com"
+Repository = "https://github.com/code1-de/grobx"
+
+# LICENSE is a copy of the crate's, not a link: hatchling stores a link in the sdist as a link, whose
+# target the sdist does not hold.
+[tool.hatch.build.targets.wheel]
+only-include = ["grobx_sage.py"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["grobx_sage.py", "test_grobx_sage.py", "README.md", "LICENSE", "Makefile"]

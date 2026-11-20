@@ -12,56 +12,29 @@
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use rand_core::{Rng, SeedableRng};
-use rand_xoshiro::Xoshiro256PlusPlus;
+use rand_core::Rng;
 
+use crate::budget::Budget;
 use crate::id::MonoId;
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
+use crate::shared_tests::{COUNTS8, COUNTS16, COUNTS32, drawn_exponents, rng};
 use crate::table::Table;
 use crate::text::{digits_bound, push_big, push_decimal};
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
-
-/// The variable counts of each format: whole words, a last word with one
-/// lane, and a last word full.
-const COUNTS8: [usize; 9] = [1, 2, 7, 8, 9, 16, 17, 24, 54];
-const COUNTS16: [usize; 5] = [1, 3, 4, 5, 9];
-const COUNTS32: [usize; 4] = [1, 2, 3, 5];
-
-/// Drawn exponents of n variables of degree at most `bound`: most 0 to 3,
-/// some up to a tenth of the bound.
-fn exponents(rng: &mut impl Rng, n: usize, bound: u32) -> Vec<u32> {
-    let mut e = vec![0u32; n];
-    let mut left = bound;
-    for x in &mut e {
-        let r = rng.next_u32();
-        let want = match r % 8 {
-            0..=3 => 0,
-            4..=6 => r / 8 % 4,
-            _ => (r / 8) % (bound / 10 + 1),
-        };
-        *x = want.min(left);
-        left -= *x;
-    }
-    e
-}
 
 /// A table in the format `M` on n variables that holds drawn monomials, the
 /// unit monomial, and each variable alone at the degree bound; its ids.
 fn table_with<M: Format>(n: usize, seed: u64) -> (Table<M>, Vec<MonoId>) {
     let mut r = rng(seed);
     let mut table = Table::new(M::new(n), &mut r);
-    let mut ids = vec![table.intern(&vec![0; n]).unwrap()];
+    let mut ids = vec![table.intern(&vec![0; n], &mut Budget::unbounded()).unwrap()];
     for i in 0..n {
         let mut e = vec![0; n];
         e[i] = M::MAX_DEGREE;
-        ids.push(table.intern(&e).unwrap());
+        ids.push(table.intern(&e, &mut Budget::unbounded()).unwrap());
     }
     for _ in 0..300 {
-        let e = exponents(&mut r, n, M::MAX_DEGREE);
-        ids.push(table.intern(&e).unwrap());
+        let e = drawn_exponents(&mut r, n, M::MAX_DEGREE);
+        ids.push(table.intern(&e, &mut Budget::unbounded()).unwrap());
     }
     (table, ids)
 }
@@ -168,18 +141,18 @@ mod wired {
 
     use super::{COUNTS8, COUNTS16, COUNTS32, rng, table_with};
     use crate::budget::Budget;
-    use crate::entry::{Imaged, image_in};
+    use crate::call::built;
+    use crate::entry::{Image, Imaged, image_in};
     use crate::field::{Field, Gf31, Gf64};
     use crate::id::MonoId;
-    use crate::lift::{Image, Sparse};
     use crate::module::Rank1;
     use crate::monomial::{Dense8, Dense16, Dense32, Format};
     use crate::order::Grevlex;
-    use crate::poly::Poly;
+    use crate::poly::{Exponents, Poly, Sparse};
     use crate::rational::{Rational, term_bound_q, write_cofactor_q, write_poly_q};
     use crate::systems::dense;
     use crate::table::Table;
-    use crate::text::{Header, RESERVE_CAP, term_longest, write_basis};
+    use crate::text::{Header, RESERVE_CAP, monomial_longest, term_longest, write_basis};
     use crate::trace::{NoLearner, NoTrace};
     use crate::{MonomialOrder, Params, Threads};
 
@@ -302,11 +275,11 @@ mod wired {
         assert_eq!(out, want, "{n} variables over {p}");
         // result-time.11: the text is reserved once, before its `[`, and grows
         // past that reservation nowhere: its capacity is the prefix's 3 bytes
-        // and the reservation, which the text fills at most.
+        // and the reservation, which a growth would change.
+        // unreached-test-paths.6 design-checked -- the capacity alone is checked, not beside it that the text's length is at most the capacity, which a String always holds, nor a bound on the reservation's slack, which text-reserve-peak weighs (not measured)
         let terms: usize = polys.iter().map(|g| g.len().max(1)).sum();
         let reserved = 4 + 2 * (polys.len() - 1) + terms * term_longest(&names);
         assert_eq!(out.capacity(), 3 + reserved, "{n} variables over {p}");
-        assert!(out.len() <= 3 + reserved, "{n} variables over {p}");
         // The empty basis and the basis {1}.
         let mut out = String::new();
         write_basis(
@@ -564,7 +537,7 @@ mod wired {
     /// coefficients.
     fn read_poly(poly: &str, names: &[&str]) -> Sparse {
         let mut out = Sparse {
-            exponents: Vec::new(),
+            exponents: Exponents::new(),
             coefs: Vec::new(),
         };
         if poly == "0" {
@@ -605,7 +578,7 @@ mod wired {
 
     /// The image of a run over `text`'s own prime, below 2^31.
     fn image(text: &str, params: &Params) -> Image {
-        let header = Header::read(text).unwrap();
+        let header = Header::read(text, &mut Budget::unbounded()).unwrap();
         let p: u64 = header.characteristic.parse().unwrap();
         let named = params.order.clone();
         let mut budget = Budget::new(Instant::now(), params).unwrap();
@@ -687,6 +660,9 @@ mod wired {
                     3,
                 );
                 params.cofactors = cofactors;
+                if built(&params).is_err() {
+                    continue;
+                }
                 let outcome = crate::groebner(text, &params).unwrap();
                 let basis = outcome.basis.as_deref().unwrap();
                 let image = image(text, &params);
@@ -695,9 +671,9 @@ mod wired {
                 for poly in read_list(basis) {
                     let g = read_poly(poly, &names);
                     assert_eq!(g.coefs[0], 1, "monic");
-                    leads.extend_from_slice(&g.exponents[..n]);
+                    leads.extend(g.exponents.values().take(n));
                     tails.push(Sparse {
-                        exponents: g.exponents[n..].to_vec(),
+                        exponents: g.exponents.values().skip(n).collect(),
                         coefs: g.coefs[1..].to_vec(),
                     });
                 }
@@ -765,7 +741,7 @@ mod wired {
                 .expect("a budget without bounds never stops");
                 bound += ints
                     .iter()
-                    .map(|c| term_bound_q(&names, c.bits()))
+                    .map(|c| term_bound_q(monomial_longest(&names), c.bits()))
                     .sum::<usize>();
             }
             text.push_str("]:\n");

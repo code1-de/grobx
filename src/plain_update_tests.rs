@@ -10,25 +10,13 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use crate::divisibility_tests::{
-    Engine, RefPair, Reference, below, degree, lcm, random_lanes, rng, written,
-};
+use crate::budget::Budget;
+use crate::divisibility_tests::{Engine, RefPair, Reference, degree, lcm, random_lanes, written};
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::order::{Grevlex, Lex, Order};
 use crate::pairs;
+use crate::shared_tests::{below, rng, select_reference};
 use crate::table::Table;
-
-/// The reference's selection: the pairs of least sugar, in its order,
-/// taken out of `pairs`, the rest left in its order.
-fn select_reference(pairs: &mut Vec<RefPair>) -> Vec<RefPair> {
-    let Some(d) = pairs.iter().map(|p| p.sugar).min() else {
-        return Vec::new();
-    };
-    let (selected, rest): (Vec<RefPair>, Vec<RefPair>) =
-        pairs.drain(..).partition(|p| p.sugar == d);
-    *pairs = rest;
-    selected
-}
 
 /// The engine's pair set against the reference: the pairs in order, their
 /// count, and the emptiness.
@@ -51,16 +39,27 @@ fn assert_same<M: Format>(engine: &Engine<M>, reference: &Reference, case: &str)
 }
 
 /// A selection on both sides: the same pairs in the same order, the same
-/// pairs left, and no dropped pair held after it.
-fn select_both<M: Format>(engine: &mut Engine<M>, reference: &mut Reference, case: &str) {
-    let got = pairs::select(&mut engine.pairs);
+/// pairs left, and after it at most as many holes as live pairs
+/// (pair-index-upkeep-time.3).
+fn select_both<M: Format, O: Order<M>>(
+    engine: &mut Engine<M>,
+    order: &O,
+    reference: &mut Reference,
+    case: &str,
+) {
+    let got = pairs::select(
+        &mut engine.pairs,
+        &mut engine.table,
+        order,
+        &mut Budget::unbounded(),
+    )
+    .unwrap();
     let want = select_reference(&mut reference.pairs);
     assert_eq!(written(&engine.table, &got), want, "{case}: the selection");
     assert_same(engine, reference, case);
-    assert_eq!(
-        engine.pairs.held(),
-        engine.pairs.len(),
-        "{case}: the selection leaves no dropped pair"
+    assert!(
+        engine.pairs.held() - engine.pairs.len() <= engine.pairs.len(),
+        "{case}: the selection leaves at most as many holes as live pairs"
     );
 }
 
@@ -90,12 +89,13 @@ fn check_with_selections<M: Format, O: Order<M>>(
             let case = format!("world {world}, element {e}, lead {lead:?}");
             assert_same(&engine, &reference, &case);
             if below(&mut rng, 4) == 0 {
-                select_both(&mut engine, &mut reference, &case);
+                select_both(&mut engine, order, &mut reference, &case);
             }
         }
         while !reference.pairs.is_empty() {
             select_both(
                 &mut engine,
+                order,
                 &mut reference,
                 &format!("world {world}, at the end"),
             );
@@ -120,7 +120,8 @@ fn the_pair_set_follows_algorithm_2() {
 }
 
 /// x·y and y·z, then y, with the sugars given, in `order`: the pair of
-/// x·y and y·z, of lcm x·y·z, goes, and the selection returns the two new
+/// x·y and y·z, of lcm x·y·z, goes, the first new pair takes its place
+/// (pair-index-upkeep-time.1), and the selection returns the two new
 /// pairs, of lcm x·y and y·z, and leaves the set empty.
 fn dropped_then_selected<O: Order<Dense16>>(order: &O, sugars: [u32; 3], new_sugar: u32) {
     let mut e: Engine<Dense16> = Engine::new(3, 7);
@@ -129,7 +130,11 @@ fn dropped_then_selected<O: Order<Dense16>>(order: &O, sugars: [u32; 3], new_sug
     assert_eq!(e.pairs.len(), 1, "the pair of x·y and y·z");
     e.enter(order, &[0, 1, 0], sugars[2]).0.unwrap();
     assert_eq!(e.pairs.len(), 2, "the pair of lcm x·y·z goes");
-    assert_eq!(e.pairs.held(), 3, "the dropped pair stays held");
+    assert_eq!(
+        e.pairs.held(),
+        2,
+        "a new pair takes the dropped pair's place"
+    );
     let want = vec![
         RefPair {
             i: 0,
@@ -147,12 +152,14 @@ fn dropped_then_selected<O: Order<Dense16>>(order: &O, sugars: [u32; 3], new_sug
         },
     ];
     assert_eq!(e.written(), want, "the two new pairs");
-    let got = pairs::select(&mut e.pairs);
+    let got = pairs::select(&mut e.pairs, &mut e.table, order, &mut Budget::unbounded()).unwrap();
     assert_eq!(written(&e.table, &got), want, "the selection");
     assert!(e.pairs.is_empty(), "the set is empty");
     assert_eq!(e.pairs.held(), 0, "the dropped pair is gone");
     assert!(
-        pairs::select(&mut e.pairs).is_empty(),
+        pairs::select(&mut e.pairs, &mut e.table, order, &mut Budget::unbounded())
+            .unwrap()
+            .is_empty(),
         "an empty set selects nothing"
     );
 }
@@ -193,9 +200,9 @@ fn check_lcm_masks<M: Format>(seed: u64, ns: &[usize]) {
                 "n {n}: the words' masks of {a:?} and {b:?}"
             );
             let (ia, ib, il) = (
-                table.intern(&a).unwrap(),
-                table.intern(&b).unwrap(),
-                table.intern(&l).unwrap(),
+                table.intern(&a, &mut Budget::unbounded()).unwrap(),
+                table.intern(&b, &mut Budget::unbounded()).unwrap(),
+                table.intern(&l, &mut Budget::unbounded()).unwrap(),
             );
             assert_eq!(
                 table.mask(il),

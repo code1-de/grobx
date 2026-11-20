@@ -1,6 +1,6 @@
 //! The order contract: a family of monomial orders over a monomial format.
-//! Its members are grevlex, lex, and block orders, and a call names one of
-//! them by `Params::order`.
+//! Its members are grevlex, deglex, lex, and block orders, and a call names
+//! one of them by `Params::order`.
 
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};
@@ -9,15 +9,15 @@ use std::str::FromStr;
 use crate::Error;
 use crate::monomial::Format;
 
-// order-family.6 design -- Order asks Clone where it asked Copy, and Block holds its ends in a boxed slice, not a fixed array of ends that keeps Copy (not measured)
+// order-family.6 design-checked -- Order asks Clone where it asked Copy, and Block holds its ends in a boxed slice, not a fixed array of ends that keeps Copy (not measured)
 /// A monomial order. Variables stand in the instance's order.
 pub trait Order<M: Format>: Clone + Debug + Send + Sync + 'static {
     /// Whether a monomial of larger total degree is the larger, in every
-    /// case: grevlex.
+    /// case: grevlex and deglex.
     const GRADED: bool;
     /// Compares a and b, each with its total degree.
     fn cmp(&self, format: &M, a: &[M::Word], da: u32, b: &[M::Word], db: u32) -> Ordering;
-    // matrix-sort-time.7 design -- lex and the block orders keep the comparison sort, with no key of their own (not measured)
+    // matrix-sort-time.7 design-checked -- lex and the block orders keep the comparison sort, with no key of their own (not measured)
     /// Whether `key` orders the monomials: of two monomials, the one with
     /// the smaller key is the smaller.
     const KEYED: bool = false;
@@ -25,6 +25,18 @@ pub trait Order<M: Format>: Clone + Debug + Send + Sync + 'static {
     /// KEYED. 0 where not.
     fn key(&self, _: &M, _: &[M::Word], _: u32) -> u128 {
         0
+    }
+    /// The tie key of the monomial a over its first `below` variables, or
+    /// over the variables the key does not hold where `below` is None, as
+    /// `Format::grevlex_tie_key` gives it, where KEYED. 0 where not.
+    fn tie_key(&self, _: &M, _: &[M::Word], _: Option<usize>) -> u128 {
+        0
+    }
+    /// The variables a further tie key orders two monomials by whose tie
+    /// keys `key` agree (`Format::tie_key_next`), where KEYED. None where
+    /// not.
+    fn tie_key_next(&self, _: &M, _: u128) -> Option<usize> {
+        None
     }
 }
 
@@ -46,6 +58,29 @@ impl<M: Format> Order<M> for Grevlex {
     fn key(&self, format: &M, a: &[M::Word], da: u32) -> u128 {
         format.grevlex_key(a, da)
     }
+
+    fn tie_key(&self, format: &M, a: &[M::Word], below: Option<usize>) -> u128 {
+        format.grevlex_tie_key(a, below)
+    }
+
+    fn tie_key_next(&self, format: &M, key: u128) -> Option<usize> {
+        format.tie_key_next(key)
+    }
+}
+
+// deglex-order.2 design-checked -- deglex compares by the comparison alone and has no key, as lex and the block orders, not a key of its own of the degree and the exponents from the first variable on (log 0157-1)
+/// The degree lexicographic order: a > b where deg a > deg b, or the
+/// degrees are equal and the first variable whose exponents differ has the
+/// larger exponent in a. The first variable is the largest.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Deglex;
+
+impl<M: Format> Order<M> for Deglex {
+    const GRADED: bool = true;
+
+    fn cmp(&self, format: &M, a: &[M::Word], da: u32, b: &[M::Word], db: u32) -> Ordering {
+        da.cmp(&db).then_with(|| format.cmp_lex(a, b))
+    }
 }
 
 /// The lexicographic order: a > b where the first variable whose exponents
@@ -61,7 +96,7 @@ impl<M: Format> Order<M> for Lex {
     }
 }
 
-// order-family.3 design -- inside a block the order is grevlex, not lex or an order named per block (not measured)
+// order-family.3 design-checked -- inside a block the order is grevlex, not lex or an order named per block (not measured)
 /// A block order: blocks of consecutive variables in the instance's order,
 /// compared in turn. In the first block where a and b differ, a > b where a
 /// has the larger degree in the block, or the degrees are equal and the
@@ -102,8 +137,8 @@ impl Block {
 impl<M: Format> Order<M> for Block {
     const GRADED: bool = false;
 
-    // order-family.5 design -- a block comparison sums each block's exponents as it compares, not a degree per block stored beside each monomial in the table (not measured)
-    // monomial-time.7 design -- a block comparison reads the exponents lane by lane through `Format::exponent`, not each block's degree from packed sums of its lanes (not measured)
+    // order-family.5 design-checked -- a block comparison sums each block's exponents as it compares, not a degree per block stored beside each monomial in the table (not measured)
+    // monomial-time.7 design-checked -- a block comparison reads the exponents lane by lane through `Format::exponent`, not each block's degree from packed sums of its lanes (not measured)
     fn cmp(&self, format: &M, a: &[M::Word], _: u32, b: &[M::Word], _: u32) -> Ordering {
         for (s, e) in self.blocks(format.variables()) {
             let (mut da, mut db) = (0u32, 0u32);
@@ -125,13 +160,16 @@ impl<M: Format> Order<M> for Block {
     }
 }
 
-// order-family.1 cited: bachmann-1998 §2.1 -- matrix-based descriptions of monomial orderings are very general, but their realization in an actual implementation is usually rather time-consuming
+// order-family.1 cited-checked:bachmann-1998 §2.1 -- matrix-based descriptions of monomial orderings are very general, but their realization in an actual implementation is usually rather time-consuming
 /// An order of the family as a call takes it (`Params::order`), before the
 /// instance's variables are known.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MonomialOrder {
     /// The graded reverse lexicographic order.
     Grevlex,
+    /// The degree lexicographic order. The call runs F4 in deglex, the
+    /// signature run where `Params::signatures` asks for it, as in grevlex.
+    Deglex,
     /// The lexicographic order. Where the ideal is zero-dimensional and its
     /// degree at most `fglm::MAX_STAIRCASE`, the call computes the grevlex
     /// basis and changes it to lex by FGLM, and otherwise it runs F4 in lex.
@@ -148,9 +186,13 @@ pub enum MonomialOrder {
 impl FromStr for MonomialOrder {
     type Err = Error;
 
-    // order-family.2 design -- a block order is named block:k1,…,km, the sizes of the first m blocks, not block:k alone, two blocks, as Groebner.jl names it (not measured)
-    /// The order `name` names: `grevlex`, `lex`, or `block:k1,…,km`, m ≥ 1
-    /// sizes in decimal digits separated by commas, each at least 1.
+    // order-family.2 design-checked -- a block order is named block:k1,…,km, the sizes of the first m blocks, not block:k alone, two blocks, as Groebner.jl names it (not measured)
+    // Each order has one name. Other programs' names were tried as aliases and dropped: tdeg is grevlex
+    // in Maple and deglex in Giac, and Dp is deglex in Singular and grevlex in Sage, so a name read
+    // without its program can pick the wrong order in silence. `MANUAL.md`, _Monomial orders_, lists them.
+    /// The order `name` names: `grevlex`, `deglex`, `lex`, or
+    /// `block:k1,…,km`, m ≥ 1 sizes in decimal digits separated by commas,
+    /// each at least 1.
     /// `Error::Order` where it names none.
     fn from_str(name: &str) -> Result<MonomialOrder, Error> {
         let refused = || Error::Order {
@@ -158,6 +200,7 @@ impl FromStr for MonomialOrder {
         };
         match name {
             "grevlex" => Ok(MonomialOrder::Grevlex),
+            "deglex" => Ok(MonomialOrder::Deglex),
             "lex" => Ok(MonomialOrder::Lex),
             _ => {
                 let sizes = name.strip_prefix("block:").ok_or_else(refused)?;
@@ -181,6 +224,7 @@ impl fmt::Display for MonomialOrder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MonomialOrder::Grevlex => write!(f, "grevlex"),
+            MonomialOrder::Deglex => write!(f, "deglex"),
             MonomialOrder::Lex => write!(f, "lex"),
             MonomialOrder::Block(sizes) => {
                 let sizes: Vec<String> = sizes.iter().map(usize::to_string).collect();

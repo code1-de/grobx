@@ -8,15 +8,12 @@ use std::thread;
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use rand_core::{Rng, SeedableRng};
+use rand_core::Rng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::shortcut_tests::integer;
-use crate::text::{digits_bound, push_big};
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
+use crate::mixed_radix_tests::from_limbs;
+use crate::shared_tests::{integer, rng};
+use crate::text::{digits_bound, push_big, sub_in_place};
 
 /// 10^19, a chunk's radix.
 fn chunk_radix() -> BigUint {
@@ -156,4 +153,47 @@ fn threads_share_the_levels() {
             });
         }
     });
+}
+
+/// `sub_in_place` gives r − y modulo 2^(64·|r|), its borrow carried through every limb of r past
+/// y's: the chains of zero limbs Barrett's correction meets where the remainder reaches its top
+/// limb, and drawn limbs.
+#[test]
+fn sub_in_place_borrows_through_the_tail() {
+    let mut cases: Vec<(Vec<u64>, Vec<u64>)> = vec![
+        (vec![0, 0, 0, 1], vec![1]),
+        (vec![0, 0, 0, 0], vec![1]),
+        (vec![5, 0, 0, 7], vec![6, 0]),
+        (vec![u64::MAX; 4], vec![u64::MAX; 4]),
+        (vec![0; 3], vec![]),
+        (vec![1, 2], vec![2, 3]),
+    ];
+    let mut r = rng(0x5b1);
+    for len in 1..=8 {
+        for short in 0..=len {
+            let draw = |r: &mut Xoshiro256PlusPlus, n: usize| -> Vec<u64> {
+                (0..n)
+                    .map(|_| match r.next_u64() % 4 {
+                        0 => 0,
+                        1 => u64::MAX,
+                        _ => r.next_u64(),
+                    })
+                    .collect()
+            };
+            let x = draw(&mut r, len);
+            let y = draw(&mut r, short);
+            cases.push((x, y));
+        }
+    }
+    let mut failures = Vec::new();
+    for (x, y) in cases {
+        let modulus = BigUint::one() << (64 * x.len());
+        let want = (from_limbs(&x) + &modulus - from_limbs(&y)) % &modulus;
+        let mut got = x.clone();
+        sub_in_place(&mut got, &y);
+        if from_limbs(&got) != want {
+            failures.push(format!("{x:?} - {y:?}: {got:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

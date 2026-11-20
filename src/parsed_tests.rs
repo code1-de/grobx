@@ -15,54 +15,46 @@ use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::Error;
+use crate::budget::Budget;
 use crate::field::{Field, Gf31, Gf31Pair, Gf64, Gf64Pair};
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Dense16, Format};
 use crate::order::{Block, Grevlex, Lex, Order};
 use crate::poly::Poly;
+use crate::shared_tests::{LEARN0, LEARN1, P, P31, P61, REPLAY0, REPLAY1};
 use crate::systems::Rng;
 use crate::table::Table;
-use crate::text::Header;
-
-const P: u64 = 65521;
-/// The largest prime below 2^31.
-const P31: u64 = 2_147_483_647;
-/// The Mersenne prime 2^61 − 1.
-const P61: u64 = (1 << 61) - 1;
-/// Two primes of [2^30, 2^31), a pair learn's.
-const L0: u64 = 1_945_203_761;
-const L1: u64 = 1_875_939_437;
-/// Two primes of [2^61, 2^62), a pair replay's.
-const R0: u64 = 2_536_775_269_993_504_451;
-const R1: u64 = 4_026_501_963_682_786_037;
+use crate::text::{Header, Unread};
 
 /// A table of the format `M` for n variables.
-fn table<M: Format>(n: usize) -> Table<M> {
+pub(crate) fn table<M: Format>(n: usize) -> Table<M> {
     Table::new(M::new(n), &mut Xoshiro256PlusPlus::seed_from_u64(1))
 }
 
 /// The generators of `header` over `field` in `order` into `table`, in
 /// the module of rank 1.
-fn generators<F: Field, M: Format, O: Order<M>>(
+pub(crate) fn generators<F: Field, M: Format, O: Order<M>>(
     header: &Header,
     field: &F,
     table: &mut Table<M>,
     order: &O,
 ) -> Result<Vec<Poly<F, Rank1>>, Error> {
-    header.generators(field, table, order)
+    header
+        .generators(field, table, order, &mut Budget::unbounded())
+        .map_err(Unread::unbounded)
 }
 
 /// A numeric factor as written: a numerator's digits, and a denominator's.
-type Factor = (String, Option<String>);
+pub(crate) type Factor = (String, Option<String>);
 
 /// A term as drawn: its sign, its exponents, its factors, and the order in
 /// which its factors and variables are written, an index into the factors
 /// or a variable's index plus the factors' count.
-struct Term {
-    negative: bool,
-    exponents: Vec<u32>,
-    factors: Vec<Factor>,
-    order: Vec<usize>,
+pub(crate) struct Term {
+    pub(crate) negative: bool,
+    pub(crate) exponents: Vec<u32>,
+    pub(crate) factors: Vec<Factor>,
+    pub(crate) order: Vec<usize>,
 }
 
 /// A literal of `digits` digits, its first digit not 0.
@@ -152,7 +144,7 @@ fn space(rng: &mut Rng) -> &'static str {
 }
 
 /// The instance text of `gens` on x1, …, xn, over ℚ.
-fn text(rng: &mut Rng, n: usize, gens: &[Vec<Term>]) -> String {
+pub(crate) fn text(rng: &mut Rng, n: usize, gens: &[Vec<Term>]) -> String {
     let names: Vec<String> = (1..=n).map(|i| format!("x{i}")).collect();
     let mut out = format!("{names}\n0\n", names = names.join(","));
     for (k, g) in gens.iter().enumerate() {
@@ -221,7 +213,7 @@ fn text(rng: &mut Rng, n: usize, gens: &[Vec<Term>]) -> String {
 /// `table`: each term's coefficient the product of its factors by the
 /// field's own arithmetic, its monomial interned, and each generator by
 /// `Poly::from_terms`.
-fn made<F: Field, M: Format, O: Order<M>>(
+pub(crate) fn made<F: Field, M: Format, O: Order<M>>(
     field: &F,
     table: &mut Table<M>,
     order: &O,
@@ -241,7 +233,9 @@ fn made<F: Field, M: Format, O: Order<M>>(
                 if t.negative {
                     c = field.neg(c);
                 }
-                let m = table.intern(&t.exponents).unwrap();
+                let m = table
+                    .intern(&t.exponents, &mut Budget::unbounded())
+                    .unwrap();
                 terms.push((m, c));
             }
             Poly::from_terms(&mut terms, field, table, order, ())
@@ -250,7 +244,7 @@ fn made<F: Field, M: Format, O: Order<M>>(
 }
 
 /// Test 1's check of one text over one field, order, and format.
-fn check<F: Field, M: Format, O: Order<M>>(
+pub(crate) fn check<F: Field, M: Format, O: Order<M>>(
     case: &str,
     field: &F,
     order: &O,
@@ -258,7 +252,7 @@ fn check<F: Field, M: Format, O: Order<M>>(
     text: &str,
     gens: &[Vec<Term>],
 ) {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let mut t: Table<M> = table(n);
     let got = generators(&header, field, &mut t, order)
         .unwrap_or_else(|e| panic!("{case}: {e:?}\n{text}"));
@@ -296,15 +290,15 @@ fn generators_as_written() {
         over!(Gf31::prime(P));
         over!(Gf31::prime(P31));
         over!(Gf64::prime(P61));
-        over!(Gf31Pair::primes(L0, L1));
-        over!(Gf64Pair::primes(R0, R1));
+        over!(Gf31Pair::primes(LEARN0, LEARN1));
+        over!(Gf64Pair::primes(REPLAY0, REPLAY1));
     }
 }
 
 /// The error of reading `text` over `field` into a `Dense16` table in
 /// grevlex, which must be one.
 fn error<F: Field>(field: &F, text: &str) -> Error {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let n = header.names.len();
     let mut t: Table<Dense16> = table(n);
     match generators(&header, field, &mut t, &Grevlex) {
@@ -342,7 +336,7 @@ fn errors_in_the_reader_order() {
     assert_eq!(error(&f, text), Error::NoInverse { line: 6 });
     // A degree of 200 at line 5: past Dense8, within Dense16.
     let text = "x,y\n0\nx+y,\ny^2,\nx^150*y^50+1\n";
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let mut t8: Table<Dense8> = table(2);
     let e = generators(&header, &f, &mut t8, &Grevlex).unwrap_err();
     assert_eq!(e, Error::Overflow { line: Some(5) });
@@ -352,12 +346,12 @@ fn errors_in_the_reader_order() {
         3
     );
     // A denominator that the first lane's prime of a pair divides.
-    let text = format!("x,y\n0\nx+y,\nx-1/{L0}*y\n");
+    let text = format!("x,y\n0\nx+y,\nx-1/{LEARN0}*y\n");
     assert_eq!(
-        error(&Gf31Pair::primes(L0, L1), &text),
+        error(&Gf31Pair::primes(LEARN0, LEARN1), &text),
         Error::NoInverse { line: 4 }
     );
-    // A degree past Dense32, which the parse's own table does not hold,
+    // A degree past Dense32, whose monomial the parse numbers none,
     // before and after a denominator 0 mod p, and written twice.
     let text = "x,y\n0\nx+y,\nx^2147483648*y+1/65521\n";
     assert_eq!(error(&f, text), Error::Overflow { line: Some(4) });
@@ -368,7 +362,7 @@ fn errors_in_the_reader_order() {
     // A denominator 0 mod p after a term past Dense8, in Dense8: the
     // overflow comes first, at its term's line.
     let text = "x,y\n0\nx^200,\n1/65521*y\n";
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let mut t8: Table<Dense8> = table(2);
     assert_eq!(
         generators(&header, &f, &mut t8, &Grevlex).unwrap_err(),
@@ -379,7 +373,7 @@ fn errors_in_the_reader_order() {
 /// The polynomials of a fresh header of `text` over `field` in grevlex
 /// into a fresh table of the format `M`.
 fn fresh<F: Field, M: Format>(field: &F, text: &str) -> Result<Vec<Poly<F, Rank1>>, Error> {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let mut t: Table<M> = table(header.names.len());
     generators(&header, field, &mut t, &Grevlex)
 }
@@ -406,9 +400,13 @@ fn one_header_many_fields() {
         let n = 3;
         let gens = system(&mut rng, n);
         let text = text(&mut rng, n, &gens);
-        let header = Header::read(&text).unwrap();
+        let header = Header::read(&text, &mut Budget::unbounded()).unwrap();
         let case = format!("seed {seed}");
-        let (a, b, c) = (Gf31::prime(P), Gf64Pair::primes(R0, R1), Gf31::prime(P31));
+        let (a, b, c) = (
+            Gf31::prime(P),
+            Gf64Pair::primes(REPLAY0, REPLAY1),
+            Gf31::prime(P31),
+        );
         let mut t: Table<Dense16> = table(n);
         same(
             &case,
@@ -436,7 +434,7 @@ fn one_header_many_fields() {
     }
     // An overflow in Dense8, then the same header in Dense16.
     let text = "x,y\n0\nx^100*y^100+3*x,\n2/7*y-x\n";
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let f = Gf31::prime(P);
     let mut t8: Table<Dense8> = table(2);
     assert_eq!(

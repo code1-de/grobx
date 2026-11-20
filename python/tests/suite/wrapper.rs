@@ -152,7 +152,7 @@ fn errors_are_grobx_error() {
     run(r#"
 assert issubclass(grobx.Error, ValueError)
 raises(grobx.Error, lambda: grobx.groebner("x\n7\nx+y\n", order="grevlex", threads=1, seed=1))
-raises(grobx.Error, lambda: grobx.groebner(TINY, order="deglex", threads=1, seed=1))
+raises(grobx.Error, lambda: grobx.groebner(TINY, order="degneglex", threads=1, seed=1))
 raises(grobx.Error, lambda: grobx.groebner("x\n4\nx\n", order="grevlex", threads=1, seed=1))
 raises(Exception, lambda: grobx.groebner(TINY, order="grevlex", threads=1, seed=1, checker=0))
 raises(Exception, lambda: grobx.groebner(TINY, order="grevlex", threads=1, seed=1, checker="sometimes"))

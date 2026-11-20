@@ -4,39 +4,19 @@
 //! outside it, with the call report's `echelon` line
 //! (`iterations/0068-input-redundancy-time/plan.md`, _Test code_, 6 to 9).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use grobx::{Outcome, Params};
+use grobx::Outcome;
 use grobx_checker::Mode;
 
-use crate::common::{P, P31, Rng, assert_accepted, params, run, with_cofactors};
+use crate::common::systems::Q_BOUND;
+use crate::common::{
+    EDGE_BASES, P, P31, Rng, assert_accepted, params, reported, run, with_cofactors,
+};
 use crate::orders::{accepted_in, assert_canonical};
 use crate::q::{accepted_q, assert_canonical_q};
 use crate::report::{Line, of, report as lines_of, untimed};
-
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name, generators, and the
-/// basis over GF(65521) in grevlex.
-const EDGE: [(&str, &str, &str); 7] = [
-    ("the zero ideal", "0", "[]:\n"),
-    ("F = (0, 0)", "0,\n0", "[]:\n"),
-    ("no generator", "", "[]:\n"),
-    ("the unit ideal", "x*z-1,\nx", "[1]:\n"),
-    ("already a Gröbner basis", "x+z,\nz^2+1", "[x+z,\nz^2+1]:\n"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-        "[y^2+65520*x,\nx*y+65520*z,\nx^2+65520*y*z]:\n",
-    ),
-    (
-        "an eliminable variable",
-        "x-y^2-z,\ny*z-1,\nz^2-y",
-        "[x+65519*z,\nz^2+65520*y,\ny*z+65520,\ny^2+65520*z]:\n",
-    ),
-];
-
-/// The bound of a drawn coefficient over ℚ.
-const Q_BOUND: u64 = 1 << 20;
 
 /// A generator: its terms, each an exponent vector and a coefficient.
 pub(crate) type Terms = Vec<(Vec<u32>, i64)>;
@@ -159,56 +139,168 @@ pub(crate) fn text(p: u64, names: &[String], gens: &[Terms]) -> String {
     out
 }
 
-/// The rank over GF(p) of the generators as vectors over their monomials,
-/// by the test's own Gaussian elimination.
-fn rank(p: u64, gens: &[Terms]) -> u64 {
-    let monomials: BTreeSet<&Vec<u32>> = gens.iter().flatten().map(|(e, _)| e).collect();
-    let index: Vec<&Vec<u32>> = monomials.into_iter().collect();
-    let mut rows: Vec<Vec<u64>> = gens
-        .iter()
-        .map(|g| {
-            let mut v = vec![0u64; index.len()];
-            for (e, c) in g {
-                let k = index.binary_search(&e).unwrap();
-                v[k] = u64::try_from(c.rem_euclid(i64::try_from(p).unwrap())).unwrap();
-            }
-            v
-        })
-        .collect();
-    let mul = |a: u64, b: u64| (u128::from(a) * u128::from(b) % u128::from(p)) as u64;
-    let inv = |a: u64| {
-        let (mut b, mut e, mut r) = (a, p - 2, 1u64);
-        while e > 0 {
-            if e & 1 == 1 {
-                r = mul(r, b);
-            }
-            b = mul(b, b);
-            e >>= 1;
+/// a·b mod p.
+fn mul(p: u64, a: u64, b: u64) -> u64 {
+    (u128::from(a) * u128::from(b) % u128::from(p)) as u64
+}
+
+/// The inverse of a, not 0, mod the prime p.
+fn inv(p: u64, a: u64) -> u64 {
+    let (mut b, mut e, mut r) = (a, p - 2, 1u64);
+    while e > 0 {
+        if e & 1 == 1 {
+            r = mul(p, r, b);
         }
-        r
-    };
+        b = mul(p, b, b);
+        e >>= 1;
+    }
+    r
+}
+
+/// The rows in reduced row echelon form over GF(p), the columns taken from
+/// the first, by the test's own Gauss–Jordan elimination: the pivot rows
+/// first, monic, each with its pivot's column.
+fn reduce(p: u64, mut rows: Vec<Vec<u64>>) -> Vec<(usize, Vec<u64>)> {
+    let columns = rows.first().map_or(0, Vec::len);
+    let mut pivots = Vec::new();
     let mut r = 0;
-    for c in 0..index.len() {
+    for c in 0..columns {
         let Some(k) = (r..rows.len()).find(|&k| rows[k][c] != 0) else {
             continue;
         };
         rows.swap(r, k);
-        let s = inv(rows[r][c]);
+        let s = inv(p, rows[r][c]);
         for v in &mut rows[r] {
-            *v = mul(*v, s);
+            *v = mul(p, *v, s);
         }
         let pivot = rows[r].clone();
         for (k, row) in rows.iter_mut().enumerate() {
             if k != r && row[c] != 0 {
                 let a = row[c];
                 for (v, &w) in row.iter_mut().zip(&pivot) {
-                    *v = (*v + p - mul(a, w)) % p;
+                    *v = (*v + p - mul(p, a, w)) % p;
                 }
             }
         }
+        pivots.push(c);
         r += 1;
     }
-    r as u64
+    pivots.into_iter().zip(rows).collect()
+}
+
+/// A coefficient of `Terms` over GF(p) in [0, p).
+fn residue(p: u64, c: i64) -> u64 {
+    u64::try_from(c.rem_euclid(i64::try_from(p).unwrap())).unwrap()
+}
+
+/// The rank over GF(p) of the generators as vectors over their monomials,
+/// by the test's own Gaussian elimination.
+fn rank(p: u64, gens: &[Terms]) -> u64 {
+    let monomials: BTreeSet<&Vec<u32>> = gens.iter().flatten().map(|(e, _)| e).collect();
+    let index: Vec<&Vec<u32>> = monomials.into_iter().collect();
+    let rows: Vec<Vec<u64>> = gens
+        .iter()
+        .map(|g| {
+            let mut v = vec![0u64; index.len()];
+            for (e, c) in g {
+                let k = index.binary_search(&e).unwrap();
+                v[k] = residue(p, *c);
+            }
+            v
+        })
+        .collect();
+    reduce(p, rows).len() as u64
+}
+
+/// A pivot's value over GF(p): an exponent vector and a coefficient per
+/// term.
+type Value = Vec<(Vec<u32>, u64)>;
+
+/// The generators as a run's echelon takes them over GF(p), by the test's
+/// own arithmetic (ccode-newton-gap.1, .14 to .16): the linear generators,
+/// every term of degree at most 1 and one of degree 1, in reduced row
+/// echelon form over x1, …, xn, and 1, in that order; in each other
+/// generator that holds a variable that leads a row, that variable
+/// replaced by minus the row's other terms, where that leaves the
+/// generator fewer terms.
+fn substituted(p: u64, gens: &[Terms]) -> Vec<Terms> {
+    let degree = |e: &Vec<u32>| e.iter().sum::<u32>();
+    let is_linear =
+        |g: &Terms| g.iter().all(|(e, _)| degree(e) <= 1) && g.iter().any(|(e, _)| degree(e) == 1);
+    let Some(n) = gens.iter().flatten().map(|(e, _)| e.len()).next() else {
+        return gens.to_vec();
+    };
+    let rows: Vec<Vec<u64>> = gens
+        .iter()
+        .filter(|g| is_linear(g))
+        .map(|g| {
+            let mut v = vec![0u64; n + 1];
+            for (e, c) in g {
+                v[e.iter().position(|&k| k == 1).unwrap_or(n)] = residue(p, *c);
+            }
+            v
+        })
+        .collect();
+    let pivots: Vec<(usize, Value)> = reduce(p, rows)
+        .into_iter()
+        .filter(|&(c, _)| c < n)
+        .map(|(c, row)| {
+            let value = (0..=n)
+                .filter(|&j| j != c && row[j] != 0)
+                .map(|j| {
+                    let mut e = vec![0u32; n];
+                    if j < n {
+                        e[j] = 1;
+                    }
+                    (e, (p - row[j]) % p)
+                })
+                .collect();
+            (c, value)
+        })
+        .collect();
+    gens.iter()
+        .map(|g| {
+            let holds = g.iter().any(|(e, _)| pivots.iter().any(|&(v, _)| e[v] > 0));
+            if is_linear(g) || !holds {
+                return g.clone();
+            }
+            let mut sum: BTreeMap<Vec<u32>, u64> = BTreeMap::new();
+            for (e, c) in g {
+                let mut rest = e.clone();
+                for &(v, _) in &pivots {
+                    rest[v] = 0;
+                }
+                let mut product: BTreeMap<Vec<u32>, u64> = BTreeMap::from([(rest, residue(p, *c))]);
+                for (v, value) in &pivots {
+                    for _ in 0..e[*v] {
+                        let mut next: BTreeMap<Vec<u32>, u64> = BTreeMap::new();
+                        for (a, &ca) in &product {
+                            for (b, cb) in value {
+                                let ab: Vec<u32> = a.iter().zip(b).map(|(x, y)| x + y).collect();
+                                let t = next.entry(ab).or_insert(0);
+                                *t = (*t + mul(p, ca, *cb)) % p;
+                            }
+                        }
+                        product = next;
+                    }
+                }
+                for (e, c) in product {
+                    let t = sum.entry(e).or_insert(0);
+                    *t = (*t + c) % p;
+                }
+            }
+            let terms: Terms = sum
+                .into_iter()
+                .filter(|&(_, c)| c != 0)
+                .map(|(e, c)| (e, i64::try_from(c).unwrap()))
+                .collect();
+            if terms.len() < g.len() {
+                terms
+            } else {
+                g.clone()
+            }
+        })
+        .collect()
 }
 
 /// The distinct monomials of the generators.
@@ -220,15 +312,9 @@ fn columns(gens: &[Terms]) -> u64 {
         .len() as u64
 }
 
-/// `params` with the report on.
-fn reported(params: Params) -> Params {
-    let mut params = params;
-    params.report = true;
-    params
-}
-
 /// The `echelon` lines of the call's report, each checked: right after its
-/// run's `inputs` line, with `generators` the count that line read,
+/// run's `inputs` line, or after the `substitute` line that follows it
+/// (ccode-newton-gap.11), with `generators` the count that line read,
 /// `rows` at most its `nonzero`, and `subtracted` and `time` read. Every
 /// run of the
 /// call has one.
@@ -237,7 +323,12 @@ fn echelon_lines(case: &str, outcome: &Outcome) -> Vec<Line> {
     let mut found = Vec::new();
     for (k, line) in lines.iter().enumerate() {
         if line.kind == "inputs" {
-            let next = &lines[k + 1];
+            let after = if lines[k + 1].kind == "substitute" {
+                2
+            } else {
+                1
+            };
+            let next = &lines[k + after];
             assert_eq!(next.kind, "echelon", "{case}: {next:?}");
             assert_eq!(
                 next.num("generators"),
@@ -265,7 +356,7 @@ fn echelon_lines(case: &str, outcome: &Outcome) -> Vec<Line> {
 /// in lex and `block:1` and over ℚ, the same.
 #[test]
 fn the_edge_cases() {
-    for (case, generators, want) in EDGE {
+    for (case, generators, want) in EDGE_BASES {
         for p in [P, 7, P31] {
             let text = format!("x,y,z\n{p}\n{generators}\n");
             for signatures in [true, false] {
@@ -342,10 +433,12 @@ fn redundant_systems() {
 }
 
 /// Test 8, input-redundancy-time.9, .8: the report's `echelon` lines. Over
-/// GF(p) each holds the generators' rank as `rows` and their distinct
-/// monomials as `columns`; over ℚ every run's line holds the same `rows`
-/// and `columns`, the learn's, the replays', and the verification's where
-/// it runs at a prime of its own; a
+/// GF(p) each holds the rank of the generators it takes, those of the
+/// substitution of ccode-newton-gap (`substituted`), as `rows` and their
+/// distinct monomials as `columns`; over ℚ every run's line holds the same
+/// `rows` and `columns`, the learn's, the replays', and the verification's
+/// where it runs at a prime of its own, the columns those of the
+/// substitution over GF(2^31 − 1); a
 /// call with cofactors, with the checker, or with the echelon off has
 /// none over GF(p), and over ℚ a call with cofactors has none; the call
 /// line names the parameter.
@@ -363,8 +456,9 @@ fn the_echelon_line() {
                     gens.len() as u64,
                     "{case}: {line:?}"
                 );
-                assert_eq!(line.num("rows"), rank(p, &gens), "{case}: {line:?}");
-                assert_eq!(line.num("columns"), columns(&gens), "{case}: {line:?}");
+                let taken = substituted(p, &gens);
+                assert_eq!(line.num("rows"), rank(p, &taken), "{case}: {line:?}");
+                assert_eq!(line.num("columns"), columns(&taken), "{case}: {line:?}");
             }
             let mut with = reported(with_cofactors(seed));
             with.signatures = seed % 2 == 0;
@@ -412,7 +506,11 @@ fn the_echelon_line() {
                 (lines[0].num("rows"), lines[0].num("columns")),
                 "{case}: {line:?}"
             );
-            assert_eq!(line.num("columns"), columns(&gens), "{case}: {line:?}");
+            assert_eq!(
+                line.num("columns"),
+                columns(&substituted(P31, &gens)),
+                "{case}: {line:?}"
+            );
         }
     }
 }

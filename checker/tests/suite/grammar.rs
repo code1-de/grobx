@@ -1,22 +1,11 @@
 //! The input grammar (checker-gfp.3): spellings that denote the same result
 //! get the same verdict, and malformed text is an error.
 
-use grobx_checker::{Flaw, Mode, Order, Verdict, check};
+use grobx_checker::Flaw;
+
+use crate::common::{BASIS, COFACTORS, holds, ruled};
 
 const INSTANCE: &str = "x,y\n7\nx+y,\ny^2+1\n";
-const BASIS: &str = "[x+y,\ny^2+1]:\n";
-const COFACTORS: &str = "[[1,0],\n[0,1]]:\n";
-
-fn holds() -> Verdict {
-    Verdict {
-        groebner: Ok(()),
-        reduced: Ok(()),
-    }
-}
-
-fn ruled(instance: &str, basis: &str, cofactors: &str) -> Result<Verdict, String> {
-    check(instance, basis, cofactors, &Order::Grevlex, Mode::Exact).map_err(|e| format!("{e:?}"))
-}
 
 #[test]
 fn canonical() {

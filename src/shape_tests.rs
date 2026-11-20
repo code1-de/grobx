@@ -8,22 +8,14 @@ use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use crate::budget::Budget;
-use crate::entry::{Imaged, image_in};
+use crate::entry::{Image, Imaged, image_in};
 use crate::field::Gf31;
-use crate::lift::Image;
 use crate::shape::Kept;
+use crate::shared_tests::{L1, L2, L3, L4, U1, learn};
 use crate::systems::{dense, random_square, random_system};
 use crate::text::Header;
-use crate::trace::{NoLearner, NoTrace, Record, Recording};
+use crate::trace::{NoLearner, NoTrace, Record};
 use crate::{Error, Params, Threads};
-
-/// A prime near 2^30.5 that the cases below make a coefficient vanish at.
-const U1: u64 = 1_518_500_279;
-/// Primes near 2^31, at which no coefficient below vanishes.
-const L1: u64 = 2_147_483_647;
-const L2: u64 = 2_147_483_629;
-const L3: u64 = 2_147_483_587;
-const L4: u64 = 2_147_483_579;
 
 fn params_in(order: &str) -> Params {
     let order = order.parse().expect("a name of the family");
@@ -32,33 +24,6 @@ fn params_in(order: &str) -> Params {
 
 fn params() -> Params {
     params_in("grevlex")
-}
-
-/// The record of a learn run over `text`, an instance over Q, at the prime
-/// `p`.
-fn learn(text: &str, params: &Params, p: u64) -> Record {
-    let header = Header::read(text).unwrap();
-    let named = params.order.clone();
-    let mut budget = Budget::new(Instant::now(), params).unwrap();
-    let mut recording = Recording::new();
-    let got = image_in(
-        Gf31::prime(p),
-        text,
-        params,
-        None,
-        &named,
-        &header,
-        &mut budget,
-        &mut NoTrace,
-        &mut recording,
-        None,
-    )
-    .unwrap_or_else(|e| panic!("the learn run at {p} failed: {e:?}\non\n{text}"));
-    assert!(
-        matches!(got, Imaged::Image(_)),
-        "the learn run at {p} stopped"
-    );
-    recording.finish(named)
 }
 
 /// The replay of `record` over `text` at the prime `p`: from or into the
@@ -71,7 +36,7 @@ fn replay(
     p: u64,
     kept: Option<&mut Kept>,
 ) -> Result<Image, Error> {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let named = params.order.clone();
     let mut budget = Budget::new(Instant::now(), params).unwrap();
     let got = image_in(
@@ -210,6 +175,10 @@ fn a_misfit_from_the_shape_is_the_full_replays() {
 /// q-replay-time.7: a replay that tracks cofactors, of a dense cubic system
 /// over Q, returns the full replay's image with its cofactors.
 #[test]
+#[cfg_attr(
+    not(feature = "cofactors"),
+    ignore = "the build leaves out the cofactors"
+)]
 fn a_replay_with_cofactors_equals_the_full_replay() {
     let text = dense(2, 3, 0, 1);
     // The lift's learn runs track no cofactors (q-lift.12), and take the
@@ -281,7 +250,14 @@ fn lex_and_block_replay_from_the_shape() {
             let record = learn(text, &p, L1);
             let mut kept = Kept::default();
             for q in [L2, L3, L4] {
-                same_as_full(&format!("{case} in {order}"), text, &p, &record, q, &mut kept);
+                same_as_full(
+                    &format!("{case} in {order}"),
+                    text,
+                    &p,
+                    &record,
+                    q,
+                    &mut kept,
+                );
             }
         }
     }

@@ -16,7 +16,7 @@ fn counted(made: usize, basis: usize) -> u64 {
 /// recorded.
 fn pair_work(h: &mut Handover, pairs: u64, subtracted: u64) -> (bool, Option<bool>, Option<u64>) {
     assert!(
-        !h.after_round(false, false, 1, 0, || 0),
+        !h.after_round(false, false, 1, 0, || Ok(0)).unwrap(),
         "no early, gap, or outgrown test hands over"
     );
     let handed = h.after_pairs(pairs, subtracted);
@@ -76,7 +76,7 @@ fn the_pair_work_test_reads_a_round_of_pairs() {
     // A round that subtracted nothing hands over where the test reads it.
     assert_eq!(pair_work(&mut h, 1_000, 0), (true, Some(true), Some(1_000)));
     // The next round's `after_round` clears what the test recorded.
-    assert!(!h.after_round(false, false, 1, 0, || 0));
+    assert!(!h.after_round(false, false, 1, 0, || Ok(0)).unwrap());
     assert_eq!((h.tests().pair_work, h.tests().pairs), (None, None));
 }
 
@@ -131,14 +131,14 @@ fn the_pair_work_test_reads_every_round() {
     // After its early and its gap round stayed, the run's test still reads.
     let mut h = Handover::new(true);
     assert!(
-        !h.after_round(true, true, 100, 50, || 0),
+        !h.after_round(true, true, 100, 50, || Ok(0)).unwrap(),
         "early and gap rounds that stay"
     );
     assert_eq!((h.tests().early, h.tests().gap), (Some(false), Some(false)));
     assert!(!h.after_pairs(1_000, 1_001));
     assert_eq!(h.tests().pair_work, Some(false));
     assert!(
-        !h.after_round(true, true, 1, 0, || 0),
+        !h.after_round(true, true, 1, 0, || Ok(0)).unwrap(),
         "neither decides again"
     );
     assert!(h.after_pairs(1_000, 250));
@@ -147,7 +147,7 @@ fn the_pair_work_test_reads_every_round() {
     // test reads it and hands over; the line keeps both verdicts.
     let mut h = Handover::new(true);
     assert!(
-        !h.after_round(false, false, 100, 0, || 79),
+        !h.after_round(false, false, 100, 0, || Ok(79)).unwrap(),
         "79 in 100 stay"
     );
     assert!(h.after_pairs(pairs_formed(100, 400), 100));

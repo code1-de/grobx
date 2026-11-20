@@ -4,23 +4,13 @@
 
 use std::num::NonZeroU32;
 
-use grobx::id::RowId;
-use grobx::trace::{RowSource, Trace};
-use grobx::{Outcome, Params};
+use grobx::Outcome;
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, PRIMES, assert_accepted, degree_bound, dense, params, points, random_system, run,
+    P, PRIMES, Recorder, assert_accepted, assert_well_formed, degree_bound, dense, dense_systems,
+    params, points, random_system, run, with,
 };
-
-/// The parameters of a measured call, with or without signatures and
-/// cofactors.
-fn with(seed: u64, signatures: bool, cofactors: bool) -> Params {
-    let mut p = params(seed);
-    p.signatures = signatures;
-    p.cofactors = cofactors;
-    p
-}
 
 /// The bases with signatures and without, which must be equal.
 fn same_basis(name: &str, text: &str) -> String {
@@ -137,13 +127,6 @@ fn random_systems_give_one_basis_both_ways() {
     }
 }
 
-/// The dense cubic systems on two to four variables over 65521.
-fn dense_systems() -> Vec<(String, String)> {
-    (2..=4)
-        .map(|m| (format!("cubic-{m}"), dense(m, 3, P, m as u64)))
-        .collect()
-}
-
 #[test]
 fn dense_systems_give_one_basis_both_ways() {
     for (name, text) in dense_systems() {
@@ -202,25 +185,6 @@ fn the_same_seed_gives_the_same_outcome_with_signatures() {
     assert_eq!(first, run(&text, &p));
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Event {
-    Matrix(usize),
-    Counted(Vec<RowId>),
-}
-
-#[derive(Default)]
-struct Recorder(Vec<Event>);
-
-impl Trace for Recorder {
-    fn matrix(&mut self, rows: &[RowSource]) {
-        self.0.push(Event::Matrix(rows.len()));
-    }
-
-    fn counted(&mut self, rows: &[RowId]) {
-        self.0.push(Event::Counted(rows.to_vec()));
-    }
-}
-
 #[test]
 fn the_trace_hears_the_signature_run() {
     for text in [
@@ -234,19 +198,7 @@ fn the_trace_hears_the_signature_run() {
             .expect("the call runs");
         assert_eq!(outcome.basis, run(&text, &with(1, true, false)).basis);
         let events = recorder.0;
-        assert!(
-            events.len() >= 2 && events.len().is_multiple_of(2),
-            "{events:?}"
-        );
-        for pair in events.chunks(2) {
-            let (rows, counted) = match (&pair[0], &pair[1]) {
-                (Event::Matrix(rows), Event::Counted(counted)) => (rows, counted),
-                (Event::Matrix(_) | Event::Counted(_), Event::Matrix(_) | Event::Counted(_)) => {
-                    panic!("matrix and counted do not alternate: {pair:?}")
-                }
-            };
-            assert!(counted.windows(2).all(|w| w[0] < w[1]), "{counted:?}");
-            assert!(counted.iter().all(|&r| r.index() < *rows), "{counted:?}");
-        }
+        assert!(events.len() >= 2, "{events:?}");
+        assert_well_formed(&text, &events);
     }
 }

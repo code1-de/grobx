@@ -11,8 +11,8 @@ use grobx::trace::NoTrace;
 use grobx_checker::{Mode, Order};
 
 use crate::common::{
-    P, P31, assert_accepted, assert_accepted_in, degree_bound, dense, params, params_in, points,
-    random_system, run, with_cofactors, with_cofactors_in,
+    GFP_UNSOLVED_EDGE, P, P31, assert_accepted, assert_accepted_in, degree_bound, dense, params,
+    params_in, points, random_system, run, with_cofactors, with_cofactors_in,
 };
 use crate::large::over;
 
@@ -40,23 +40,9 @@ fn accepted_with_cofactors() {
     }
 }
 
-/// The edge cases of `OBJECTIVES.md`, _Domain specifics the workflow points at_, over 65521.
-const EDGE: &[(&str, &str)] = &[
-    ("zero-ideal", "x,y\n65521\n0,\n0\n"),
-    ("f-is-zero", "x,y\n65521\n0\n"),
-    ("unit", "x,y\n65521\nx*y-1,\nx\n"),
-    (
-        "unit-from-a-round",
-        "x,y,z\n65521\nx*y-1,\nx*z,\ny*z-1,\nz^2\n",
-    ),
-    ("already-a-basis", "x,y\n65521\nx+y,\ny^2+1\n"),
-    ("zero-generator", "x,y,z\n65521\nx*y-z,\n0,\ny^2-x\n"),
-    ("eliminable", "x,y,z\n65521\nx-y^2-z,\ny*z-1,\nz^2-y\n"),
-];
-
 #[test]
 fn the_edge_cases_with_signatures() {
-    for &(name, text) in EDGE {
+    for &(name, text) in GFP_UNSOLVED_EDGE {
         for p in [7, P, P31] {
             let text = over(text, p);
             let outcome = run(&text, &with_cofactors(3));

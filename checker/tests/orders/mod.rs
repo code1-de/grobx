@@ -4,11 +4,9 @@
 //! what `common::accept_and_reject` and `agree`'s functions do, with the
 //! order passed to the checker.
 
-use std::num::NonZeroU32;
-
 use grobx_checker::{Flaw, Mode, Order, Verdict, check, check_cofactors};
 
-use crate::agree::{cheap, consistent, points};
+use crate::agree::{case_points, cheap, consistent, variants};
 use crate::common::{Case, Expect, Rng, mutations, oracle_with};
 
 /// An order Groebner.jl computes in: the argument of `groebner-jl --order`.
@@ -146,7 +144,7 @@ pub fn solved_in(name: &str, instance: &str, jl: Jl) -> (Case, Order) {
     (case, jl.order(variables(instance)))
 }
 
-// checker-orders.16 design -- matrix orders beyond grevlex, lex, and block:k are tested on Groebner.jl's results for the instance with its variable line permuted (not measured)
+// checker-orders.16 design-checked -- matrix orders beyond grevlex, lex, and block:k are tested on Groebner.jl's results for the instance with its variable line permuted (not measured)
 /// Groebner.jl's result in `jl` for `instance` with its variable line
 /// permuted, position i holding variable `perm[i]`: a case on `instance` as
 /// written, and the order whose matrix is jl's with its columns permuted
@@ -222,23 +220,6 @@ pub fn accept_and_reject_in(case: &Case, order: &Order, seed: u64) {
         name = case.name,
         failures = failures.join("\n")
     );
-}
-
-/// Calls `each` on the case's texts, then on every mutant's, with the label
-/// and number of each, as `agree` does.
-fn variants(case: &Case, seed: u64, mut each: impl FnMut(&str, u64, &str, &str)) {
-    each("Accept", 0, &case.basis_text(), &case.cofactor_text());
-    let mut rng = Rng::new(seed);
-    for (n, mutation) in mutations(case, &mut rng).into_iter().enumerate() {
-        let (basis, cofactors) = mutation.apply(case);
-        each(&format!("{mutation:?}"), n as u64 + 1, &basis, &cofactors);
-    }
-}
-
-/// The k Agree uses on `case` and its mutants: a mutation raises a degree by
-/// at most 3.
-fn case_points(case: &Case) -> NonZeroU32 {
-    points(case.prime(), case.degree_bound() + 3)
 }
 
 /// `agree::agree_full` in `order`: on the case and every mutant, the whole

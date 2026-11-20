@@ -4,30 +4,25 @@
 //! exact mode. Each is the `block:1,…,1` basis where that call finishes
 //! within a deadline of 200 ms (fglm-lex.24, .26).
 
-use std::time::Duration;
-
 use grobx_checker::Mode;
 
-use crate::common::{PRIMES, params_in, random_square, random_system};
+use crate::common::{
+    BLOCKS_DEADLINE, LEX_DEADLINE, LEX_SEEDS, PRIMES, params_in, random_square, random_system,
+};
 use crate::orders::{finished_in, lex_as_blocks, names};
 
-const SEEDS: u64 = 2;
-const DEADLINE: Duration = Duration::from_secs(1);
-/// The deadline of the `block:1,…,1` call.
-const BLOCKS_DEADLINE: Duration = Duration::from_millis(200);
-
-// fglm-lex.24 design -- the random cases run in lex with a deadline, at least 9 in 10 finish, and each is compared with the block:1,…,1 call where that call finishes within its own deadline (not measured)
+// fglm-lex.24 design-checked -- the random cases run in lex with a deadline, at least 9 in 10 finish, and each is compared with the block:1,…,1 call where that call finishes within its own deadline (not measured)
 /// The systems `draw` draws over every prime, in lex: how many finished,
 /// and how many ran.
 fn in_lex(kind: &str, draw: fn(u64, u64) -> String) -> (u64, u64) {
     let mut finished = 0;
     let mut cases = 0;
     for p in PRIMES {
-        for seed in 0..SEEDS {
+        for seed in 0..LEX_SEEDS {
             cases += 1;
             let text = draw(p, seed);
             let name = format!("fglm-{kind}-p{p}-{seed}");
-            let Some(outcome) = finished_in(&name, &text, "lex", Mode::Exact, DEADLINE) else {
+            let Some(outcome) = finished_in(&name, &text, "lex", Mode::Exact, LEX_DEADLINE) else {
                 continue;
             };
             finished += 1;

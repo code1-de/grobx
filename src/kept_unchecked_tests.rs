@@ -6,28 +6,12 @@
 //! takes no rational but 0: the lifts here run Wang's reconstruction alone
 //! (iteration 0076's plan.md, _The test code of earlier items_).
 
-use std::num::NonZeroUsize;
-use std::time::Duration;
-
 use num_bigint::BigUint;
 
-use crate::catch_up_tests::{
-    L1, L2, L3, b, b_open, fits, image, minus_b, small_primes, wang, wrong_keep,
-};
+use crate::Outcome;
+use crate::catch_up_tests::{b, b_open, fits, image, minus_b, wang, wrong_keep};
 use crate::lift::{Reconstruct, Report, lift_text_with};
-use crate::{MonomialOrder, Outcome, Params, Threads};
-
-/// Every lift here with a deadline of 60 s, so that a lift that never
-/// completes fails its test.
-fn params(seed: u64) -> Params {
-    let mut p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    );
-    p.deadline = Some(Duration::from_secs(60));
-    p
-}
+use crate::shared_tests::{L1, L2, L3, basis, lift_params, small_primes};
 
 /// The lift of Wang's reconstruction alone of `text` with the primes
 /// `forced` first: its outcome, which must hold a basis.
@@ -35,7 +19,7 @@ fn lift(text: &str, forced: &[u64]) -> Outcome {
     let mut report = Report::default();
     let outcome = lift_text_with(
         text,
-        &params(1),
+        &lift_params(1),
         forced.to_vec(),
         Reconstruct::Wang,
         &mut report,
@@ -46,10 +30,6 @@ fn lift(text: &str, forced: &[u64]) -> Outcome {
         "the lift stopped: {outcome:?}\n{report:?}"
     );
     outcome
-}
-
-fn basis(outcome: &Outcome) -> &str {
-    outcome.basis.as_deref().unwrap()
 }
 
 /// result-time.13, .16: y's element is kept at p₂ with a wrong rational

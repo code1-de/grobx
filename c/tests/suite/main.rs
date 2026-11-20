@@ -13,23 +13,21 @@
     reason = "test code, where these lints carry no weight"
 )]
 
-// test-build-time.1 design -- the package's integration tests are one test binary, each test file a module of it, not a test binary per file (log 0019-1)
-// test-build-time.2 design -- the test files lie in tests/suite/ and cargo discovers the test targets, not autotests = false with the suite named as the one [[test]] target (not measured)
+// test-build-time.1 design-checked -- the package's integration tests are one test binary, each test file a module of it, not a test binary per file (log 0019-1)
+// test-build-time.2 design-checked -- the test files lie in tests/suite/ and cargo discovers the test targets, not autotests = false with the suite named as the one [[test]] target (not measured)
 
 mod abi;
+mod c_nul_removal;
 mod call_report;
 mod calls;
 mod checker_points;
 mod common;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-#[path = "../../../tests/common/heap.rs"]
-mod heap;
-mod misuse;
-// page-fault-time tests glibc's malloc.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-mod page_fault_time;
-mod q_zero_denominator;
+mod deglex_order;
+// c-suite-library-path.7 design-checked -- the item's test file is compiled on Linux alone, whose loader reads LD_LIBRARY_PATH, not on every unix (not measured)
 #[cfg(target_os = "linux")]
-mod small_block_time;
+mod library_path;
+mod misuse;
+mod q_zero_denominator;
 #[path = "../../../tests/common/systems.rs"]
 mod systems;
+mod unreached_test_paths;

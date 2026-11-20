@@ -22,7 +22,7 @@ for order in ["lex", "block:1"]:
     assert r.certified is True and r.flaw is None, (order, r.certified, r.flaw)
 r = grobx.groebner("x,y,z\n65521\nx-1,\ny-z^2\n", order="block:1", threads=1, seed=1)
 assert r.basis == "[z^2+65520*y,\nx+65520]:\n", repr(r.basis)
-raises(grobx.Error, lambda: grobx.groebner(TINY, order="deglex", threads=1, seed=1))
+raises(grobx.Error, lambda: grobx.groebner(TINY, order="degneglex", threads=1, seed=1))
 raises(grobx.Error, lambda: grobx.groebner(TINY, order="block:2", threads=1, seed=1))
 "#,
     );

@@ -9,7 +9,7 @@ use crate::common::groebner_jl_reference;
 use crate::orders::{Family, names};
 use crate::q::{accepted_q, cleared, finished_q, random_q_system, same_set_q, sorted_q_text};
 
-// q-lift.37 design -- the test code's oracles over Q are the checker in the exact mode with the cofactors, and Groebner.jl's lex and block:1 bases on the integer inputs, compared as sets of polynomials, not the checker alone (not measured)
+// q-lift.37 design-checked -- the test code's oracles over Q are the checker in the exact mode with the cofactors, and Groebner.jl's lex and block:1 bases on the integer inputs, compared as sets of polynomials, not the checker alone (not measured)
 #[test]
 fn random_systems_in_grevlex() {
     for seed in 0..6 {

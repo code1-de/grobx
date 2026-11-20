@@ -7,65 +7,37 @@
 //! systems without reference digests).
 
 use std::collections::BTreeSet;
-use std::num::NonZeroUsize;
-use std::time::Duration;
 
 use grobx_checker::{Mode, Order, check};
 use num_bigint::BigUint;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::ToPrimitive;
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::call::built;
 use crate::field::{Field, Gf64, is_prime_64};
 use crate::id::MonoId;
-use crate::lift::{Primes, Report, lift_text};
-use crate::mixed_radix_tests::converted;
+use crate::lift::{
+    LEADS_SKEWED, Learns, Primes, Reconstruct, Replays, Report, lift_text, lift_text_as,
+};
+use crate::mixed_radix_tests::{converted, from_limbs};
 use crate::rational::{Crt, Radix};
+use crate::shared_tests::{
+    BELOW_62, L1, L2, L3, PAST_61, U1, W1, W2, W3, basis, integer, lift_params, limbs,
+    with_cofactors,
+};
 use crate::systems::{dense, random_square};
-use crate::{MonomialOrder, Outcome, Params, Threads};
+use crate::trace::NoTrace;
+use crate::{Outcome, Params};
 
-/// `lift_tests.rs`'s primes near 2^31, lucky for every system here, and
-/// the first of its two primes near 2^30.5.
-pub(crate) const L1: u64 = 2_147_483_647;
-pub(crate) const L2: u64 = 2_147_483_629;
-const L3: u64 = 2_147_483_587;
-const U1: u64 = 1_518_500_279;
-/// Primes past 2^61 + 2^60, which the test code makes unlucky where it
-/// needs to.
-pub(crate) const W1: u64 = 3_458_764_513_820_540_933;
-pub(crate) const W2: u64 = 3_458_764_513_820_541_017;
-const W3: u64 = 3_458_764_513_820_541_041;
-/// The least prime past 2^31, 2^32, 2^61, and 2^62, and the largest below
-/// 2^62.
+/// The least prime past 2^31, 2^32, and 2^62, beside `PAST_61` and
+/// `BELOW_62`.
 const PAST_31: u64 = 2_147_483_659;
 const PAST_32: u64 = 4_294_967_311;
-const PAST_61: u64 = 2_305_843_009_213_693_967;
-const BELOW_62: u64 = 4_611_686_018_427_387_847;
 const PAST_62: u64 = 4_611_686_018_427_388_039;
 
 const NARROW: std::ops::Range<u64> = 1 << 30..1 << 31;
 const WIDE: std::ops::Range<u64> = 1 << 61..1 << 62;
-
-/// Every lift's deadline, far past what each takes: a fault that keeps the
-/// lift from completing stops it there and fails the test. A fault that
-/// makes the replays misfit ends it in `Error::Drops` before.
-const DEADLINE: Duration = Duration::from_secs(60);
-
-fn params(seed: u64) -> Params {
-    let mut p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    );
-    p.deadline = Some(DEADLINE);
-    p
-}
-
-fn with_cofactors(seed: u64) -> Params {
-    let mut p = params(seed);
-    p.cofactors = true;
-    p
-}
 
 /// The lift of `text` with the primes `forced` first: its outcome, which
 /// must hold a basis, and its report.
@@ -78,10 +50,6 @@ fn lift(text: &str, params: &Params, forced: &[u64]) -> (Outcome, Report) {
         "the lift stopped: {outcome:?}\n{report:?}"
     );
     (outcome, report)
-}
-
-fn basis(outcome: &Outcome) -> &str {
-    outcome.basis.as_deref().unwrap()
 }
 
 /// The checker accepts the lift's outcome over Q in grevlex, in the exact
@@ -100,27 +68,6 @@ fn assert_accepted(case: &str, text: &str, outcome: &Outcome) {
         v.groebner.is_ok() && v.reduced.is_ok(),
         "{case}: the checker rejects the result: {v:?}"
     );
-}
-
-/// x on limbs, the least significant first, no zero limb at the top.
-fn limbs(x: &BigUint) -> Vec<u64> {
-    x.to_u64_digits()
-}
-
-/// The integer of limbs `x`.
-fn big(x: &[u64]) -> BigUint {
-    x.iter()
-        .rev()
-        .fold(BigUint::zero(), |a, &l| (a << 64u32) + BigUint::from(l))
-}
-
-/// A random integer below 2^bits.
-fn integer(rng: &mut Xoshiro256PlusPlus, bits: u64) -> BigUint {
-    let mut x = BigUint::zero();
-    for _ in 0..bits.div_ceil(64) {
-        x = (x << 64u32) + BigUint::from(rng.next_u64());
-    }
-    x >> (bits.div_ceil(64) * 64 - bits)
 }
 
 // --- the primes ---
@@ -241,10 +188,10 @@ fn the_radix_at_every_width() {
                 xs.push(limbs(&integer(&mut rng, bits)));
             }
             for x in &xs {
-                let want = (big(x) % BigUint::from(p)).to_u64().unwrap();
+                let want = (from_limbs(x) % BigUint::from(p)).to_u64().unwrap();
                 assert_eq!(radix.residue(x), want, "{len} limbs mod {p}", len = x.len());
                 assert_eq!(
-                    radix.residue_big(&big(x)),
+                    radix.residue_big(&from_limbs(x)),
                     want,
                     "{len} limbs mod {p}",
                     len = x.len()
@@ -293,7 +240,7 @@ fn the_lift_replays_at_wide_primes() {
             ("cubic", dense(2, 3, 0, seed)),
             ("square", random_square(0, seed)),
         ] {
-            let (_, report) = lift(&text, &params(seed), &[]);
+            let (_, report) = lift(&text, &lift_params(seed), &[]);
             assert!(
                 !report.combined.is_empty(),
                 "{name}, seed {seed}: {report:?}"
@@ -318,7 +265,7 @@ fn the_lift_replays_at_wide_primes() {
 #[test]
 fn a_wide_prime_of_a_denominator() {
     let text = format!("x,y\n0\nx-1/{W1},\ny^2-x\n");
-    let (outcome, report) = lift(&text, &params(1), &[L1, W1]);
+    let (outcome, report) = lift(&text, &lift_params(1), &[L1, W1]);
     assert_eq!(report.learned, vec![L1], "{report:?}");
     assert!(report.skipped.contains(&W1), "{report:?}");
     assert!(!report.combined.contains(&W1), "{report:?}");
@@ -332,18 +279,68 @@ fn a_wide_prime_of_a_denominator() {
 fn an_unlucky_wide_prime() {
     let n = u128::from(W1) * u128::from(W2);
     let text = format!("x,y\n0\nx+{n},\nx*y\n");
-    let (outcome, report) = lift(&text, &params(1), &[L1, W1]);
+    let (outcome, report) = lift(&text, &lift_params(1), &[L1, W1]);
     assert_eq!(report.learned, vec![L1], "{report:?}");
     assert_eq!(report.misfit, vec![W1], "{report:?}");
     assert!(!report.combined.contains(&W1), "{report:?}");
     assert_eq!(basis(&outcome), format!("[y,\nx+{n}]:\n"));
 
-    let (outcome, report) = lift(&text, &params(1), &[L1, W1, W2]);
+    let (outcome, report) = lift(&text, &lift_params(1), &[L1, W1, W2]);
     assert_eq!(report.misfit[..2], [W1, W2], "{report:?}");
     assert_eq!(report.learned.len(), 2, "{report:?}");
     assert_eq!(report.learned[0], L1, "{report:?}");
     assert!(NARROW.contains(&report.learned[1]), "{report:?}");
     assert_eq!(basis(&outcome), format!("[y,\nx+{n}]:\n"));
+}
+
+/// The lift past a replay that fits its record and leads otherwise (`LEADS_SKEWED`): a replay
+/// alone at W1 is a misfit and the lift goes on; a pair at (W1, W2) is a misfit at both primes,
+/// which drops the record, and the next prime learns afresh. Both give the basis.
+#[test]
+fn a_replay_whose_leads_differ() {
+    let text = "x,y\n0\nx-2*y,\ny^2-3\n";
+    let (plain, _) = lift(text, &lift_params(1), &[L1]);
+    LEADS_SKEWED.set(vec![W1, W2]);
+    let mut report = Report::default();
+    let alone = lift_text_as(
+        text,
+        &lift_params(1),
+        vec![L1, W1],
+        Reconstruct::Chain,
+        Replays::Alone,
+        Learns::Alone,
+        &mut NoTrace,
+        &mut report,
+    );
+    let (paired, pair_report) = lift(text, &lift_params(1), &[L1, W1, W2]);
+    LEADS_SKEWED.set(Vec::new());
+    let alone = alone.unwrap_or_else(|e| panic!("the lift alone failed: {e:?}"));
+    assert_eq!(report.misfit, vec![W1], "{report:?}");
+    assert_eq!(report.learned, vec![L1], "{report:?}");
+    assert_eq!(alone.basis, plain.basis, "alone: {report:?}");
+    assert_eq!(pair_report.misfit[..2], [W1, W2], "{pair_report:?}");
+    assert_eq!(pair_report.learned.len(), 2, "{pair_report:?}");
+    assert_eq!(paired.basis, plain.basis, "paired: {pair_report:?}");
+}
+
+/// q-lift.21, .25 at the verification: its prime, forced after the two replays, divides a
+/// denominator of the input and is skipped at its read, or one of the lifted basis and is
+/// skipped before its run; the verification runs at the next prime.
+#[test]
+fn a_verification_prime_of_a_denominator() {
+    for (text, expected) in [
+        (format!("x\n0\n1/{U1}*x\n"), "[x]:\n".to_string()),
+        (format!("x\n0\n{U1}*x-1\n"), format!("[{U1}*x-1]:\n")),
+    ] {
+        let (outcome, report) = lift(&text, &lift_params(1), &[L1, W1, W2, U1]);
+        assert_eq!(report.combined, vec![W1, W2], "{text}: {report:?}");
+        assert_eq!(report.skipped, vec![U1], "{text}: {report:?}");
+        assert!(
+            !report.verified.is_empty() && report.verified.iter().all(|&(q, _)| q != U1),
+            "{text}: {report:?}"
+        );
+        assert_eq!(basis(&outcome), expected, "{text}");
+    }
 }
 
 /// q-lift.18 at a wide prime: over W1 the first element loses its term in
@@ -352,7 +349,7 @@ fn an_unlucky_wide_prime() {
 fn a_vanishing_coefficient_at_a_wide_prime() {
     let text = format!("x,y\n0\nx-{W1}*y,\ny^2-1\n");
     for forced in [[L1, W1, W2, W3], [L1, W2, W3, W1]] {
-        let (outcome, report) = lift(&text, &params(1), &forced);
+        let (outcome, report) = lift(&text, &lift_params(1), &forced);
         assert!(report.combined.contains(&W1), "{forced:?}: {report:?}");
         assert!(report.misfit.is_empty(), "{forced:?}: {report:?}");
         assert_eq!(
@@ -371,11 +368,15 @@ fn narrow_and_wide_replays_mix() {
     for seed in 1..=2 {
         let case = format!("dense(2, 3, 0, {seed})");
         let text = dense(2, 3, 0, seed);
-        let (plain, report) = lift(&text, &params(1), &forced);
+        let (plain, report) = lift(&text, &lift_params(1), &forced);
         assert_eq!(report.learned, vec![L1], "{case}: {report:?}");
         assert!(report.combined.len() >= 4, "{case}: {report:?}");
         assert_eq!(report.combined[..4], [L2, W1, L3, W2], "{case}: {report:?}");
-        let (outcome, report) = lift(&text, &with_cofactors(1), &forced);
+        let tracked = with_cofactors(1);
+        if built(&tracked).is_err() {
+            continue;
+        }
+        let (outcome, report) = lift(&text, &tracked, &forced);
         assert_eq!(report.combined[..4], [L2, W1, L3, W2], "{case}: {report:?}");
         assert_eq!(basis(&outcome), basis(&plain), "{case}, cofactors");
         assert_accepted(&case, &text, &outcome);

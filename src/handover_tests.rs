@@ -2,49 +2,50 @@
 //! and the queue pruned late gives the plain run's basis, and the checker
 //! accepts its cofactors.
 
-use std::num::NonZeroUsize;
-use std::time::Instant;
-
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::Stats;
 use crate::budget::Budget;
-use crate::cofactors::{Cofactors, NoCofactors, Tracked};
-use crate::f4::{self, Elements, Halt};
+use crate::cofactors::NoCofactors;
+#[cfg(feature = "cofactors")]
+use crate::cofactors::{Cofactors, Tracked};
+use crate::f4::{self, SigEnd};
 use crate::field::Gf31;
+#[cfg(feature = "cofactors")]
+use crate::halt::Halt;
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::Grevlex;
-use crate::poly::Poly;
+use crate::poly::{Elements, Poly};
+use crate::shared_tests::budget;
+#[cfg(feature = "cofactors")]
 use crate::sig::Pairs;
+#[cfg(feature = "cofactors")]
 use crate::systems::{dense, random_system};
 use crate::table::Table;
-use crate::text::{Header, write_basis};
+use crate::text::{Header, Unread, write_basis};
 use crate::trace::{NoLearner, NoTrace};
-use crate::{MonomialOrder, Params, Stats, Threads};
 
-fn params() -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    )
-}
-
-fn budget() -> Budget {
-    Budget::new(Instant::now(), &params()).unwrap()
+/// The basis of a signature run without the handover, which carries
+/// nothing.
+pub(crate) fn sig_basis<E>(end: SigEnd<Gf31, Rank1, E>) -> Elements<Gf31, Rank1, E> {
+    match end {
+        SigEnd::Basis(elements) => elements,
+        SigEnd::Carry(_) => panic!("a signature run without the handover carried"),
+    }
 }
 
 /// The parts of a call over `text`, in grevlex, in `Dense16`.
-struct Call {
+pub(crate) struct Call {
     text: String,
-    field: Gf31,
-    table: Table<Dense16>,
+    pub(crate) field: Gf31,
+    pub(crate) table: Table<Dense16>,
 }
 
 impl Call {
-    fn new(text: &str) -> Call {
-        let header = Header::read(text).unwrap();
+    pub(crate) fn new(text: &str) -> Call {
+        let header = Header::read(text, &mut Budget::unbounded()).unwrap();
         let field = header.gf31().unwrap();
         let table = Table::new(
             Dense16::new(header.names.len()),
@@ -57,14 +58,21 @@ impl Call {
         }
     }
 
-    fn generators(&mut self) -> Vec<Poly<Gf31, Rank1>> {
-        let header = Header::read(&self.text).unwrap();
+    pub(crate) fn generators(&mut self) -> Vec<Poly<Gf31, Rank1>> {
+        let header = Header::read(&self.text, &mut Budget::unbounded()).unwrap();
         header
-            .generators(&self.field, &mut self.table, &Grevlex)
+            .generators(
+                &self.field,
+                &mut self.table,
+                &Grevlex,
+                &mut Budget::unbounded(),
+            )
+            .map_err(Unread::unbounded)
             .unwrap()
     }
 
     /// The signature run, without the handover.
+    #[cfg(feature = "cofactors")]
     fn sig<C: Cofactors<Gf31, Dense16>>(
         &mut self,
         cof: &mut C,
@@ -84,10 +92,11 @@ impl Call {
             &mut Pairs::new(true),
             1,
         )
+        .map(sig_basis)
     }
 
     /// The plain run's reduced basis.
-    fn plain(&mut self) -> String {
+    pub(crate) fn plain(&mut self) -> String {
         let generators = self.generators();
         let elements = f4::run(
             &self.field,
@@ -105,8 +114,8 @@ impl Call {
         self.text_of(&elements)
     }
 
-    fn text_of<E>(&self, elements: &Elements<Gf31, Rank1, E>) -> String {
-        let header = Header::read(&self.text).unwrap();
+    pub(crate) fn text_of<E>(&self, elements: &Elements<Gf31, Rank1, E>) -> String {
+        let header = Header::read(&self.text, &mut Budget::unbounded()).unwrap();
         let mut out = String::new();
         write_basis(
             &mut out,
@@ -124,6 +133,7 @@ impl Call {
 /// gfp-unsolved.12, .13: the signature run alone, reducer rows reduced to
 /// new elements and to syzygy signatures, gives the plain run's basis, and
 /// the checker accepts its cofactors in the exact mode.
+#[cfg(feature = "cofactors")]
 #[test]
 fn reducer_rows_reduce_to_elements_and_syzygies() {
     let mut cases: Vec<(String, String)> = (2..=3)
@@ -133,7 +143,7 @@ fn reducer_rows_reduce_to_elements_and_syzygies() {
         cases.push((format!("random-{seed}"), random_system(65521, seed)));
     }
     for (name, text) in &cases {
-        let header = Header::read(text).unwrap();
+        let header = Header::read(text, &mut Budget::unbounded()).unwrap();
         let names = header.names.clone();
         let mut call = Call::new(text);
         let generators = call.generators().len();

@@ -9,10 +9,11 @@ use grobx::Outcome;
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, assert_accepted, params, run, systems::random_binomials, with_cofactors,
+    EDGE_BASES, P, P31, assert_accepted, params, reported, run, systems::random_binomials,
+    with_cofactors,
 };
 use crate::orders::assert_canonical;
-use crate::pair_work_handover::{EDGE, binomials, handed_by_pair_work, reported, unsigned};
+use crate::pair_work_handover::{binomials, handed_by_pair_work, unsigned};
 use crate::q::{accepted_q, assert_canonical_q};
 use crate::report::{report as lines_of, run_lines};
 
@@ -123,7 +124,7 @@ fn binomials_over_q_hand_over_below_four_times() {
 /// with signatures is the one without.
 #[test]
 fn the_edge_cases_read_no_pair_work() {
-    for (case, generators, _) in EDGE {
+    for (case, generators, _) in EDGE_BASES {
         for p in [P, 7, P31, 0] {
             let text = format!("x,y,z\n{p}\n{generators}\n");
             let name = format!("{case} over {p}");

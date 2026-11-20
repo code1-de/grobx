@@ -37,7 +37,7 @@ fn tuning(name: &str, text: &str, order: &str) {
 /// GF(65521), each with its name.
 fn systems() -> Vec<(String, String)> {
     let mut out = vec![("cubic-2".to_string(), dense(2, 3, P, 2))];
-    // test-mq-systems.12 design -- in_lex runs a system on three variables in block:1,1 as well, so it takes the random square system of degrees 2, 3, and 2, where the map's dense cubic one on three variables runs for seconds (log 0084-3)
+    // test-mq-systems.12 design-checked -- in_lex runs a system on three variables in block:1,1 as well, so it takes the random square system of degrees 2, 3, and 2, where the map's dense cubic one on three variables runs for seconds (log 0084-3)
     for seed in [1, 2, 3, 4, 27] {
         out.push((format!("square-{seed}"), random_square(P, seed)));
     }

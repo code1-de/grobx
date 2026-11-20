@@ -1,9 +1,10 @@
-//! Signatures (lairez-2022 §3, eder-2017 §4): each basis element's, the
-//! known syzygy signatures, and the pending ones.
+//! Signatures (lairez-2022 §3, eder-2017 §4): each basis element's and the
+//! known syzygy signatures. The pending ones stand in `queue::Queue`.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
 
+use crate::Stop;
+use crate::budget::{Budget, PROBE, Site};
 use crate::field::Field;
 use crate::id::{ElementId, MonoId};
 use crate::module::Module;
@@ -11,7 +12,7 @@ use crate::monomial::{Format, Overflow};
 use crate::narrow::Narrow;
 use crate::order::Order;
 use crate::poly::Basis;
-use crate::table::{Limit, Table, find_passing};
+use crate::table::{Limit, PLACE, Table, find_passing, search_units};
 
 /// A signature `m⊗e_index` in Schreyer's shifted form: input i has
 /// `lm(f_i)⊗e_i` (signature-pruning.2).
@@ -24,7 +25,7 @@ pub(crate) struct Sig {
 }
 
 impl Sig {
-    // signature-pruning.2 cited: gao-2016 §3 -- the g-weighted order followed by POT (g2) is the clear winner of four signature orders; lairez-2022 Remark 25 and Example 26 -- sig g_i = lm g_i ⊗ e_i with TOP, which eder-2017 calls lt-pot
+    // signature-pruning.2 cited-checked: gao-2016 §3 -- the g-weighted order followed by POT (g2) is the clear winner of four signature orders; lairez-2022 Remark 25 and Example 26 -- sig g_i = lm g_i ⊗ e_i with TOP, which eder-2017 calls lt-pot
     /// Schreyer's order: the monomials by `order`, then the indices.
     pub(crate) fn cmp<M: Format, O: Order<M>>(
         self,
@@ -43,10 +44,15 @@ impl Sig {
         self.index == other.index && table.divides(self.monomial, other.monomial)
     }
 
-    /// t·self.
-    pub(crate) fn mul<M: Format>(self, t: MonoId, table: &mut Table<M>) -> Result<Sig, Limit> {
+    /// t·self, a growth of the table spent on `budget`.
+    pub(crate) fn mul<M: Format>(
+        self,
+        t: MonoId,
+        table: &mut Table<M>,
+        budget: &mut Budget,
+    ) -> Result<Sig, Limit> {
         Ok(Sig {
-            monomial: table.mul(t, self.monomial)?,
+            monomial: table.mul(t, self.monomial, budget)?,
             index: self.index,
         })
     }
@@ -57,93 +63,136 @@ impl Sig {
     }
 }
 
-// signature-pruning.21 cited: roune-2012 §3.4 -- store the sig-lead ratio and compare ratios instead of signatures
+// signature-pruning.21 practice-checked: cross-multiplication -- sig-lead ratios are compared as s_a·l_b against s_b·l_a, formed in scratch words and never interned, not each ratio stored as a Laurent monomial
+// bivium-signature-gap.1 cited-checked: roune-2012 §3.4; bachmann-1998 §3, "Firstly", independently -- computing E and F with the gcd divided out can take a lot of time, and E < F exactly where bA < aB; exponents added a machine word at a time stay below 2^(s_e−1), so no lane overflows
 /// Compares the sig-lead ratios `s_a/l_a` and `s_b/l_b`, monomials of the
-/// table, under `order`, as `s_a·l_b` against `s_b·l_a` with their gcd divided
-/// out. The two are formed in scratch words and not interned. Overflow
-/// where one passes the format.
+/// table, under `order`, as `s_a·l_b` against `s_b·l_a`. Each product is
+/// the word sum of its factors, formed in a scratch array and not
+/// interned: a lane of a monomial of the format holds at most
+/// `MAX_DEGREE`, 2^(B−1) − 1, so a lane of the sum holds at most
+/// 2^B − 2 and carries into none beside it, and its degree, the sum of
+/// the factors', fits a u32.
 pub(crate) fn cmp_ratio<M: Format, O: Order<M>>(
     table: &Table<M>,
     order: &O,
     (s_a, l_a): (MonoId, MonoId),
     (s_b, l_b): (MonoId, MonoId),
-) -> Result<Ordering, Overflow> {
+) -> Ordering {
     let format = table.format();
-    let variables = format.variables();
-    // signature-pruning.27 cited: roune-2012 §3.4 -- bA < aB exactly where A/a < B/b, negative exponents allowed
-    // A monomial order keeps a comparison when a common factor is divided
-    // out, so the two products with their gcd divided out compare as the
-    // ratios do.
-    let mut exponents = vec![0u32; 2 * variables];
-    let (left, right) = exponents.split_at_mut(variables);
-    for variable in 0..variables {
-        let left_exponent = table.exponent(s_a, variable) + table.exponent(l_b, variable);
-        let right_exponent = table.exponent(s_b, variable) + table.exponent(l_a, variable);
-        let common = left_exponent.min(right_exponent);
-        (left[variable], right[variable]) = (left_exponent - common, right_exponent - common);
+    let w = format.words();
+    let mut words = vec![M::Word::default(); 2 * w];
+    let (left, right) = words.split_at_mut(w);
+    let factors = table
+        .monomial(s_a)
+        .iter()
+        .zip(table.monomial(l_b))
+        .zip(table.monomial(s_b).iter().zip(table.monomial(l_a)));
+    for ((l, r), ((&a, &b), (&c, &d))) in left.iter_mut().zip(right.iter_mut()).zip(factors) {
+        *l = M::mul_word(a, b);
+        *r = M::mul_word(c, d);
     }
-    let word_count = format.words();
-    let mut words = vec![M::Word::default(); 2 * word_count];
-    let (left_words, right_words) = words.split_at_mut(word_count);
-    let left_degree = format.encode(left, left_words)?;
-    let right_degree = format.encode(right, right_words)?;
-    Ok(order.cmp(format, left_words, left_degree, right_words, right_degree))
+    let left_degree = table.degree(s_a) + table.degree(l_b);
+    let right_degree = table.degree(s_b) + table.degree(l_a);
+    order.cmp(format, left, left_degree, right, right_degree)
 }
 
-// signature-pruning.20 cited: roune-2012 §4.2 -- the divmask monomial list eliminates around 98% of divisibility checks
-/// Monomials of the table, none of which divides another, each with its
-/// divisor mask, scanned in a list.
+/// The units of a comparison of two sig-lead ratios (`cmp_ratio`) in a
+/// format of `words` words: four monomials read at random places, `PROBE`
+/// units each, the two products' words a unit each, and the scratch array
+/// allocated, `PROBE` units.
+fn ratio_units(words: usize) -> usize {
+    5 * PROBE + 2 * words
+}
+
+// signature-pruning.20 practice-checked: divisor masks (divmasks) on a monomial list -- the known syzygy signatures are a list of monomials per index, scanned with divisor masks, not kd-trees (the pending signatures: call-stop-latency.57)
+/// Monomials of the table, each with its divisor mask, scanned in a list.
+/// None divides another, but that a coprime S-pair's Koszul signature
+/// joins with the members it divides left in (`Signatures::push_coprime`,
+/// bivium-rest-gap.6): each such member has its divisor among the members,
+/// so a search answers as over the minimal ones.
 #[derive(Clone, Debug, Default)]
 struct Antichain {
     ids: Vec<MonoId>,
-    // signature-pair-time.9 design -- the masks stand in an array of their own beside the ids, and a query tests eight of them at a time before it compares exponents (log 0026-1)
+    // signature-pair-time.9 practice-checked: structure of arrays -- the masks stand in an array of their own beside the ids, and a query tests eight of them at a time before it compares exponents (log 0026-1)
     /// The members' masks, in step with `ids`.
     masks: Vec<u32>,
-    // signature-pair-time.10 design -- the member that answered the last yes is tried first (log 0026-1)
+    // signature-pair-time.10 design-checked -- the member that answered the last yes is tried first (log 0026-1)
     /// The position of the member that answered the last yes. A stale
     /// position names another member, or none.
     last: usize,
 }
 
 impl Antichain {
-    // table-read-time.9 design -- the formed signature's factors, the reducer search's entries, the known syzygy signatures' ids, and the plain run's divisor search keep their bounds checks, not read unchecked as well (log 0045-1)
+    // table-read-time.9 design-checked -- the formed signature's factors, the reducer search's entries, the known syzygy signatures' ids, and the plain run's divisor search keep their bounds checks, not read unchecked as well (log 0045-1)
+    // call-stop-latency.20 design-checked -- the signature run's searches, the antichain's, the reducer's, the reductant's, the base divisors', and the signatures' pushes, take the budget and spend a unit per member visited, not unspent (log 0138-5)
     /// Whether a member divides the monomial of words `m` and mask `mask`.
-    fn divides<M: Format>(&mut self, table: &Table<M>, m: &[M::Word], mask: u32) -> bool {
+    /// The search spends a unit per block of the members' masks it may test
+    /// and `PROBE` units per member it tests (`table::search_units`) at
+    /// `Site::Antichain`; a stop where the budget's check stops the call.
+    fn divides<M: Format>(
+        &mut self,
+        table: &Table<M>,
+        m: &[M::Word],
+        mask: u32,
+        budget: &mut Budget,
+    ) -> Result<bool, Stop> {
         let not_m = !mask;
         let format = table.format();
         let (ids, masks) = (&self.ids, &self.masks);
-        let divides = |k: usize| format.divides(table.monomial(ids[k]), m);
+        // call-stop-latency.71 design-checked -- a search by find_passing spends PROBE units per candidate its test ran on beside its blocks of masks, the candidates counted in the test's closure, not the blocks alone (.14), as on few variables most masks pass and each candidate's test reads its words at a random place (log 0138-8)
+        let mut tested = 0;
+        let mut divides = |k: usize| {
+            tested += 1;
+            format.divides(table.monomial(ids[k]), m)
+        };
         let last = self.last;
-        if last < masks.len() && masks[last] & not_m == 0 && divides(last) {
-            return true;
-        }
-        match find_passing(masks, mask, divides) {
+        let found = if last < masks.len() && masks[last] & not_m == 0 && divides(last) {
+            Some(last)
+        } else {
+            find_passing(masks, mask, &mut divides)
+        };
+        budget.spend(search_units(masks.len(), tested), Site::Antichain)?;
+        match found {
             Some(k) => {
                 self.last = k;
-                true
+                Ok(true)
             }
-            None => false,
+            None => Ok(false),
         }
     }
 
-    /// Removes the members m divides. The rest keep their order.
-    fn drop_multiples<M: Format>(&mut self, table: &Table<M>, m: MonoId) {
+    /// Removes the members m divides. The rest keep their order. The scan
+    /// spends a unit a member at `Site::Antichain` after each `PLACE`; a
+    /// stop where the budget's check stops the call, the members then part
+    /// moved, which the stopped run drops.
+    fn drop_multiples<M: Format>(
+        &mut self,
+        table: &Table<M>,
+        m: MonoId,
+        budget: &mut Budget,
+    ) -> Result<(), Stop> {
         let mask = table.mask(m);
         let format = table.format();
+        let len = self.ids.len();
         let mut kept = 0;
-        for k in 0..self.ids.len() {
-            let (b, mask_b) = (self.ids[k], self.masks[k]);
-            if mask & !mask_b != 0 || !format.divides(table.monomial(m), table.monomial(b)) {
-                self.ids[kept] = b;
-                self.masks[kept] = mask_b;
-                kept += 1;
+        for start in (0..len).step_by(PLACE) {
+            let end = (start + PLACE).min(len);
+            for k in start..end {
+                let (b, mask_b) = (self.ids[k], self.masks[k]);
+                if mask & !mask_b != 0 || !format.divides(table.monomial(m), table.monomial(b)) {
+                    self.ids[kept] = b;
+                    self.masks[kept] = mask_b;
+                    kept += 1;
+                }
             }
+            budget.spend(end - start, Site::Antichain)?;
         }
         self.ids.truncate(kept);
         self.masks.truncate(kept);
+        Ok(())
     }
 
-    /// Adds m, which no member divides and which divides no member.
+    /// Adds m, which no member divides.
     fn push<M: Format>(&mut self, table: &Table<M>, m: MonoId) {
         self.ids.push(m);
         self.masks.push(table.mask(m));
@@ -153,6 +202,34 @@ impl Antichain {
         self.ids.shrink_to_fit();
         self.masks.shrink_to_fit();
     }
+}
+
+// bivium-gap.5 design-checked -- past KOSZUL_INDEX_VARIABLES variables the inputs' leading monomials are held by their first variable as well, and a test reads the lists of the quotient's variables, not the scan of their masks alone, whose bits each stand for several variables there (log 0163-1, 0163-2)
+/// The variables past which the inputs' leading monomials are held by their
+/// first variable (`Inputs::by_first`).
+const KOSZUL_INDEX_VARIABLES: usize = 128;
+
+/// The leading monomials of the signature run's inputs, by index, which hold
+/// the inputs' Koszul signatures `lm(f_i)·lm(f_j)·e_j`, i < j
+/// (`Signatures::koszul`).
+#[derive(Debug, Default)]
+struct Inputs {
+    leads: Vec<MonoId>,
+    /// The leads' masks, in step with `leads`.
+    masks: Vec<u32>,
+    /// Past `KOSZUL_INDEX_VARIABLES` variables, per variable v the indices
+    /// of the leads whose first variable is v, in increasing order: those of
+    /// `of[starts[v]..starts[v + 1]]`.
+    by_first: Option<ByFirst>,
+    /// The variables of the quotient a test reads.
+    held: Vec<u32>,
+}
+
+/// The inputs' indices by their leads' first variable.
+#[derive(Debug)]
+struct ByFirst {
+    starts: Vec<u32>,
+    of: Vec<u32>,
 }
 
 /// A basis element in the reducer order, with its leading monomial and its
@@ -169,21 +246,25 @@ struct Entry {
 pub(crate) struct Signatures {
     /// Per element its signature.
     sig: Vec<Sig>,
-    // signature-pruning.23 cited: roune-2012 §3.4 -- an integer per basis element orders the sig-lead ratios, so a ratio comparison is an integer comparison; the integers are spaced far apart and rebuilt where a new element would need one between k and k+1
+    // signature-pruning.23 cited-checked: roune-2012 §3.4 -- an integer per basis element orders the sig-lead ratios, so a ratio comparison is an integer comparison; the integers are spaced far apart and rebuilt where a new element would need one between k and k+1
     /// Per element the integer of its (sig-lead ratio, index): the
     /// integers order them, and equal ones share one. No element has 0 or
     /// `u64::MAX`, the bounds where a neighbour is missing.
     tau: Vec<u64>,
     /// The elements by (sig-lead ratio, index, terms, element).
     sorted: Vec<Entry>,
-    // matrix-build-time.7 design -- the reducer order's masks stand in an array of their own, in step with the order, and the reducer search tests eight at a time before it tests the candidates' divisibility in order, not a mask in each entry tested one by one; roune-2012 §4.2 eliminates around 98% of divisibility checks by the divmask, one mask per test (signature-pruning.20) (log 0035-1, 0037-1)
+    // matrix-build-time.7 practice-checked: structure of arrays -- the reducer order's masks stand in an array of their own, in step with the order, and the reducer search tests eight at a time before it tests the candidates' divisibility in order, not a mask in each entry tested one by one; roune-2012 §4.2 eliminates around 98% of divisibility checks by the divmask, one mask per test (signature-pruning.20) (log 0035-1, 0037-1)
     /// The divisor mask of each entry's leading monomial, in step with
     /// `sorted`.
     masks: Vec<u32>,
     /// Per index its elements, in the order made.
     by_index: Vec<Vec<ElementId>>,
-    /// Per index the monomials of the known syzygy signatures, minimal.
+    /// Per index the monomials of the known syzygy signatures, minimal but
+    /// for the members a coprime S-pair's Koszul signature divides
+    /// (`push_coprime`).
     syzygies: Vec<Antichain>,
+    /// The inputs' leading monomials, which hold their Koszul signatures.
+    inputs: Inputs,
 }
 
 impl Signatures {
@@ -196,22 +277,139 @@ impl Signatures {
             masks: Vec::new(),
             by_index: vec![Vec::new(); inputs],
             syzygies: vec![Antichain::default(); inputs],
+            inputs: Inputs::default(),
         }
     }
 
-    // signature-pruning.10 cited: eder-2017 §13, Algorithm (Symbolic Preprocessing respecting signatures) and Property (1) -- the single reducer of minimal signature, the smaller the signature the bigger the probability it reduces another row; roune-2012 §3.4 -- compare sig-lead ratios instead of signatures
-    // rule-breaches.7 design -- the element recorded is the next past those recorded, which `basis` pushed last, not an id the caller passes, with an error or a debug assertion where it is not the next (not measured)
+    /// Takes the inputs' leading monomials, `leads[i]` that of the input of
+    /// index i, each a monomial of a variable or more: their Koszul
+    /// signatures are known from here on.
+    pub(crate) fn set_inputs<M: Format>(&mut self, table: &Table<M>, leads: Vec<MonoId>) {
+        debug_assert_eq!(
+            leads.len(),
+            self.by_index.len(),
+            "a leading monomial per input"
+        );
+        let format = table.format();
+        let n = format.variables();
+        let inputs = &mut self.inputs;
+        inputs.masks = leads.iter().map(|&l| table.mask(l)).collect();
+        inputs.by_first = (n > KOSZUL_INDEX_VARIABLES).then(|| {
+            let mut firsts = Vec::with_capacity(leads.len());
+            for &l in &leads {
+                format.held(table.monomial(l), &mut inputs.held);
+                #[allow(
+                    clippy::expect_used,
+                    reason = "the run ends on a constant input before it takes the inputs' leads (`f4::constant_input`)"
+                )]
+                let first = *inputs.held.first().expect("a lead of a variable or more");
+                firsts.push(first as usize);
+            }
+            let mut starts = vec![0u32; n + 1];
+            for &v in &firsts {
+                starts[v + 1] += 1;
+            }
+            for v in 0..n {
+                starts[v + 1] += starts[v];
+            }
+            let mut next = starts.clone();
+            let mut of = vec![0u32; leads.len()];
+            for (i, &v) in firsts.iter().enumerate() {
+                of[next[v] as usize] = i.narrow();
+                next[v] += 1;
+            }
+            ByFirst { starts, of }
+        });
+        inputs.leads = leads;
+    }
+
+    // bivium-gap.1 cited-checked:faugere-2002 §5, Definition 2, and §7.2, CritPair, via albrecht-2010 §2, Theorem 2.4 -- an S-polynomial of signature t·e_i is redundant where the leading monomial of an element of lower index divides t; roune-2012 §3.3 -- inserting all Koszul syzygy signatures into the known ones costs significant overhead in space and in time for checking them
+    // bivium-gap.2 design-checked -- the elements of lower index are the inputs alone, whose products with lm(f_j) are the Koszul signatures the run entered among the known ones before, not every element of lower index, so that every call takes its path in Schreyer's order (log 0163-1, 0163-2)
+    /// Whether a Koszul signature of the inputs, `lm(f_i)·lm(f_j)·e_j` for an
+    /// input i below j, divides the signature of index j whose monomial is
+    /// `m`, or the monomial formed last where `m` is None, of mask `mask`:
+    /// whether `lm(f_i)` divides its quotient by `lm(f_j)`, which divides it.
+    /// No Koszul signature is known before `set_inputs`. The quotient spends
+    /// the format's words, and the search a unit per block of the leads'
+    /// masks or per lead it visits and `PROBE` units per lead it tests, at
+    /// `Site::Koszul`; a stop where the budget's check stops the call.
+    fn koszul<M: Format>(
+        &mut self,
+        table: &mut Table<M>,
+        m: Option<MonoId>,
+        j: u32,
+        mask: u32,
+        budget: &mut Budget,
+    ) -> Result<bool, Stop> {
+        let j = j as usize;
+        debug_assert!(j < self.by_index.len(), "the index {j} of an input");
+        let inputs = &mut self.inputs;
+        if j == 0 || inputs.leads.is_empty() {
+            return Ok(false);
+        }
+        table.form_divided(m, inputs.leads[j]);
+        let table = &*table;
+        let format = table.format();
+        let quotient = table.divided();
+        let mut tested = 0;
+        // bivium-gap.4 design-checked -- a lead's mask is tested against the signature's mask, which passes every divisor of the quotient, not against the quotient's own, a pass over its words more (log 0163-1, 0163-2)
+        let (found, units) = match &inputs.by_first {
+            None => {
+                let leads = &inputs.leads;
+                let found = find_passing(&inputs.masks[..j], mask, |input| {
+                    tested += 1;
+                    format.divides(table.monomial(leads[input]), quotient)
+                })
+                .is_some();
+                (found, search_units(j, tested))
+            }
+            Some(ByFirst { starts, of }) => {
+                format.held(quotient, &mut inputs.held);
+                let mut visited = 0;
+                let mut found = false;
+                'search: for &variable in &inputs.held {
+                    let variable = variable as usize;
+                    let list = &of[starts[variable] as usize..starts[variable + 1] as usize];
+                    for &input in list {
+                        let input = input as usize;
+                        if input >= j {
+                            break;
+                        }
+                        visited += 1;
+                        if inputs.masks[input] & !mask == 0 {
+                            tested += 1;
+                            if format.divides(table.monomial(inputs.leads[input]), quotient) {
+                                found = true;
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+                (found, visited + tested * PROBE)
+            }
+        };
+        // bivium-gap.7 design-checked -- the test spends at Site::Koszul the quotient's words, a unit per block of the leads' masks or per lead visited, and PROBE units per lead tested, not unspent nor spent at Site::Antichain (log 0163-2)
+        budget.spend(format.words() + units, Site::Koszul)?;
+        Ok(found)
+    }
+
+    // signature-pruning.10 cited-checked: eder-2017 §13, Algorithm (Symbolic Preprocessing respecting signatures) and Property (1) -- the single reducer of minimal signature, the smaller the signature the bigger the probability it reduces another row; roune-2012 §3.4 -- compare sig-lead ratios instead of signatures
+    // rule-breaches.7 design-checked -- the element recorded is the next past those recorded, which `basis` pushed last, not an id the caller passes, with an error or a debug assertion where it is not the next (not measured)
+    // call-stop-latency.20 design-checked -- the signature run's searches, the antichain's, the reducer's, the reductant's, the base divisors', and the signatures' pushes, take the budget and spend a unit per member visited, not unspent (log 0138-5)
     /// Records the signature of the element `basis` pushed last, nonzero,
     /// the next past the elements recorded. It takes its place in the
-    /// reducer order by binary search. Overflow where a ratio comparison
-    /// passes the format.
+    /// reducer order by binary search. The push spends at `Site::SigEnter`
+    /// its comparisons, `ratio_units` each, and the entries its insertion
+    /// moves, a unit each, once it is in, and the respacing its own
+    /// (`respace`); a stop where the budget's check stops the call.
     pub(crate) fn push<F: Field, M: Format, O: Order<M>, D: Module>(
         &mut self,
         table: &Table<M>,
         order: &O,
         basis: &Basis<F, D>,
         sig: Sig,
-    ) -> Result<(), Overflow> {
+        budget: &mut Budget,
+    ) -> Result<(), Stop> {
         debug_assert_eq!(
             basis.len(),
             self.sig.len() + 1,
@@ -225,10 +423,12 @@ impl Signatures {
             terms: basis.length(element).narrow(),
         };
         // The class of an entry: its (ratio, index).
-        let class = |e: &Entry| -> Result<Ordering, Overflow> {
+        let mut compared = 0;
+        let mut class = |e: &Entry| -> Ordering {
+            compared += 1;
             let s = self.sig[e.element.index()];
-            let ratio = cmp_ratio(table, order, (s.monomial, e.lead), (sig.monomial, lead))?;
-            Ok(ratio.then(s.index.cmp(&sig.index)))
+            cmp_ratio(table, order, (s.monomial, e.lead), (sig.monomial, lead))
+                .then(s.index.cmp(&sig.index))
         };
         // The first entry after the new one. An entry of the same class and
         // terms comes before it, as its element was made first.
@@ -236,7 +436,7 @@ impl Signatures {
         while lo < hi {
             let mid = usize::midpoint(lo, hi);
             let e = &self.sorted[mid];
-            let before = class(e)?.then(e.terms.cmp(&new.terms)).is_le();
+            let before = class(e).then(e.terms.cmp(&new.terms)).is_le();
             if before {
                 lo = mid + 1;
             } else {
@@ -248,15 +448,20 @@ impl Signatures {
         let right = self.sorted.get(p).copied();
         let mut tau = None;
         for e in left.iter().chain(&right) {
-            if class(e)?.is_eq() {
+            if class(e).is_eq() {
                 tau = Some(self.tau[e.element.index()]);
                 break;
             }
         }
+        let moved = self.sorted.len() - p;
         self.sig.push(sig);
         self.sorted.insert(p, new);
         self.masks.insert(p, table.mask(lead));
         self.by_index[sig.index as usize].push(element);
+        budget.spend(
+            1 + compared * ratio_units(table.format().words()) + moved,
+            Site::SigEnter,
+        )?;
         if let Some(t) = tau {
             self.tau.push(t);
             return Ok(());
@@ -265,36 +470,46 @@ impl Signatures {
         let above = right.map_or(u64::MAX, |e| self.tau[e.element.index()]);
         self.tau.push(below + (above - below) / 2);
         if above - below < 2 {
-            self.respace(p);
+            self.respace(p, budget)?;
         }
         Ok(())
     }
 
     /// Gives the classes along `sorted` integers spaced evenly over u64.
     /// `sorted[p]` is the new element, of a class of its own, and its
-    /// integer is a placeholder.
-    fn respace(&mut self, p: usize) {
+    /// integer is a placeholder. Each of its two passes spends `PROBE` units
+    /// an entry, its integer read at a random place, at `Site::SigEnter`
+    /// after each `PLACE`; a stop where the budget's check stops the call,
+    /// the integers then part respaced, which the stopped run drops.
+    fn respace(&mut self, p: usize, budget: &mut Budget) -> Result<(), Stop> {
         let sorted = &self.sorted;
         let tau = &mut self.tau;
         let starts =
             |k: usize, previous: u64, old: u64| k == 0 || k == p || k == p + 1 || old != previous;
         let (mut classes, mut previous) = (0u64, 0u64);
-        for (k, e) in sorted.iter().enumerate() {
-            let old = tau[e.element.index()];
-            classes += u64::from(starts(k, previous, old));
-            previous = old;
+        for (c, chunk) in sorted.chunks(PLACE).enumerate() {
+            for (i, e) in chunk.iter().enumerate() {
+                let old = tau[e.element.index()];
+                classes += u64::from(starts(c * PLACE + i, previous, old));
+                previous = old;
+            }
+            budget.spend(chunk.len() * PROBE, Site::SigEnter)?;
         }
         let spacing = u64::MAX / (classes + 1);
         let (mut class, mut previous) = (0u64, 0u64);
-        for (k, e) in sorted.iter().enumerate() {
-            let old = tau[e.element.index()];
-            class += u64::from(starts(k, previous, old));
-            previous = old;
-            tau[e.element.index()] = class * spacing;
+        for (c, chunk) in sorted.chunks(PLACE).enumerate() {
+            for (i, e) in chunk.iter().enumerate() {
+                let old = tau[e.element.index()];
+                class += u64::from(starts(c * PLACE + i, previous, old));
+                previous = old;
+                tau[e.element.index()] = class * spacing;
+            }
+            budget.spend(chunk.len() * PROBE, Site::SigEnter)?;
         }
+        Ok(())
     }
 
-    // table-read-time.5 design -- an element's signature, the order of two elements' ratios, and the triangle's bit read with no bounds check outside the test profile, not a bounds check per read (log 0045-1)
+    // table-read-time.5 design-checked -- an element's signature, the order of two elements' ratios, and the triangle's bit read with no bounds check outside the test profile, not a bounds check per read (log 0045-1)
     /// The signature of element `element`, entered by `push`. The read has
     /// no bounds check outside the test profile, whose debug assertions
     /// check it.
@@ -322,82 +537,155 @@ impl Signatures {
         }
     }
 
-    // signature-pruning.16 cited: roune-2012 §3.1 -- the signature criterion eliminates all syzygy signatures divisible by some other syzygy signature
-    /// Records a known syzygy signature: false where a known one divides it
-    /// and nothing changes. The known ones it divides are forgotten.
-    pub(crate) fn push_syzygy<M: Format>(&mut self, table: &Table<M>, sig: Sig) -> bool {
-        if self.is_syzygy(table, sig) {
-            return false;
+    // signature-pruning.16 cited-checked: roune-2012 §3.3 -- the signature criterion eliminates all syzygy signatures that are divisible by some other syzygy signature
+    /// Records a known syzygy signature: false where a known one or a
+    /// Koszul signature of the inputs divides it and nothing changes. The
+    /// known ones it divides are forgotten. The search spends as
+    /// `is_syzygy` spends, and the scan at `Site::Antichain`; a stop where
+    /// the budget's check stops the call.
+    pub(crate) fn push_syzygy<M: Format>(
+        &mut self,
+        table: &mut Table<M>,
+        sig: Sig,
+        budget: &mut Budget,
+    ) -> Result<bool, Stop> {
+        if self.is_syzygy(table, sig, budget)? {
+            return Ok(false);
         }
         let known = &mut self.syzygies[sig.index as usize];
-        known.drop_multiples(table, sig.monomial);
+        known.drop_multiples(table, sig.monomial, budget)?;
         known.push(table, sig.monomial);
-        true
+        Ok(true)
     }
 
-    /// Whether a known syzygy signature divides `sig`.
-    pub(crate) fn is_syzygy<M: Format>(&mut self, table: &Table<M>, sig: Sig) -> bool {
+    // bivium-rest-gap.5 design-checked -- the Koszul signature of an S-pair of coprime leading monomials is recorded with no search, which the search of its formed signature answered right before with the known ones as they stand, not that search run again by `push_syzygy` (log 0181-1)
+    // bivium-rest-gap.6 design-checked -- the record leaves the known syzygy signatures of the index that the Koszul signature divides among them, not dropped by a scan of every known one of the index (signature-pruning.16), whose scans took bivium-115's entering more instructions than its searches spend on the members left; every search answers as before (log 0181-1)
+    /// Records the Koszul signature `sig` of an S-pair of coprime leading
+    /// monomials, which no known syzygy signature and no Koszul signature of
+    /// the inputs divides: the caller's search of its formed signature found
+    /// none (`is_syzygy_formed`). The known ones it divides stay. It spends
+    /// nothing beside that search.
+    pub(crate) fn push_coprime<M: Format>(&mut self, table: &Table<M>, sig: Sig) {
+        debug_assert!(
+            (sig.index as usize) < self.syzygies.len(),
+            "the index {index} of an input",
+            index = sig.index
+        );
+        self.syzygies[sig.index as usize].push(table, sig.monomial);
+    }
+
+    // bivium-gap.6 design-checked -- the inputs' Koszul signatures are tested after the search of the known syzygy signatures finds none, not before it (log 0163-1, 0163-2)
+    /// Whether a known syzygy signature or a Koszul signature of the inputs
+    /// divides `sig`, the search of the known ones spent at
+    /// `Site::Antichain` and the Koszul test at `Site::Koszul` (`koszul`); a
+    /// stop where the budget's check stops the call.
+    pub(crate) fn is_syzygy<M: Format>(
+        &mut self,
+        table: &mut Table<M>,
+        sig: Sig,
+        budget: &mut Budget,
+    ) -> Result<bool, Stop> {
         let m = sig.monomial;
-        self.syzygies[sig.index as usize].divides(table, table.monomial(m), table.mask(m))
+        let mask = table.mask(m);
+        if self.syzygies[sig.index as usize].divides(table, table.monomial(m), mask, budget)? {
+            return Ok(true);
+        }
+        self.koszul(table, Some(m), sig.index, mask, budget)
     }
 
-    /// Whether a known syzygy signature of index `formed.index` divides the
-    /// monomial formed last in the table.
+    /// Whether a known syzygy signature or a Koszul signature of the inputs
+    /// of index `formed.index` divides the monomial formed last in the
+    /// table, spent as `is_syzygy` spends; a stop where the budget's check
+    /// stops the call.
     pub(crate) fn is_syzygy_formed<M: Format>(
         &mut self,
-        table: &Table<M>,
+        table: &mut Table<M>,
         formed: &Formed,
-    ) -> bool {
-        self.syzygies[formed.index as usize].divides(table, table.formed(), formed.mask)
+        budget: &mut Budget,
+    ) -> Result<bool, Stop> {
+        if self.syzygies[formed.index as usize].divides(
+            table,
+            table.formed(),
+            formed.mask,
+            budget,
+        )? {
+            return Ok(true);
+        }
+        self.koszul(table, None, formed.index, formed.mask, budget)
     }
 
-    // signature-pruning.4 cited: arri-2011 §7.2 -- start with a polynomial with the smallest leading term known for a signature, where F5 keeps the first generated; via eder-2013 §3.3, Theorem 13; gao-2016 §3, independently -- one J-pair for each J-signature, the one whose v-part is minimal; the tie as eder-2017 §7.3, Definition of ⊴_rat
+    // signature-pruning.4 cited-checked: arri-2011 §7.2 -- start with a polynomial with the smallest leading term known for a signature, where F5 keeps the first generated; via eder-2013 §3.3, Theorem 13; gao-2016 §3, independently -- one J-pair for each J-signature, the one whose v-part is minimal; the tie as eder-2017 §7.3, Definition of ⊴_rat
+    // call-stop-latency.20 design-checked -- the signature run's searches, the antichain's, the reducer's, the reductant's, the base divisors', and the signatures' pushes, take the budget and spend a unit per member visited, not unspent (log 0138-5)
     /// The element of the reductant at `sig`: of the elements whose
     /// signature divides it, the one of largest sig-lead ratio, ties to the
     /// larger signature, then to the element made first. None where none
-    /// divides it.
+    /// divides it. The scan of the elements of `sig`'s index spends `PROBE`
+    /// units an element, its signature read at a random place, at
+    /// `Site::Reducer` after each `PLACE`; a stop where the budget's check
+    /// stops the call.
     pub(crate) fn reductant<M: Format, O: Order<M>>(
         &self,
         table: &Table<M>,
         order: &O,
         sig: Sig,
-    ) -> Option<ElementId> {
+        budget: &mut Budget,
+    ) -> Result<Option<ElementId>, Stop> {
         let mut best: Option<ElementId> = None;
-        for &e in &self.by_index[sig.index as usize] {
-            let s = self.sig[e.index()].monomial;
-            if !table.divides(s, sig.monomial) {
-                continue;
+        for chunk in self.by_index[sig.index as usize].chunks(PLACE) {
+            for &e in chunk {
+                let s = self.sig[e.index()].monomial;
+                if !table.divides(s, sig.monomial) {
+                    continue;
+                }
+                let better = match best {
+                    None => true,
+                    Some(b) => match self.tau[e.index()].cmp(&self.tau[b.index()]) {
+                        Ordering::Greater => true,
+                        Ordering::Less => false,
+                        Ordering::Equal => {
+                            table.cmp(order, s, self.sig[b.index()].monomial).is_gt()
+                        }
+                    },
+                };
+                if better {
+                    best = Some(e);
+                }
             }
-            let better = match best {
-                None => true,
-                Some(b) => match self.tau[e.index()].cmp(&self.tau[b.index()]) {
-                    Ordering::Greater => true,
-                    Ordering::Less => false,
-                    Ordering::Equal => table.cmp(order, s, self.sig[b.index()].monomial).is_gt(),
-                },
-            };
-            if better {
-                best = Some(e);
-            }
+            budget.spend(chunk.len() * PROBE, Site::Reducer)?;
         }
-        best
+        Ok(best)
     }
 
-    // table-read-time.9 design -- the formed signature's factors, the reducer search's entries, the known syzygy signatures' ids, and the plain run's divisor search keep their bounds checks, not read unchecked as well (log 0045-1)
+    /// The elements whose signatures it holds, the masks a reducer search
+    /// may test, which its caller spends with the candidates the search
+    /// tested (`table::search_units`).
+    pub(crate) fn len(&self) -> usize {
+        self.masks.len()
+    }
+
+    // table-read-time.9 design-checked -- the formed signature's factors, the reducer search's entries, the known syzygy signatures' ids, and the plain run's divisor search keep their bounds checks, not read unchecked as well (log 0045-1)
     /// The reducer of monomial `m`: of the elements whose leading monomial
     /// divides m, the one of least (sig-lead ratio, index), ties to fewer
-    /// terms, then to the element made first (signature-pruning.10). None
-    /// where none divides m.
-    pub(crate) fn reducer<M: Format>(&self, table: &Table<M>, m: MonoId) -> Option<ElementId> {
+    /// terms, then to the element made first (signature-pruning.10), None
+    /// where none divides m; and the candidates whose divisibility the
+    /// search tested.
+    pub(crate) fn reducer<M: Format>(
+        &self,
+        table: &Table<M>,
+        m: MonoId,
+    ) -> (Option<ElementId>, usize) {
         let (format, words) = (table.format(), table.monomial(m));
         let sorted = &self.sorted;
-        find_passing(&self.masks, table.mask(m), |k| {
+        let mut tested = 0;
+        let found = find_passing(&self.masks, table.mask(m), |k| {
+            tested += 1;
             format.divides(table.monomial(sorted[k].lead), words)
         })
-        .map(|k| sorted[k].element)
+        .map(|k| sorted[k].element);
+        (found, tested)
     }
 
-    // table-read-time.5 design -- an element's signature, the order of two elements' ratios, and the triangle's bit read with no bounds check outside the test profile, not a bounds check per read (log 0045-1)
+    // table-read-time.5 design-checked -- an element's signature, the order of two elements' ratios, and the triangle's bit read with no bounds check outside the test profile, not a bounds check per read (log 0045-1)
     /// Whether element e's (sig-lead ratio, index) is less than element
     /// f's: at a monomial both leading monomials divide, e's multiple has
     /// the smaller signature. The reads have no bounds check outside the
@@ -450,7 +738,7 @@ pub(crate) fn pair<F: Field, M: Format, D: Module>(
     }))
 }
 
-// signature-pair-time.5 cited: roune-2012 §3.5 -- we use a triangle of bits, one bit for each S-pair, so we can see in constant time if we know S(α, γ) to have a syzygy signature
+// signature-pair-time.5 cited-checked: roune-2012 §3.5 -- we use a triangle of bits, one bit for each S-pair, so we can see in constant time if we know S(α, γ) to have a syzygy signature
 /// One bit per pair of elements: set where its S-pair is known to have a
 /// syzygy signature.
 pub(crate) struct Triangle {
@@ -463,15 +751,19 @@ impl Triangle {
         Triangle { rows: Vec::new() }
     }
 
-    /// Rows for the elements up to `elements`.
-    pub(crate) fn grow(&mut self, elements: usize) {
+    /// Rows for the elements up to `elements`, each spent a unit and a unit
+    /// a word at `Site::SigEnter`; a stop where the budget's check stops the
+    /// call.
+    pub(crate) fn grow(&mut self, elements: usize, budget: &mut Budget) -> Result<(), Stop> {
         while self.rows.len() < elements {
             let j = self.rows.len();
             self.rows.push(vec![0; j.div_ceil(64)]);
+            budget.spend(1 + j.div_ceil(64), Site::SigEnter)?;
         }
+        Ok(())
     }
 
-    // table-read-time.5 design -- an element's signature, the order of two elements' ratios, and the triangle's bit read with no bounds check outside the test profile, not a bounds check per read (log 0045-1)
+    // table-read-time.5 design-checked -- an element's signature, the order of two elements' ratios, and the triangle's bit read with no bounds check outside the test profile, not a bounds check per read (log 0045-1)
     /// The bit of the pair (i, j). The read has no bounds check outside the
     /// test profile, whose debug assertions check it.
     pub(crate) fn get(&self, i: ElementId, j: ElementId) -> bool {
@@ -492,14 +784,14 @@ impl Triangle {
     }
 }
 
-// signature-pair-time.4 cited: roune-2012 §3.5 -- the base divisor that will eliminate the most S-pairs is the one with the highest sig-lead ratio, so we use that one; the numbers are based on two base divisors per β, as that minimized the total runtime
+// signature-pair-time.4 cited-checked: roune-2012 §3.5 -- the base divisor that will eliminate the most S-pairs is the one with the highest sig-lead ratio, so we use that one; the numbers are based on two base divisors per β, as that minimized the total runtime
 /// The base divisors of an element t (roune-2012 §3.5), in a format of
 /// words `W`.
 pub(crate) struct BaseDivisors<W> {
     /// Of largest τ among the earlier elements whose leading monomial
     /// divides lm(t).
     pub(crate) high: Option<ElementId>,
-    // monomial-time.12 design -- the low ratio base divisor's x^v is packed words of the format, an infinite exponent held as MAX_DEGREE, and in(γ) | x^v is the format's divisibility test, not a vector of u32 with u32::MAX for an infinite exponent compared exponent by exponent (log 0029-1)
+    // monomial-time.12 design-checked -- the low ratio base divisor's x^v is packed words of the format, an infinite exponent held as MAX_DEGREE, and in(γ) | x^v is the format's divisibility test, not a vector of u32 with u32::MAX for an infinite exponent compared exponent by exponent (log 0029-1)
     /// Of largest τ among the earlier elements whose signature divides
     /// 𝔰(t), with x^v as packed words of the format, an infinite exponent
     /// held as `MAX_DEGREE`.
@@ -514,35 +806,46 @@ pub(crate) enum Base {
 }
 
 impl<W: Copy + Default> BaseDivisors<W> {
-    // signature-pair-time.7 design -- the base divisors are found by a scan of the earlier elements, by leading monomial and by signature within the index (log 0026-1)
-    /// The base divisors of element t among the elements before it.
+    // signature-pair-time.7 design-checked -- the base divisors are found by a scan of the earlier elements, by leading monomial and by signature within the index (log 0026-1)
+    // call-stop-latency.20 design-checked -- the signature run's searches, the antichain's, the reducer's, the reductant's, the base divisors', and the signatures' pushes, take the budget and spend a unit per member visited, not unspent (log 0138-5)
+    /// The base divisors of element t among the elements before it. Its two
+    /// scans spend `PROBE` units an element, a monomial read at a random
+    /// place, after each `PLACE`, and the low ratio divisor's x^v a unit a
+    /// variable, at `Site::SigEnter`; a stop where the budget's check stops
+    /// the call.
     pub(crate) fn of<F: Field, M: Format<Word = W>, D: Module>(
         table: &Table<M>,
         basis: &Basis<F, D>,
         sigs: &Signatures,
         t: ElementId,
-    ) -> BaseDivisors<W> {
-        // signature-pair-time.13 design -- among candidates of equal sig-lead ratio and index, the base divisor is the one made first (not measured)
+        budget: &mut Budget,
+    ) -> Result<BaseDivisors<W>, Stop> {
+        // signature-pair-time.13 design-checked -- among candidates of equal sig-lead ratio and index, the base divisor is the one made first (not measured)
         let larger = |e: ElementId, best: Option<ElementId>| {
             best.is_none_or(|b| sigs.tau[e.index()] > sigs.tau[b.index()])
         };
         let b = basis.lead(t);
         let mut high = None;
-        for e in (0..t.index()).map(ElementId::at) {
-            if larger(e, high) && table.divides(basis.lead(e), b) {
-                high = Some(e);
+        for start in (0..t.index()).step_by(PLACE) {
+            let end = (start + PLACE).min(t.index());
+            for e in (start..end).map(ElementId::at) {
+                if larger(e, high) && table.divides(basis.lead(e), b) {
+                    high = Some(e);
+                }
             }
+            budget.spend((end - start) * PROBE, Site::SigEnter)?;
         }
         let s = sigs.sig(t);
         let mut alpha = None;
         // An index's elements stand in the order made.
-        for &e in &sigs.by_index[s.index as usize] {
-            if e >= t {
-                break;
+        let earlier = sigs.by_index[s.index as usize].partition_point(|&e| e < t);
+        for chunk in sigs.by_index[s.index as usize][..earlier].chunks(PLACE) {
+            for &e in chunk {
+                if larger(e, alpha) && table.divides(sigs.sig(e).monomial, s.monomial) {
+                    alpha = Some(e);
+                }
             }
-            if larger(e, alpha) && table.divides(sigs.sig(e).monomial, s.monomial) {
-                alpha = Some(e);
-            }
+            budget.spend(chunk.len() * PROBE, Site::SigEnter)?;
         }
         // roune-2012 Theorem 8: x^p = lm(α′)·𝔰(t)/𝔰(α′), and v_i = ∞ where
         // b_i ≤ p_i, else max(p_i, a_i), which is p_i since 𝔰(α′) | 𝔰(t).
@@ -565,10 +868,13 @@ impl<W: Copy + Default> BaseDivisors<W> {
             format.pack(&v, &mut words);
             (a, words)
         });
-        BaseDivisors { high, low }
+        if low.is_some() {
+            budget.spend(table.format().variables(), Site::SigEnter)?;
+        }
+        Ok(BaseDivisors { high, low })
     }
 
-    // signature-pair-time.3 cited: roune-2012 §3.5 and Appendix B.2, Theorems 18 and 19 -- the base divisor criterion is strictly weaker than the signature criterion, but it is faster to check; for yang1 the base divisors are a 35% performance improvement, and they eliminate 71% of the S-pairs
+    // signature-pair-time.3 cited-checked: roune-2012 §3.5 and Appendix B.2, Theorems 18 and 19 -- the base divisor criterion is strictly weaker than the signature criterion, but it is faster to check; for yang1 the base divisors are a 35% performance improvement, and they eliminate 71% of the S-pairs
     /// Which base divisor eliminates S(t, g), g < t, where one does: its
     /// S-pair with g is known to have a syzygy signature, and that
     /// signature divides 𝔰(S(t, g)) by roune-2012 Theorem 7 or 8. τ orders
@@ -610,7 +916,7 @@ impl<W: Copy + Default> BaseDivisors<W> {
     }
 }
 
-// signature-pair-time.12 design -- run_sig takes a Pairs: whether to use base divisors, and the count of every kind of S-pair (not measured)
+// signature-pair-time.12 design-checked -- run_sig takes a Pairs: whether to use base divisors, and the count of every kind of S-pair (not measured)
 /// The S-pairs of a signature run: whether the run starts out using base
 /// divisors, and what became of every S-pair it considered.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -623,7 +929,8 @@ pub(crate) struct Pairs {
     pub(crate) high: u64,
     /// Eliminated by the low ratio base divisor.
     pub(crate) low: u64,
-    /// Formed, and a known syzygy signature divides it.
+    /// Formed, and a known syzygy signature or a Koszul signature of the
+    /// inputs divides it.
     pub(crate) syzygy: u64,
     /// Formed, coprime leading monomials, entered as a syzygy signature.
     pub(crate) koszul: u64,
@@ -639,87 +946,6 @@ impl Pairs {
             bases,
             ..Pairs::default()
         }
-    }
-}
-
-/// The pending signatures.
-pub(crate) struct Queue {
-    /// Per index the monomials of the pending signatures.
-    pending: Vec<Vec<MonoId>>,
-    // signature-pruning.26 design -- a hash set of the pending signatures stands beside the lists and finds a signature already pending, not a scan of its index's list (not measured)
-    /// The pending signatures.
-    set: HashSet<Sig>,
-}
-
-impl Queue {
-    pub(crate) fn new(inputs: usize) -> Queue {
-        Queue {
-            pending: vec![Vec::new(); inputs],
-            set: HashSet::new(),
-        }
-    }
-
-    // signature-pruning.25 cited: lairez-2022 §5.7, Theorem 62 -- Algorithm 8 is correct with Invariant (1), every critical signature pending or the basis a rewrite basis there; eder-2017 §6.2, Lemma (singular criterion) -- for any signature exactly one element needs to be handled
-    /// Adds `sig` unless it is pending. A pending signature that divides
-    /// another stays beside it, and the run drops a multiple of a known
-    /// syzygy signature when a round takes it (gfp-unsolved.14).
-    pub(crate) fn push(&mut self, sig: Sig) {
-        if self.set.insert(sig) {
-            self.pending[sig.index as usize].push(sig.monomial);
-        }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.set.is_empty()
-    }
-
-    /// Gives back the slack of the growable arrays and of the set.
-    pub(crate) fn shrink_to_fit(&mut self) {
-        for list in &mut self.pending {
-            list.shrink_to_fit();
-        }
-        self.set.shrink_to_fit();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.set.len()
-    }
-
-    // signature-pruning.3 cited: eder-2013a §3 -- signature-based algorithms should always be implemented without a purely polynomial degree preselection; §4, Theorem 12 -- sig-deg(f) equals the sugar degree of poly(f)
-    /// Takes out every pending signature of the least degree, in increasing
-    /// order of signature.
-    pub(crate) fn pop_least<M: Format, O: Order<M>>(
-        &mut self,
-        table: &Table<M>,
-        order: &O,
-    ) -> Vec<Sig> {
-        let least = self
-            .pending
-            .iter()
-            .flat_map(|p| p.iter().map(|&m| table.degree(m)))
-            .min();
-        let Some(d) = least else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for (index, pending) in self.pending.iter_mut().enumerate() {
-            pending.retain(|&monomial| {
-                if table.degree(monomial) != d {
-                    return true;
-                }
-                out.push(Sig {
-                    monomial,
-                    index: index.narrow(),
-                });
-                false
-            });
-        }
-        for s in &out {
-            self.set.remove(s);
-        }
-        out.sort_by(|a, b| a.cmp(*b, table, order));
-        out
     }
 }
 
@@ -746,9 +972,9 @@ mod tests {
         let field = Gf31::new(65521).unwrap();
         let mut basis: Basis<Gf31, Rank1> = Basis::new();
         let mut sigs = Signatures::new(1);
-        let s = table.intern(&[count, 0]).unwrap();
+        let s = table.intern(&[count, 0], &mut Budget::unbounded()).unwrap();
         for (k, &l) in leads.iter().enumerate() {
-            let lead = table.intern(&[l, 0]).unwrap();
+            let lead = table.intern(&[l, 0], &mut Budget::unbounded()).unwrap();
             let poly = Poly {
                 monomials: vec![lead],
                 coefs: vec![field.coef(1)],
@@ -759,7 +985,8 @@ mod tests {
                 monomial: s,
                 index: 0,
             };
-            sigs.push(&table, &Grevlex, &basis, sig).unwrap();
+            sigs.push(&table, &Grevlex, &basis, sig, &mut Budget::unbounded())
+                .unwrap();
             // The larger lead, the smaller ratio.
             for a in 0..=k {
                 for b in 0..=k {

@@ -8,7 +8,7 @@ use grobx_checker::{Mode, Order, check};
 use crate::common::{Case, matrix_text, plus, quadrics};
 use crate::orders::{Jl, accept_and_reject_in, agree_full_in, rule_in, solved_in, variables};
 
-// checker-orders.14 design -- the Accept cases take lex and block:k: k drawn from 1 to n − 1 on random systems, k = 1 on the edge cases (not measured)
+// checker-orders.14 design-checked -- the Accept cases take lex and block:k: k drawn from 1 to n − 1 on random systems, k = 1 on the edge cases (not measured)
 /// The orders of the edge cases on n variables: lex, and `block:1` where
 /// there are two variables or more.
 fn jls(n: usize) -> Vec<Jl> {

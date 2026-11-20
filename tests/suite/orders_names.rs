@@ -24,7 +24,14 @@ fn refused(text: &str, name: &str) -> bool {
 
 #[test]
 fn the_names_of_the_family() {
-    for name in ["grevlex", "lex", "block:1", "block:2", "block:1,1"] {
+    for name in [
+        "grevlex",
+        "deglex",
+        "lex",
+        "block:1",
+        "block:2",
+        "block:1,1",
+    ] {
         assert!(run(THREE, &params_in(name, 1)).basis.is_some(), "{name}");
     }
 }
@@ -35,8 +42,15 @@ fn names_outside_the_family_are_refused() {
         "",
         "Lex",
         "LEX",
-        "deglex",
+        "degneglex",
         "degrevlex",
+        "dp",
+        "Dp",
+        "lp",
+        "grlex",
+        "plex",
+        "tdeg",
+        "revlex",
         "grevlex ",
         " lex",
         "block",
@@ -81,7 +95,7 @@ fn the_sizes_leave_a_last_block() {
 #[test]
 fn when_a_name_is_refused() {
     let broken = "x,x\n65521\nx\n";
-    assert!(refused(broken, "deglex"));
+    assert!(refused(broken, "degneglex"));
     assert!(matches!(
         grobx::groebner(broken, &params_in("block:5", 1)),
         Err(Error::RepeatedVariable { .. })

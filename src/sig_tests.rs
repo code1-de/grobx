@@ -8,39 +8,27 @@
 
 use std::cmp::Ordering;
 
-use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::budget::Budget;
 use crate::field::{Field, Gf31};
 use crate::id::{ElementId, MonoId};
 use crate::module::Rank1;
-use crate::monomial::{Dense16, Format, Overflow};
+use crate::monomial::{Dense16, Format};
 use crate::order::Grevlex;
 use crate::poly::{Basis, Poly};
-use crate::sig::{Queue, Sig, Signatures, cmp_ratio, pair};
+use crate::queue::Queue;
+use crate::shared_tests::{
+    SIG_INDICES, SIG_VARIABLES, below, divides, exponents, grevlex, id, minus, rng, sig_cmp,
+    sig_divides, sig_table,
+};
+use crate::sig::{Sig, Signatures, cmp_ratio, pair};
 use crate::table::{Limit, Table};
-
-/// The variables of every table here.
-const N: usize = 3;
-/// The indices of the random signatures.
-const INDICES: u32 = 2;
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
-
-fn table(seed: u64) -> Table<Dense16> {
-    Table::new(Dense16::new(N), &mut rng(seed ^ 0x5197))
-}
-
-fn below(rng: &mut Xoshiro256PlusPlus, n: u64) -> u64 {
-    rng.next_u64() % n
-}
 
 /// A random exponent vector of total degree at most `degree`.
 fn random_exps(rng: &mut Xoshiro256PlusPlus, degree: u64) -> Vec<u32> {
     let mut left = below(rng, degree + 1);
-    let mut e = vec![0u32; N];
+    let mut e = vec![0u32; SIG_VARIABLES];
     for slot in &mut e {
         let x = below(rng, left + 1);
         *slot = x as u32;
@@ -49,59 +37,13 @@ fn random_exps(rng: &mut Xoshiro256PlusPlus, degree: u64) -> Vec<u32> {
     e
 }
 
-fn id(table: &mut Table<Dense16>, exps: &[u32]) -> MonoId {
-    table.intern(exps).unwrap()
-}
-
-fn exps(table: &Table<Dense16>, id: MonoId) -> Vec<u32> {
-    (0..N).map(|i| table.exponent(id, i)).collect()
-}
-
-fn signed(e: &[u32]) -> Vec<i64> {
-    e.iter().map(|&x| i64::from(x)).collect()
-}
-
-/// Grevlex on exponent vectors of any sign: the degree first, then the last
-/// variable where they differ, the smaller exponent the larger monomial.
-fn grevlex(a: &[i64], b: &[i64]) -> Ordering {
-    let (da, db): (i64, i64) = (a.iter().sum(), b.iter().sum());
-    da.cmp(&db).then_with(|| {
-        for i in (0..a.len()).rev() {
-            if a[i] != b[i] {
-                return b[i].cmp(&a[i]);
-            }
-        }
-        Ordering::Equal
-    })
-}
-
-fn divides(a: &[u32], b: &[u32]) -> bool {
-    a.iter().zip(b).all(|(x, y)| x <= y)
-}
-
-fn minus(a: &[u32], b: &[u32]) -> Vec<i64> {
-    a.iter()
-        .zip(b)
-        .map(|(&x, &y)| i64::from(x) - i64::from(y))
-        .collect()
-}
-
-/// Schreyer's order on (exponents, index) (signature-pruning.2).
-fn sig_cmp(a: (&[u32], u32), b: (&[u32], u32)) -> Ordering {
-    grevlex(&signed(a.0), &signed(b.0)).then(a.1.cmp(&b.1))
-}
-
-fn sig_divides(a: (&[u32], u32), b: (&[u32], u32)) -> bool {
-    a.1 == b.1 && divides(a.0, b.0)
-}
-
 /// A random signature: monomial of degree at most `degree`, index below
-/// INDICES.
+/// `SIG_INDICES`.
 fn random_sig(rng: &mut Xoshiro256PlusPlus, table: &mut Table<Dense16>, degree: u64) -> Sig {
     let e = random_exps(rng, degree);
     Sig {
         monomial: id(table, &e),
-        index: below(rng, u64::from(INDICES)) as u32,
+        index: below(rng, u64::from(SIG_INDICES)) as u32,
     }
 }
 
@@ -147,10 +89,10 @@ struct World {
 
 fn world(seed: u64, count: usize) -> World {
     let mut rng = rng(seed);
-    let mut table = table(seed);
+    let mut table = sig_table(seed);
     let field = Gf31::new(65521).unwrap();
     let mut basis = Basis::new();
-    let mut sigs = Signatures::new(INDICES as usize);
+    let mut sigs = Signatures::new(SIG_INDICES as usize);
     let mut elements = Vec::new();
     for _ in 0..count {
         let lead = random_exps(&mut rng, 4);
@@ -158,8 +100,9 @@ fn world(seed: u64, count: usize) -> World {
         let terms = poly.len();
         let sig = random_sig(&mut rng, &mut table, 6);
         basis.push(poly, false).unwrap();
-        sigs.push(&table, &Grevlex, &basis, sig).unwrap();
-        elements.push((exps(&table, sig.monomial), sig.index, lead, terms));
+        sigs.push(&table, &Grevlex, &basis, sig, &mut Budget::unbounded())
+            .unwrap();
+        elements.push((exponents(&table, sig.monomial), sig.index, lead, terms));
     }
     World {
         table,
@@ -177,11 +120,11 @@ fn ratio(w: &World, e: usize) -> Vec<i64> {
 #[test]
 fn signatures_compare_by_schreyers_order() {
     let mut rng = rng(1);
-    let mut table = table(1);
+    let mut table = sig_table(1);
     for _ in 0..2000 {
         let a = random_sig(&mut rng, &mut table, 5);
         let b = random_sig(&mut rng, &mut table, 5);
-        let (ea, eb) = (exps(&table, a.monomial), exps(&table, b.monomial));
+        let (ea, eb) = (exponents(&table, a.monomial), exponents(&table, b.monomial));
         assert_eq!(
             a.cmp(b, &table, &Grevlex),
             sig_cmp((&ea, a.index), (&eb, b.index)),
@@ -202,18 +145,18 @@ fn signatures_compare_by_schreyers_order() {
 #[test]
 fn a_signature_times_a_monomial() {
     let mut rng = rng(2);
-    let mut table = table(2);
+    let mut table = sig_table(2);
     for _ in 0..500 {
         let s = random_sig(&mut rng, &mut table, 5);
         let te = random_exps(&mut rng, 4);
         let t = id(&mut table, &te);
-        let p = s.mul(t, &mut table).unwrap();
-        let want: Vec<u32> = exps(&table, s.monomial)
+        let p = s.mul(t, &mut table, &mut Budget::unbounded()).unwrap();
+        let want: Vec<u32> = exponents(&table, s.monomial)
             .iter()
             .zip(&te)
             .map(|(a, b)| a + b)
             .collect();
-        assert_eq!(exps(&table, p.monomial), want);
+        assert_eq!(exponents(&table, p.monomial), want);
         assert_eq!(p.index, s.index);
         assert_eq!(p.degree(&table), want.iter().sum::<u32>());
     }
@@ -222,27 +165,30 @@ fn a_signature_times_a_monomial() {
         index: 0,
     };
     let t = id(&mut table, &[0, 15000, 0]);
-    assert_eq!(big.mul(t, &mut table), Err(Limit::Overflow));
+    assert_eq!(
+        big.mul(t, &mut table, &mut Budget::unbounded()),
+        Err(Limit::Overflow)
+    );
 }
 
 #[test]
 fn ratios_compare_as_difference_vectors() {
     let mut rng = rng(3);
-    let mut table = table(3);
+    let mut table = sig_table(3);
     for _ in 0..2000 {
         let v: Vec<Vec<u32>> = (0..4).map(|_| random_exps(&mut rng, 5)).collect();
         let ids: Vec<MonoId> = v.iter().map(|e| id(&mut table, e)).collect();
-        let got = cmp_ratio(&table, &Grevlex, (ids[0], ids[1]), (ids[2], ids[3])).unwrap();
+        let got = cmp_ratio(&table, &Grevlex, (ids[0], ids[1]), (ids[2], ids[3]));
         let want = grevlex(&minus(&v[0], &v[1]), &minus(&v[2], &v[3]));
         assert_eq!(got, want, "{v:?}");
     }
-    // s_a·l_b passes the format.
+    // s_a·l_b passes the format's degree bound, and its lanes do not.
     let s = id(&mut table, &[20000, 0, 0]);
     let l = id(&mut table, &[0, 15000, 0]);
     let one = id(&mut table, &[0, 0, 0]);
     assert_eq!(
         cmp_ratio(&table, &Grevlex, (s, one), (one, l)),
-        Err(Overflow)
+        Ordering::Greater
     );
 }
 
@@ -253,7 +199,7 @@ fn the_reductant_has_the_largest_ratio() {
         let mut rng = rng(seed ^ 0xa11);
         for _ in 0..200 {
             let sig = random_sig(&mut rng, &mut w.table, 9);
-            let se = exps(&w.table, sig.monomial);
+            let se = exponents(&w.table, sig.monomial);
             // Of the elements whose signature divides sig, the largest
             // ratio, ties to the larger signature.
             let mut want: Option<usize> = None;
@@ -279,7 +225,8 @@ fn the_reductant_has_the_largest_ratio() {
             }
             let got = w
                 .sigs
-                .reductant(&w.table, &Grevlex, sig)
+                .reductant(&w.table, &Grevlex, sig, &mut Budget::unbounded())
+                .unwrap()
                 .map(ElementId::index);
             match (got, want) {
                 (Some(g), Some(b)) => assert!(
@@ -322,7 +269,7 @@ fn the_reducer_has_the_least_signature() {
                     want = Some(e);
                 }
             }
-            let got = w.sigs.reducer(&w.table, m).map(ElementId::index);
+            let got = w.sigs.reducer(&w.table, m).0.map(ElementId::index);
             assert_eq!(got, want, "seed {seed}: {me:?}");
         }
         for a in 0..w.elements.len() {
@@ -344,20 +291,33 @@ fn the_reducer_has_the_least_signature() {
 fn syzygy_signatures_are_known_with_their_multiples() {
     for seed in 0..20 {
         let mut rng = rng(seed ^ 0xc33);
-        let mut table = table(seed);
-        let mut sigs = Signatures::new(INDICES as usize);
+        let mut table = sig_table(seed);
+        let mut sigs = Signatures::new(SIG_INDICES as usize);
         let mut pushed: Vec<(Vec<u32>, u32)> = Vec::new();
         for _ in 0..300 {
             let s = random_sig(&mut rng, &mut table, 6);
-            let se = exps(&table, s.monomial);
+            let se = exponents(&table, s.monomial);
             let known = pushed
                 .iter()
                 .any(|(e, i)| sig_divides((e, *i), (&se, s.index)));
-            assert_eq!(sigs.is_syzygy(&table, s), known, "seed {seed}: {se:?}");
+            assert_eq!(
+                sigs.is_syzygy(&mut table, s, &mut Budget::unbounded())
+                    .unwrap(),
+                known,
+                "seed {seed}: {se:?}"
+            );
             if below(&mut rng, 3) == 0 {
-                assert_eq!(sigs.push_syzygy(&table, s), !known, "seed {seed}: {se:?}");
+                assert_eq!(
+                    sigs.push_syzygy(&mut table, s, &mut Budget::unbounded())
+                        .unwrap(),
+                    !known,
+                    "seed {seed}: {se:?}"
+                );
                 pushed.push((se, s.index));
-                assert!(sigs.is_syzygy(&table, s));
+                assert!(
+                    sigs.is_syzygy(&mut table, s, &mut Budget::unbounded())
+                        .unwrap()
+                );
             }
         }
     }
@@ -375,8 +335,8 @@ fn the_pair_has_the_larger_multiple_signature() {
                 let (sg, ig, lg, _) = w.elements[g].clone();
                 let (sh, ih, lh, _) = w.elements[h].clone();
                 let lcm: Vec<u32> = lg.iter().zip(&lh).map(|(a, b)| *a.max(b)).collect();
-                let mg: Vec<u32> = (0..N).map(|k| lcm[k] - lg[k] + sg[k]).collect();
-                let mh: Vec<u32> = (0..N).map(|k| lcm[k] - lh[k] + sh[k]).collect();
+                let mg: Vec<u32> = (0..SIG_VARIABLES).map(|k| lcm[k] - lg[k] + sg[k]).collect();
+                let mh: Vec<u32> = (0..SIG_VARIABLES).map(|k| lcm[k] - lh[k] + sh[k]).collect();
                 let coprime = lg.iter().zip(&lh).all(|(a, b)| *a == 0 || *b == 0);
                 let want = match sig_cmp((&mg, ig), (&mh, ih)) {
                     Ordering::Equal => None,
@@ -388,7 +348,7 @@ fn the_pair_has_the_larger_multiple_signature() {
                     .unwrap()
                     .map(|f| {
                         let format = *w.table.format();
-                        let formed: Vec<u32> = (0..N)
+                        let formed: Vec<u32> = (0..SIG_VARIABLES)
                             .map(|k| format.exponent(w.table.formed(), k))
                             .collect();
                         let (lg, lh) = (w.basis.lead(ge), w.basis.lead(he));
@@ -404,22 +364,23 @@ fn the_pair_has_the_larger_multiple_signature() {
 fn the_queue_keeps_every_pending_signature_once() {
     for seed in 0..30 {
         let mut rng = rng(seed ^ 0xd44);
-        let mut table = table(seed);
-        let mut queue = Queue::new(INDICES as usize);
+        let mut table = sig_table(seed);
+        let mut queue = Queue::new();
         let mut model: Vec<(Vec<u32>, u32)> = Vec::new();
         for _ in 0..400 {
             if below(&mut rng, 5) < 4 {
                 let s = random_sig(&mut rng, &mut table, 6);
-                let se = exps(&table, s.monomial);
-                queue.push(s);
+                let se = exponents(&table, s.monomial);
+                queue.push(&table, s);
                 if !model.contains(&(se.clone(), s.index)) {
                     model.push((se, s.index));
                 }
             } else {
                 let got: Vec<(Vec<u32>, u32)> = queue
-                    .pop_least(&table, &Grevlex)
+                    .pop_least(&table, &Grevlex, &mut Budget::unbounded())
+                    .unwrap()
                     .iter()
-                    .map(|s| (exps(&table, s.monomial), s.index))
+                    .map(|s| (exponents(&table, s.monomial), s.index))
                     .collect();
                 let mut want: Vec<(Vec<u32>, u32)> = Vec::new();
                 if let Some(d) = model.iter().map(|(e, _)| e.iter().sum::<u32>()).min() {

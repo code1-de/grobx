@@ -12,7 +12,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::common::{params, with_cofactors};
 
-// instance-grammar-agreement.8 design -- two refusals are compared by their kind, not by their line (not measured)
+// instance-grammar-agreement.8 design-checked -- two refusals are compared by their kind, not by their line (not measured)
 /// What a reader made of a text: its generators' text, the text read
 /// whole where no hook writes the generators, or a refusal of one kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +151,12 @@ fn cases_over_p() -> Vec<String> {
         "x\n7\nx+1/7\n",
         "x\n7\nx+1/14\n",
         "x\n7\nx/2\n",
+        "x,y\n7\nx^2/3*y-y / 5\n",
+        "x,y\n7\n2*x/3/5*y/2\n",
+        "x\n7\nx/0\n",
+        "x\n7\nx/14\n",
+        "x,y\n7\nx/y\n",
+        "x\n7\nx/\n",
         "x\n7\n1/2/3*x\n",
         "x\n7\n1/ 3*x\n",
         "x\n7\n1/\n",
@@ -233,6 +239,48 @@ fn the_grammars_cases_over_a_prime() {
     );
 }
 
+/// A denominator after any factor divides the term by it: each spelling
+/// reads as its fraction before the term does, to the same generators in
+/// the engine and in the checker over GF(7), and to the same basis over Q.
+#[test]
+fn a_denominator_follows_any_factor() {
+    let pairs = [
+        ("x,y\ny/3+x\n", "x,y\n1/3*y+x\n"),
+        ("x,y\nx^2/3*y-y / 5\n", "x,y\n1/3*x^2*y-1/5*y\n"),
+        ("x,y\n2*x/3/5*y/2\n", "x,y\n2/30*x*y\n"),
+        ("x\n1/2/3*x+x/1\n", "x\n1/6*x+x\n"),
+    ];
+    let mut failures = Vec::new();
+    for (spelled, written) in pairs {
+        let over = |text: &str, p: &str| text.replacen('\n', &format!("\n{p}\n"), 1);
+        let (s, w) = (over(spelled, "7"), over(written, "7"));
+        for (name, got, want) in [
+            ("engine", engine_over_p(&s), engine_over_p(&w)),
+            ("checker", checker_over_p(&s), checker_over_p(&w)),
+        ] {
+            match &want {
+                Reading::Generators(_) if got == want => {}
+                Reading::Generators(_) | Reading::Whole | Reading::Refused(_) => {
+                    failures.push(format!(
+                        "{name} {spelled:?}: {got:?}, {written:?}: {want:?}"
+                    ));
+                }
+            }
+        }
+        let p = params(0x9a3);
+        let basis = |text: &str| grobx::groebner(&over(text, "0"), &p).map(|o| o.basis);
+        match (basis(spelled), basis(written)) {
+            (Ok(got), Ok(want)) if got == want => {}
+            (got, want) => failures.push(format!("Q {spelled:?}: {got:?}, {written:?}: {want:?}")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{failures}",
+        failures = failures.join("\n")
+    );
+}
+
 /// The texts of some of the plan's edge cases over Q.
 fn cases_over_q() -> Vec<&'static str> {
     vec![
@@ -249,6 +297,9 @@ fn cases_over_q() -> Vec<&'static str> {
         "x\n0\nx+1/0\n",
         "x\n0\nx+1/000\n",
         "x\n0\nx+1/\n",
+        "x,y\n0\ny/3-x^2/2*y/5,\nx*y/123456789012345678901234567890+1\n",
+        "x\n0\nx/0\n",
+        "x,y\n0\nx/y\n",
         "x\n0\nx^2147483647\n",
         "x\n0\nx^2147483648\n",
         "x,y\n0\nx^99999999999*z\n",
@@ -294,7 +345,7 @@ fn the_grammars_cases_over_q() {
     );
 }
 
-// instance-grammar-agreement.9 practice: mutation-based fuzzing -- the random texts are seed instances mutated by insertions, deletions, and replacements from a pool, not texts a generator of the grammar makes
+// instance-grammar-agreement.9 practice-checked: mutation-based fuzzing -- the random texts are seed instances mutated by insertions, deletions, and replacements from a pool, not texts a generator of the grammar makes
 /// The seed instances of the random texts.
 const SEEDS: [&str; 9] = [
     "x,y\n7\nx^2+y,\nx*y-1\n",

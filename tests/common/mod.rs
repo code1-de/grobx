@@ -16,8 +16,11 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
-use grobx::{MonomialOrder, Outcome, Params, Threads};
+use grobx::id::RowId;
+use grobx::trace::{RowSource, Trace};
+use grobx::{Cancel, MonomialOrder, Outcome, Params, Threads};
 use grobx_checker::{Mode, Order, Verdict, check};
 use sha2::{Digest, Sha256};
 
@@ -31,6 +34,13 @@ pub const P: u64 = 65521;
 pub const P31: u64 = 2_147_483_647;
 /// The primes of the random systems.
 pub const PRIMES: [u64; 5] = [2, 3, 7, P, P31];
+/// Three primes of `Gf31`: 7, below the combinations' bound, which reduces
+/// each row on its own (gfp-unsolved.5); 65521, which delays its
+/// subtractions; and the largest below 2^31.
+pub const GF31_PRIMES: [u64; 3] = [7, P, P31];
+
+/// Three orders: grevlex, lex, and a block order, which is not graded.
+pub const ORDERS: [&str; 3] = ["grevlex", "lex", "block:1"];
 
 pub fn sha256(text: &str) -> String {
     let mut hex = String::with_capacity(64);
@@ -43,13 +53,64 @@ pub fn sha256(text: &str) -> String {
 // --- calls ---
 
 /// A trace that listens and keeps nothing: a run under it reduces each row
-/// of its matrices on its own (`grobx::trace::Trace::LISTENS`).
+/// of its matrices on its own (`grobx::trace::Trace::LISTENS`), and rules no
+/// row zero by a test (signature-zero-time.10).
 pub struct Listening;
 
-impl grobx::trace::Trace for Listening {
-    fn matrix(&mut self, _: &[grobx::trace::RowSource]) {}
+impl Trace for Listening {
+    fn matrix(&mut self, _: &[RowSource]) {}
 
-    fn counted(&mut self, _: &[grobx::id::RowId]) {}
+    fn counted(&mut self, _: &[RowId]) {}
+}
+
+// hygiene.24 design-checked -- the trace tests' recorder, its events, and the check that they alternate are one definition, a matrix's event holding its rows, of which `signatures.rs` reads the count, not a recorder for each file's events nor one generic over them (not measured)
+/// What a recording trace hears: a matrix's rows, and the rows of it that
+/// were counted.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Event {
+    Matrix(Vec<RowSource>),
+    Counted(Vec<RowId>),
+}
+
+/// A trace that records every event it hears.
+#[derive(Default)]
+pub struct Recorder(pub Vec<Event>);
+
+impl Trace for Recorder {
+    fn matrix(&mut self, rows: &[RowSource]) {
+        self.0.push(Event::Matrix(rows.to_vec()));
+    }
+
+    fn counted(&mut self, rows: &[RowId]) {
+        self.0.push(Event::Counted(rows.to_vec()));
+    }
+}
+
+/// matrix and counted alternate, the counted rows lie in their matrix and
+/// increase.
+pub fn assert_well_formed(name: &str, events: &[Event]) {
+    assert!(
+        events.len().is_multiple_of(2),
+        "{name}: {len} events",
+        len = events.len()
+    );
+    for pair in events.chunks(2) {
+        let (rows, counted) = match (&pair[0], &pair[1]) {
+            (Event::Matrix(rows), Event::Counted(counted)) => (rows, counted),
+            (Event::Matrix(_) | Event::Counted(_), Event::Matrix(_) | Event::Counted(_)) => {
+                panic!("{name}: matrix and counted do not alternate: {pair:?}")
+            }
+        };
+        assert!(
+            counted.windows(2).all(|w| w[0] < w[1]),
+            "{name}: {counted:?}"
+        );
+        assert!(
+            counted.iter().all(|&r| r.index() < rows.len()),
+            "{name}: {counted:?} of {len}",
+            len = rows.len()
+        );
+    }
 }
 
 /// The parameters of a measured call (`OBJECTIVES.md`, _Measurement_), every
@@ -82,6 +143,69 @@ pub fn with_cofactors_in(order: &str, seed: u64) -> Params {
     p
 }
 
+/// The parameters of a measured call, with or without signatures and
+/// cofactors.
+pub fn with(seed: u64, signatures: bool, cofactors: bool) -> Params {
+    let mut p = params(seed);
+    p.signatures = signatures;
+    p.cofactors = cofactors;
+    p
+}
+
+// hygiene.10 practice-checked: Parameterize Function (Fowler's refactoring) -- the two files' copies, which differ in their seed alone, are one `fn` that takes it, not one copy's seed for both files' tests (not measured)
+/// The parameters of a call in `order` under `seed`, signatures as
+/// `signatures` says.
+pub fn signatures_in(order: &str, signatures: bool, seed: u64) -> Params {
+    let mut p = params_in(order, seed);
+    p.signatures = signatures;
+    p
+}
+
+/// The parameters of a measured call with signatures off: with no
+/// cofactors the plain run reduces the rows in random combinations
+/// (gfp-unsolved.2).
+pub fn plain(seed: u64) -> Params {
+    let mut p = params(seed);
+    p.signatures = false;
+    p
+}
+
+// hygiene.22 design-checked -- the call report tests' `reported(seed)` joins `reported(params)` as `reported(params(seed))`, which gives the same, not a definition beside it under a name of its own (not measured)
+/// `params` with the report on.
+pub fn reported(params: Params) -> Params {
+    let mut params = params;
+    params.report = true;
+    params
+}
+
+/// A deadline far past what each call that sets it takes: a fault that
+/// keeps a call from completing, the lift's among them, stops it there and
+/// fails the test. A fault that makes the replays misfit, or makes the call
+/// learn afresh, ends it in `Error::Drops` before.
+pub const FAR_DEADLINE: Duration = Duration::from_secs(60);
+
+/// `params_in` with `FAR_DEADLINE`.
+pub fn bounded_in(order: &str, seed: u64) -> Params {
+    let mut p = params_in(order, seed);
+    p.deadline = Some(FAR_DEADLINE);
+    p
+}
+
+/// `p` with every bound set, none of them reached.
+pub fn generous(mut p: Params) -> Params {
+    p.deadline = Some(Duration::from_secs(3600));
+    p.cancel = Some(Cancel::new());
+    p.memory = Some(1 << 40);
+    p
+}
+
+/// The seeds of each prime's random calls in lex.
+pub const LEX_SEEDS: u64 = 2;
+/// The deadline of a random call in lex.
+pub const LEX_DEADLINE: Duration = Duration::from_secs(1);
+/// The deadline of the `block:1,…,1` call beside it.
+pub const BLOCKS_DEADLINE: Duration = Duration::from_millis(200);
+
 /// The outcome of a call that must succeed and must not be stopped.
 pub fn run(instance: &str, params: &Params) -> Outcome {
     let outcome = grobx::groebner(instance, params)
@@ -96,6 +220,128 @@ pub fn run(instance: &str, params: &Params) -> Outcome {
 pub fn basis(instance: &str) -> String {
     run(instance, &params(1)).basis.unwrap()
 }
+
+/// The basis texts of `text` under `params` with signatures off, the plain
+/// run from the start, and on: one text. Returns it.
+pub fn agree(case: &str, text: &str, params: &Params) -> String {
+    let mut plain = params.clone();
+    plain.signatures = false;
+    let mut signatures = params.clone();
+    signatures.signatures = true;
+    let got = run(text, &plain).basis.expect("a basis");
+    let want = run(text, &signatures).basis.expect("a basis");
+    assert_eq!(got, want, "{case}: signatures off and on\n{text}");
+    got
+}
+
+/// The process's resident set in bytes, `VmRSS` of `/proc/self/status`.
+#[cfg(target_os = "linux")]
+pub fn resident() -> u64 {
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let line = status
+        .lines()
+        .find(|l| l.starts_with("VmRSS:"))
+        .expect("a VmRSS line");
+    let kib: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    kib * 1024
+}
+
+// --- the systems ---
+
+// hygiene.25 design-checked -- the suite's shared systems, its edge cases among them, stand here, not in `systems.rs`, which the engine's unit tests and the suites of the C interface, the CLI, and the Python extension declare as well, where each would take an allowance of dead code (not measured)
+/// A tiny instance over GF(65521): x^2 + y and xy + 1.
+pub const TINY: &str = "x,y\n65521\nx^2+y,\nx*y+1\n";
+
+/// The edge cases of `OBJECTIVES.md` on x, y, z: name and generators, over
+/// any field.
+pub const EDGE_GENERATORS: [(&str, &str); 7] = [
+    ("the zero ideal", "0"),
+    ("F = (0, 0)", "0,\n0"),
+    ("no generator", ""),
+    ("the unit ideal", "x*z-1,\nx"),
+    ("already a Gröbner basis", "x+z,\nz^2+1"),
+    (
+        "the zero polynomial among the generators",
+        "x*y-z,\n0,\ny^2-x",
+    ),
+    ("an eliminable variable", "x-y^2-z,\ny*z-1,\nz^2-y"),
+];
+
+// hygiene.23 design-checked -- the edge cases' names and generators stand once, in `EDGE_GENERATORS`, and a list of their bases takes them by `with_bases`, not each list written out with the names and generators again (not measured)
+/// The cases of `EDGE_GENERATORS`, each with its basis of `bases`, in their
+/// order: name, generators, and basis.
+pub const fn with_bases(
+    bases: [&'static str; 7],
+) -> [(&'static str, &'static str, &'static str); 7] {
+    let mut cases = [("", "", ""); 7];
+    let mut i = 0;
+    while i < cases.len() {
+        let (name, generators) = EDGE_GENERATORS[i];
+        cases[i] = (name, generators, bases[i]);
+        i += 1;
+    }
+    cases
+}
+
+/// `EDGE_GENERATORS` with their bases over GF(65521) in grevlex.
+pub const EDGE_BASES: [(&str, &str, &str); 7] = with_bases([
+    "[]:\n",
+    "[]:\n",
+    "[]:\n",
+    "[1]:\n",
+    "[x+z,\nz^2+1]:\n",
+    "[y^2+65520*x,\nx*y+65520*z,\nx^2+65520*y*z]:\n",
+    "[x+65519*z,\nz^2+65520*y,\ny*z+65520,\ny^2+65520*z]:\n",
+]);
+
+/// The edge cases of `iterations/0006-trace-replay/plan.md`, _Edge cases_,
+/// over GF(65521), a constant generator among them: name and instance.
+pub const TRACE_REPLAY_EDGE: &[(&str, &str)] = &[
+    ("zero", "x,y\n65521\n0\n"),
+    ("no generator", "x,y\n65521\n"),
+    ("unit", "x,y\n65521\nx*y-1,\nx\n"),
+    ("constant", "x,y\n65521\n1\n"),
+    ("constant among others", "x,y\n65521\nx^2+y,\nx*y+1,\n7\n"),
+    ("already a basis", "x,y\n65521\nx+y,\ny^2+1\n"),
+    ("zero generator", "x,y,z\n65521\nx*y-z,\n0,\ny^2-x\n"),
+    ("eliminable", "x,y,z\n65521\nx-y^2-z,\ny*z-1,\nz^2-y\n"),
+];
+
+/// The edge cases of `OBJECTIVES.md`, _Domain specifics the workflow points
+/// at_, over GF(65521), and a unit ideal that a round reaches: name and
+/// instance.
+pub const GFP_UNSOLVED_EDGE: &[(&str, &str)] = &[
+    ("zero-ideal", "x,y\n65521\n0,\n0\n"),
+    ("f-is-zero", "x,y\n65521\n0\n"),
+    ("unit", "x,y\n65521\nx*y-1,\nx\n"),
+    (
+        "unit-from-a-round",
+        "x,y,z\n65521\nx*y-1,\nx*z,\ny*z-1,\nz^2\n",
+    ),
+    ("already-a-basis", "x,y\n65521\nx+y,\ny^2+1\n"),
+    ("zero-generator", "x,y,z\n65521\nx*y-z,\n0,\ny^2-x\n"),
+    ("eliminable", "x,y,z\n65521\nx-y^2-z,\ny*z-1,\nz^2-y\n"),
+];
+
+/// The dense cubic systems on two to four variables over GF(65521), each
+/// with its name.
+pub fn dense_systems() -> Vec<(String, String)> {
+    (2..=4)
+        .map(|m| (format!("cubic-{m}"), dense(m, 3, P, m as u64)))
+        .collect()
+}
+
+/// Two long calls, over GF(65521) and over ℚ: each runs for seconds without
+/// a bound.
+pub fn long() -> [(&'static str, String); 2] {
+    [
+        ("cubic-8-p65521", dense(8, 3, P, 1)),
+        ("cubic-5-p0", dense(5, 3, 0, 1)),
+    ]
+}
+
+/// The seeds of each size of the falling systems.
+pub const FALLING_SEEDS: u64 = 8;
 
 // --- the checker ---
 
@@ -131,6 +377,20 @@ pub fn assert_accepted_in(
         basis = outcome.basis.as_deref().unwrap_or(""),
         cofactors = outcome.cofactors.as_deref().unwrap_or("")
     );
+}
+
+// hygiene.10 practice-checked: Parameterize Function (Fowler's refactoring) -- the two files' copies, which differ in their seed alone, are one `fn` that takes it, not one copy's seed for both files' tests (not measured)
+/// Computes `text` with cofactors under `seed`, has the checker accept it
+/// in the exact mode, compares it with `want` where given, and returns the
+/// basis.
+pub fn accept(name: &str, text: &str, want: Option<&str>, seed: u64) -> String {
+    let outcome = run(text, &with_cofactors(seed));
+    assert_accepted(name, text, &outcome, Mode::Exact);
+    let basis = outcome.basis.unwrap();
+    if let Some(want) = want {
+        assert_eq!(basis, want, "{name}");
+    }
+    basis
 }
 
 /// The largest total degree of a term in `text`, read from its variable
@@ -214,7 +474,7 @@ fn msolve_cache() -> PathBuf {
     dir
 }
 
-// f4-gfp.41 design -- msolve, run as a black box, is a second oracle on random systems (not measured)
+// f4-gfp.41 practice-checked: differential testing -- msolve, run as a black box, is a second oracle on random systems (not measured)
 /// msolve's reduced grevlex basis of `instance`, in the canonical text; None
 /// where msolve refuses the instance, as it does the zero ideal, or fails.
 /// The output is cached under `name` and msolve's version, and used where
@@ -223,7 +483,7 @@ pub fn msolve(name: &str, instance: &str) -> Option<String> {
     msolve_with(name, instance, &[])
 }
 
-// order-family.16 design -- in a two-block order the second oracle is msolve's -e k on the text msolve_spelling writes, every coefficient reduced mod p (not measured)
+// order-family.16 design-checked -- in a two-block order the second oracle is msolve's -e k on the text msolve_spelling writes, every coefficient reduced mod p (not measured)
 /// msolve's reduced basis of `instance` with `args` before its own, as
 /// `msolve` returns it: `["-e", "k"]` gives the basis in two grevlex blocks,
 /// the first k variables in the first, and msolve writes its terms in that
@@ -459,7 +719,7 @@ fn groebner_jl_cache() -> PathBuf {
     dir
 }
 
-// fglm-lex.21 design -- the test code's second oracle in lex is Groebner.jl's --order lex, run as a black box and cached, compared as sets of polynomials whose terms the test code sorts in lex, not msolve or the block:1,…,1 run (log 0012-1)
+// fglm-lex.21 design-checked -- the test code's second oracle in lex is Groebner.jl's --order lex, run as a black box and cached, compared as sets of polynomials whose terms the test code sorts in lex, not msolve or the block:1,…,1 run (log 0012-1)
 /// The reduced basis `groebner-jl <args> <instance>` prints, its first
 /// bracketed list through `]:` and a line feed, as Groebner.jl writes it:
 /// each polynomial's terms in grevlex, whatever the order

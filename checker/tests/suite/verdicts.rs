@@ -2,10 +2,7 @@
 
 use grobx_checker::{Flaw, Mode, Order, Verdict, check};
 
-fn verdict(instance: &str, basis: &str, cofactors: &str) -> Verdict {
-    check(instance, basis, cofactors, &Order::Grevlex, Mode::Exact)
-        .unwrap_or_else(|e| panic!("refused {basis:?} with {cofactors:?}: {e:?}"))
-}
+use crate::common::verdict;
 
 /// S(x^2 − y, xy − 1) = x − y^2, whose leading term y^2 no leading term
 /// divides.

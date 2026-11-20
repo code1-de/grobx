@@ -7,7 +7,7 @@ use crate::narrow::Narrow;
 /// the most a u64 holds whatever they are, as 10^19 − 1 lies below 2^64.
 pub(crate) const DIGITS: usize = 19;
 
-// checker-gfp.4 cited: dumas-2008 §2.1.1 -- multiplication is followed by machine remaindering while division is performed via the extended gcd algorithm
+// checker-gfp.4 practice-checked: classical modular arithmetic, inverses by the extended Euclidean algorithm -- residues are `u64`, a product is the remainder of its `u128`, and an inverse comes from the extended Euclidean algorithm, not Montgomery multiplication, for a checker small and plainly right
 #[derive(Clone, Copy, Debug)]
 pub struct Field {
     p: u64,
@@ -106,7 +106,7 @@ impl Field {
 /// The first twelve primes: the trial divisors and the bases of `is_prime`.
 const BASES: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
 
-// instance-grammar-agreement.4 cited: sorenson-2017 §1, Theorem 1.1 -- ψ₁₂ = 318665857834031151167461, the least composite that is a strong pseudoprime to each of the first 12 prime bases, lies past 2^64; miller-1976 _Tests for primality_, the algorithm A_f -- a base a with a^(n−1) ≢ 1 mod n, or with ((a^((n−1)/2^k) mod n) − 1, n) ≠ 1, n for some k, shows n composite
+// instance-grammar-agreement.4 cited-checked: sorenson-2017 §1, Theorem 1.1 -- ψ₁₂ = 318665857834031151167461, the least composite that is a strong pseudoprime to each of the first 12 prime bases, lies past 2^64; miller-1976 _Tests for primality_, the algorithm A_f -- a base a with a^(n−1) ≢ 1 mod n, or with ((a^((n−1)/2^k) mod n) − 1, n) ≠ 1, n for some k, shows n composite
 /// Whether n is prime: no prime of `BASES` divides n but n itself, and n
 /// is a strong probable prime to each of them as a base.
 pub fn is_prime(n: u64) -> bool {

@@ -7,15 +7,8 @@
 
 use grobx::{CheckerMode, Outcome, Params};
 
-use crate::common::{dense, params, random_square};
+use crate::common::{EDGE_GENERATORS, dense, params, random_square, reported};
 use crate::report::{Line, assert_run_counts, of, report as lines_of, run_lines, without_report};
-
-/// `params` with the report on.
-fn reported(seed: u64) -> Params {
-    let mut p = params(seed);
-    p.report = true;
-    p
-}
 
 /// The outcome of `text` under `params`, which ask for the report, and its
 /// lines; the same call without the report returns the same outcome but
@@ -122,30 +115,16 @@ fn assert_lift(name: &str, lines: &[Line], outcome: &Outcome) {
     );
 }
 
-/// The edge cases of `OBJECTIVES.md` on x, y, z over ℚ.
-const EDGE: [(&str, &str); 7] = [
-    ("the zero ideal", "0"),
-    ("F = (0, 0)", "0,\n0"),
-    ("no generator", ""),
-    ("the unit ideal", "x*z-1,\nx"),
-    ("already a Gröbner basis", "x+z,\nz^2+1"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-    ),
-    ("an eliminable variable", "x-y^2-z,\ny*z-1,\nz^2-y"),
-];
-
 /// Test 18: the edge cases over ℚ, signatures on and off: the lift's
 /// lines of `assert_lift`, the pair learn's run over its two primes, its
 /// rows by the learner in the signature run and its tests in the plain
 /// run, and the outcome unchanged by the report.
 #[test]
 fn the_edge_cases() {
-    for (case, generators) in EDGE {
+    for (case, generators) in EDGE_GENERATORS {
         let text = format!("x,y,z\n0\n{generators}\n");
         for signatures in [true, false] {
-            let mut p = reported(0x9e);
+            let mut p = reported(params(0x9e));
             p.signatures = signatures;
             let (outcome, lines) = both(&text, &p);
             let name = format!("{case}, signatures {signatures}");
@@ -189,7 +168,7 @@ fn generated_systems() {
         ("cubic-3-p0", dense(3, 3, 0, 2)),
         ("square-p0", random_square(0, 1)),
     ] {
-        let (outcome, lines) = both(&text, &reported(0x91));
+        let (outcome, lines) = both(&text, &reported(params(0x91)));
         assert_lift(stem, &lines, &outcome);
         assert!(
             !of(&lines, "combine").is_empty(),
@@ -203,7 +182,7 @@ fn generated_systems() {
             "{stem}"
         );
 
-        let mut p = reported(0x92);
+        let mut p = reported(params(0x92));
         p.cofactors = true;
         p.checker = Some(CheckerMode::Exact);
         let (outcome, lines) = both(&text, &p);

@@ -2,13 +2,7 @@
 //! item's own that Groebner.jl solves: each instance solved by Groebner.jl,
 //! accepted, and every mutant of it given its predicted verdict.
 
-use crate::common::{Case, accept_and_reject, matrix_text, plus, quadrics, rule};
-
-fn edge(name: &str, instance: &str) -> Case {
-    let case = Case::solved(name, instance);
-    accept_and_reject(&case, 0xed9e ^ name.len() as u64);
-    case
-}
+use crate::common::{Case, edge, matrix_text, plus, quadrics, rule};
 
 /// F = (0): Groebner.jl writes `[0]`, and the case drops the zero element,
 /// so G is empty.

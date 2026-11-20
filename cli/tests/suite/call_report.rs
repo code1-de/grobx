@@ -2,37 +2,10 @@
 //! FILE` (`iterations/0064-call-report/plan.md`, _Test code_, 22, and
 //! call-report.18).
 
-use std::ffi::OsString;
 use std::fs;
 
-use grobx_cli::Command;
-
-use crate::common::{grobx, scratch, write_instance};
+use crate::common::{grobx, header, kinds, scratch, write_instance};
 use crate::systems::dense;
-
-/// The header the binary writes above the report for `args`.
-fn header<S: AsRef<str>>(args: &[S]) -> String {
-    match grobx_cli::parse(args.iter().map(|a| OsString::from(a.as_ref()))) {
-        Ok(Command::Run(run)) => grobx_cli::header(&run),
-        other @ (Ok(Command::Help | Command::Version) | Err(_)) => panic!("{other:?}"),
-    }
-}
-
-/// The kinds of a report's lines below the header's two, which each hold
-/// a time and a kind.
-fn kinds(report: &str) -> Vec<&str> {
-    assert!(report.ends_with('\n'), "{report:?}");
-    report
-        .lines()
-        .skip(2)
-        .map(|l| {
-            let mut words = l.split(' ');
-            let time = words.next().unwrap();
-            assert!(time.contains('.'), "{l}");
-            words.next().expect("a kind")
-        })
-        .collect()
-}
 
 /// `--report FILE` writes the report to FILE, the instance read from a
 /// file or from standard input, beside the basis on standard output; no

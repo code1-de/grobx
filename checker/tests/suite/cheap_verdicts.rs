@@ -4,21 +4,19 @@
 //! vanishes at most points, degrees and exponents past a `u32` and the
 //! power table, zero denominators, and malformed or misshapen rows.
 
-use std::num::NonZeroU32;
-
 use grobx_checker::{Error, Flaw, Mode, Order, Part, Verdict, check, check_cofactors};
 
-fn cheap(k: u32, seed: u64) -> Mode {
-    Mode::Cheap {
-        points: NonZeroU32::new(k).expect("k is at least 1"),
-        seed,
-    }
-}
+use crate::common::cheap;
 
 /// Both functions give the same in both modes, with k points under eight
 /// seeds, and `check_cofactors` the same twice under one seed. Returns the
 /// rows stage's result.
-fn agree(instance: &str, basis: &str, cofactors: &str, k: u32) -> Result<Result<(), Flaw>, Error> {
+pub(crate) fn agree(
+    instance: &str,
+    basis: &str,
+    cofactors: &str,
+    k: u32,
+) -> Result<Result<(), Flaw>, Error> {
     let full = check(instance, basis, cofactors, &Order::Grevlex, Mode::Exact);
     let rows = check_cofactors(instance, basis, cofactors, &Order::Grevlex, Mode::Exact);
     for seed in 0..8 {
@@ -118,7 +116,11 @@ fn exponents_past_the_table() {
     for (p, k) in [(65521, 22), (0, 4)] {
         let instance = format!("x\n{p}\nx^5000-1\n");
         let basis = "[x^5000-1]:\n";
-        assert_eq!(agree(&instance, basis, "[[1]]:\n", k), Ok(Ok(())), "p = {p}");
+        assert_eq!(
+            agree(&instance, basis, "[[1]]:\n", k),
+            Ok(Ok(())),
+            "p = {p}"
+        );
         assert_eq!(
             agree(&instance, basis, "[[1+x^3000]]:\n", k),
             Ok(Err(Flaw::Cofactors(0))),
@@ -211,7 +213,11 @@ fn row_spellings() {
         "[[8,7],[0,1]]:",
         "[[1,0],[0,3/3]]:",
     ] {
-        assert_eq!(agree(instance, basis, cofactors, 23), Ok(Ok(())), "{cofactors:?}");
+        assert_eq!(
+            agree(instance, basis, cofactors, 23),
+            Ok(Ok(())),
+            "{cofactors:?}"
+        );
     }
     let instance = "x,y\n0\nx+y,\ny^2+1\n";
     for cofactors in [
@@ -221,7 +227,11 @@ fn row_spellings() {
         "[[1,100000000000000000000000000-100000000000000000000000000],[0,1]]:",
         "[[-1/2+3/2,0],[0,1]]:",
     ] {
-        assert_eq!(agree(instance, basis, cofactors, 4), Ok(Ok(())), "{cofactors:?}");
+        assert_eq!(
+            agree(instance, basis, cofactors, 4),
+            Ok(Ok(())),
+            "{cofactors:?}"
+        );
     }
 }
 
@@ -254,7 +264,11 @@ fn no_generators() {
         let instance = format!("x\n{p}\n");
         let got = agree(&instance, "[x]:\n", "[[]]:\n", 23);
         assert_eq!(got, Ok(Err(Flaw::Cofactors(0))), "p = {p}");
-        assert_eq!(agree(&instance, "[]:\n", "[]:\n", 23), Ok(Ok(())), "p = {p}");
+        assert_eq!(
+            agree(&instance, "[]:\n", "[]:\n", 23),
+            Ok(Ok(())),
+            "p = {p}"
+        );
     }
 }
 
@@ -266,7 +280,13 @@ fn largest_prime_below_2_64() {
     let instance = "x,y\n18446744073709551557\nx-2,\ny-3\n";
     let basis = "[y-3,\nx-2]:\n";
     assert_eq!(
-        check(instance, basis, "[[0,1],\n[1,0]]:\n", &Order::Grevlex, Mode::Exact),
+        check(
+            instance,
+            basis,
+            "[[0,1],\n[1,0]]:\n",
+            &Order::Grevlex,
+            Mode::Exact
+        ),
         Ok(Verdict {
             groebner: Ok(()),
             reduced: Ok(())

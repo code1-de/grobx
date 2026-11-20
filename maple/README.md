@@ -34,6 +34,7 @@ no common factor and a positive leading coefficient.
 | Order `T` | grobx's order |
 |---|---|
 | `tdeg(x, y, …)` | grevlex |
+| `grlex(x, y, …)` | deglex |
 | `plex(x, y, …)` | lex |
 | `lexdeg([x, …], [y, …], …)` | block: grevlex in each block, the blocks in turn |
 | `prod(tdeg(x, …), tdeg(y, …), …)` | block, as `lexdeg` |
@@ -71,7 +72,7 @@ program through `sh` on Unix and through `cmd.exe` on Windows.
 
 `Basis` raises an error for:
 
-- any other order: `grlex`, `wdeg`, `'matrix'`, the `_min` orders, `prod`
+- any other order: `wdeg`, `'matrix'`, the `_min` orders, `prod`
   with a block that is not `tdeg`, and `MonomialOrder` objects;
 - an order with no variable, a variable twice, or an empty block;
 - a polynomial with a coefficient outside ℚ (`RootOf`, a float) or a name

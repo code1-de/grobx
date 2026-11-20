@@ -12,20 +12,18 @@ use num_integer::Integer;
 use num_traits::{One, Zero};
 
 use crate::Stop;
-use crate::budget::Budget;
+use crate::budget::{Budget, Site};
 use crate::field::{inverse_mod, mul_mod, shoup_factor, shoup_mul};
 use crate::narrow::Narrow;
-use crate::text::{
-    TERM_MARKS, decimal_units, digits_bound, monomial_longest, push_big, push_monomial,
-};
+use crate::text::{TERM_MARKS, decimal_units, digits_bound, push_big, push_monomial};
 
-// q-lift.9 cited: arnold-2003 §6.3 -- apply the Chinese remainder algorithm to the coefficients of G_k and G_p, and G^(kp) = G_kp; idrees-2011 §2 -- lift GP to G_N by the Chinese remainder algorithm, then pull back by the Farey rational map
+// q-lift.9 practice-checked: Chinese remaindering -- the images are combined by the Chinese remainder theorem into residues modulo the product M of the primes, not by p-adic lifting of one prime's basis (arnold-2003 §6.1), as the replays run at independent primes
 /// The product M of the primes combined so far, those primes pᵢ, and
 /// the constants of their mixed-radix conversion.
 pub(crate) struct Crt {
     modulus: BigUint,
     primes: Vec<u64>,
-    // q-lift-growth-time.3 design -- each prime's step makes the residues of the products of the primes before it at that prime, and the lifting keeps them as a triangle, not the row made at each conversion (not measured)
+    // q-lift-growth-time.3 design-checked -- each prime's step makes the residues of the products of the primes before it at that prime, and the lifting keeps them as a triangle, not the row made at each conversion (not measured)
     /// Row i, at offset i(i − 1)/2, holds (p₀⋯pⱼ₋₁) mod pᵢ for j < i,
     /// its entry 0 equal to 1: the rows of the steps pushed.
     rows: Vec<u64>,
@@ -107,7 +105,7 @@ impl Crt {
         });
     }
 
-    // q-lift-growth-time.2 cited: garner-1959 §Conversion from a residue code to a normal number representation, (26) to (41) -- the digits of the mixed-radix form come by residue arithmetic alone, each from its residue less the digits before it times their weights, times the inverse of its own weight, and S = a_t + m_t(d_t + m_{t−1}(d_{t−1} + ⋯))
+    // q-lift-growth-time.2 practice-checked: Garner's algorithm -- an attempt converts a coefficient's scaled images to v by the mixed-radix conversion, digits d_i = (v_i − Σ_{j<i} d_j·(p_0⋯p_{j−1}) mod p_i)·(p_0⋯p_{i−1})⁻¹ mod p_i and then v by Horner's rule over the digits, not v = Σ v_i·e_i mod M over the CRT basis, nor a product tree rebuilt as primes join, nor the binary residue of the attempted coefficient alone kept by a step at each prime
     /// The x in [0, Mₖ) with x ≡ vᵢ mod pᵢ, Mₖ the product of the first k
     /// primes, k = |v|, 1 ≤ k ≤ the primes, each vᵢ below its prime: x's
     /// mixed-radix digits dᵢ, x = d₀ + p₀·(d₁ + p₁·(d₂ + ⋯)), each
@@ -125,7 +123,7 @@ impl Crt {
         self.mixed_radix(v, digits, limbs, false)
     }
 
-    // q-attempt-time.4 invented -- an attempt's conversion ends at the first digit below the top that is 0 or p_j − 1, and Horner's rule reads the digits before it as Low and High read them, not every digit computed, nor every digit computed with the sums of a run of top digits 0 or p_j − 1 cut by a telescoping sum (log 0085-1)
+    // q-attempt-time.4 invented-checked -- an attempt's conversion ends at the first digit below the top that is 0 or p_j − 1, and Horner's rule reads the digits before it as Low and High read them, not every digit computed, nor every digit computed with the sums of a run of top digits 0 or p_j − 1 cut by a telescoping sum (log 0085-1)
     /// As `convert`, but it ends at the first digit dⱼ, j < k − 1, that is
     /// 0 or pⱼ − 1: `Low` with the limbs of x mod p₀⋯pⱼ₋₁ where dⱼ = 0,
     /// and `High` with those of (M − 1 − x) mod p₀⋯pⱼ₋₁ where dⱼ = pⱼ − 1
@@ -174,7 +172,7 @@ impl Crt {
             // 2^124.
             let s = wrapped_sum(digits.iter().copied().zip(row.iter().copied()), p, top);
             let t = if image >= s { image - s } else { image + p - s };
-            // q-lift-growth-time.6 cited: vanderhoeven-2016 §2.2.2, Function 8 and Proposition 4 -- for a fixed multiplicand y precompute ψ := ⌊2^n y/p⌋, c = (xψ) >> n, d = xy − cp, one correction
+            // q-lift-growth-time.6 cited-checked: vanderhoeven-2016 §2.2.2, Function 8 and Proposition 4 -- for a fixed multiplicand y precompute ψ := ⌊2^n y/p⌋, c = (xψ) >> n, d = xy − cp, one correction
             let digit = shoup_mul(t, inverse, factor, p);
             if edge && i + 1 < k && (digit == 0 || digit == p - 1) {
                 ended = Some(if digit == 0 {
@@ -195,7 +193,7 @@ impl Crt {
             _ => Converted::Any,
         });
         let primes = &self.primes[..digits.len()];
-        // q-lift-growth-time.7 design -- Horner's rule runs from the highest digit that is not 0 where the top digit is 0, and over the complement's digits p_i − 1 − d_i where the top digit is the last prime less 1, so a value below p_0⋯p_{k−2}, or within it of M, reads only its own digits, not Horner's rule over every digit, nor the digits' sums cut at a run of top digits 0 or p_j − 1 by a telescoping sum (log 0083-1)
+        // q-lift-growth-time.7 design-checked -- Horner's rule runs from the highest digit that is not 0 where the top digit is 0, and over the complement's digits p_i − 1 − d_i where the top digit is the last prime less 1, so a value below p_0⋯p_{k−2}, or within it of M, reads only its own digits, not Horner's rule over every digit, nor the digits' sums cut at a run of top digits 0 or p_j − 1 by a telescoping sum (log 0083-1)
         // Σ (pⱼ − 1)·p₀⋯pⱼ₋₁ = M − 1, so the digits pⱼ − 1 − dⱼ are those
         // of M − 1 − x.
         let read = match form {
@@ -238,8 +236,8 @@ fn horner(primes: &[u64], digit: impl Fn(usize) -> u64, out: &mut Vec<u64>) -> u
     s + 1
 }
 
-// q-lift-growth-time.4 design -- the scaling v = u·l mod M multiplies each image of u by l's residue at its prime before the conversion, which then gives v, not u converted and then num-bigint's product u·l and its remainder by M (q-rational-time.7, withdrawn) (log 0050-1, 0083-1)
-// q-lift-growth-time.6 cited: vanderhoeven-2016 §2.2.2, Function 8 and Proposition 4 -- for a fixed multiplicand y precompute ψ := ⌊2^n y/p⌋, c = (xψ) >> n, d = xy − cp, one correction
+// q-lift-growth-time.4 cited-checked: garner-1959 §RESIDUE ADDITION AND MULTIPLICATION -- multiplication in the residue system is the modulo product of corresponding digits, with no carry, and a product past the system's states overflows to the correct product modulo the product of the moduli
+// q-lift-growth-time.6 cited-checked: vanderhoeven-2016 §2.2.2, Function 8 and Proposition 4 -- for a fixed multiplicand y precompute ψ := ⌊2^n y/p⌋, c = (xψ) >> n, d = xy − cp, one correction
 /// outᵢ = imagesᵢ·lᵢ mod pᵢ for each image, lᵢ = `residues[i]` < pᵢ
 /// with its Shoup factor `factors[i]`, pᵢ = `primes[i]` < 2^63: the images
 /// of u·l at the primes from those of u and l. Past the images the
@@ -280,7 +278,7 @@ pub(crate) struct CrtStep {
     inverse: u64,
     /// The inverse's Shoup factor, `shoup_factor(inverse, p)`.
     factor: u64,
-    // q-crt-time.5 design -- the powers 2^(64i) mod a prime are computed once, as many as M has limbs or the lifting's width, and the prime's step holds them for the attempts at that prime, not recomputed per residue nor one table for the whole call (not measured)
+    // q-crt-time.5 design-checked -- the powers 2^(64i) mod a prime are computed once, as many as M has limbs or the lifting's width, and the prime's step holds them for the attempts at that prime, not recomputed per residue nor one table for the whole call (not measured)
     /// The powers 2^(64i) mod p, as many as M has limbs or the lifting's
     /// width, whichever is more.
     radix: Radix,
@@ -382,40 +380,45 @@ impl Radix {
         self.p
     }
 
-    // q-crt-time.4 cited: dumas-2008 §2.1.2 -- successive multiplications and accumulations without any division
-    /// x mod p, x on limbs, at most `len` of them. The crate's unit tests
-    /// read it.
-    #[cfg(test)]
-    pub(crate) fn residue(&self, x: &[u64]) -> u64 {
-        debug_assert!(x.len() <= self.powers.len(), "{len} limbs", len = x.len());
-        self.sum(x.iter().copied())
-    }
-
-    // q-crt-time.4 cited: dumas-2008 §2.1.2 -- successive multiplications and accumulations without any division
-    /// x mod p: by the powers where x has at most `len` limbs, and past
-    /// them by the free function `residue`'s Horner rule.
-    pub(crate) fn residue_big(&self, x: &BigUint) -> u64 {
-        let digits = x.iter_u64_digits();
+    // q-crt-time.4 cited-checked: dumas-2008 §2.1.2 -- successive multiplications and accumulations without any division
+    /// x mod p from x's 64-bit digits, the least significant first: by the
+    /// powers where x has at most `len` digits, and past them by Horner's
+    /// rule, as the free function `residue` takes it.
+    fn residue_digits(
+        &self,
+        digits: impl DoubleEndedIterator<Item = u64> + ExactSizeIterator,
+    ) -> u64 {
         // A chain's last and a numerator over it may pass the step's width
         // within the attempt that makes them (log 0076-1, _Step 3_).
         if digits.len() > self.powers.len() {
-            return residue(x, self.p);
+            return horner_residue(digits, self.p);
         }
         self.sum(digits)
     }
 
-    // q-crt-time.8 design -- a rational n/d fits c at p where d mod p ≠ 0 and n mod p = c·(d mod p) mod p, not n·d⁻¹ mod p by an extended Euclid compared with c (log 0023-1)
+    /// x mod p, x on limbs, as `residue_digits` takes it.
+    pub(crate) fn residue(&self, x: &[u64]) -> u64 {
+        self.residue_digits(x.iter().copied())
+    }
+
+    /// x mod p, as `residue_digits` takes it.
+    pub(crate) fn residue_big(&self, x: &BigUint) -> u64 {
+        self.residue_digits(x.iter_u64_digits())
+    }
+
+    // q-crt-time.8 design-checked -- a rational n/d fits c at p where d mod p ≠ 0 and n mod p = c·(d mod p) mod p, not n·d⁻¹ mod p by an extended Euclid compared with c (log 0023-1)
     /// Whether r reduces to c at p: d mod p ≠ 0 and n ≡ c·d mod p. c < p.
     pub(crate) fn fits(&self, r: &Rational, c: u64) -> bool {
         self.fits_over(&r.num, self.residue_big(&r.den), c)
     }
 
-    // q-crt-time.8 design -- a rational n/d fits c at p where d mod p ≠ 0 and n mod p = c·(d mod p) mod p, not n·d⁻¹ mod p by an extended Euclid compared with c (log 0023-1)
+    // q-crt-time.8 design-checked -- a rational n/d fits c at p where d mod p ≠ 0 and n mod p = c·(d mod p) mod p, not n·d⁻¹ mod p by an extended Euclid compared with c (log 0023-1)
+    // q-teardown-stop-latency.7 design-checked -- fits_over and over take any integer of the trait Residue, num-bigint's BigInt or a numerator of the lift on its limbs, over one residue routine on 64-bit digits, not the residue formed by each caller, nor a second fits_over and over for limbs (not measured)
     /// Whether n/d reduces to c at p, given d's residue dr = d mod p:
     /// dr ≠ 0 and n ≡ c·dr mod p. c < p.
-    pub(crate) fn fits_over(&self, n: &BigInt, dr: u64, c: u64) -> bool {
+    pub(crate) fn fits_over<N: Residue + ?Sized>(&self, n: &N, dr: u64, c: u64) -> bool {
         debug_assert!(c < self.p && dr < self.p);
-        dr != 0 && self.signed(n) == mul_mod(c, dr, self.p)
+        dr != 0 && n.residue_at(self) == mul_mod(c, dr, self.p)
     }
 
     /// a·b mod p, a and b below p.
@@ -430,9 +433,11 @@ impl Radix {
         (d != 0).then(|| inverse_mod(d, self.p))
     }
 
+    // q-teardown-stop-latency.7 design-checked -- fits_over and over take any integer of the trait Residue, num-bigint's BigInt or a numerator of the lift on its limbs, over one residue routine on 64-bit digits, not the residue formed by each caller, nor a second fits_over and over for limbs (not measured)
     /// n·di mod p, given a denominator's inverse di mod p.
-    pub(crate) fn over(&self, n: &BigInt, di: u64) -> u64 {
-        mul_mod(self.signed(n), di, self.p)
+    pub(crate) fn over<N: Residue + ?Sized>(&self, n: &N, di: u64) -> u64 {
+        debug_assert!(di < self.p, "{di} mod {p}", p = self.p);
+        mul_mod(n.residue_at(self), di, self.p)
     }
 
     /// n·d⁻¹ mod p; None where p divides d. The crate's unit tests read
@@ -442,18 +447,34 @@ impl Radix {
         self.inverse(&r.den).map(|di| self.over(&r.num, di))
     }
 
-    /// n mod p, in [0, p).
-    fn signed(&self, n: &BigInt) -> u64 {
-        let r = self.residue_big(n.magnitude());
-        match n.sign() {
-            Sign::Minus if r != 0 => self.p - r,
-            Sign::Minus | Sign::NoSign | Sign::Plus => r,
-        }
+    /// The residue in [0, p) of an integer whose magnitude's residue is r <
+    /// p, negative where `negative`.
+    pub(crate) fn signed(&self, negative: bool, r: u64) -> u64 {
+        debug_assert!(r < self.p, "{r} mod {p}", p = self.p);
+        if negative && r != 0 { self.p - r } else { r }
     }
 }
 
-// q-modulus-time.6 design -- the residue is the u128 sum of the limbs' products by the powers, its wrapped additions counted, for every prime, not each limb split in halves of 32 bits with two products a limb (log 0036-1)
-// q-modulus-time.7 design -- the counted sum is reduced once, after its last limb, as (c·(2^128 mod p) + s mod p) mod p, not a remainder taken every four products before the sum can wrap (not measured)
+/// An integer whose residue modulo a prime below 2^62 `Radix` takes:
+/// num-bigint's `BigInt`, or a numerator of the lift on its limbs
+/// (`numerators::Numerator`).
+pub(crate) trait Residue {
+    /// The integer modulo `radix`'s prime, in [0, p).
+    fn residue_at(&self, radix: &Radix) -> u64;
+}
+
+impl Residue for BigInt {
+    fn residue_at(&self, radix: &Radix) -> u64 {
+        let negative = match self.sign() {
+            Sign::Minus => true,
+            Sign::NoSign | Sign::Plus => false,
+        };
+        radix.signed(negative, radix.residue_big(self.magnitude()))
+    }
+}
+
+// q-modulus-time.6 design-checked -- the residue is the u128 sum of the limbs' products by the powers, its wrapped additions counted, for every prime, not each limb split in halves of 32 bits with two products a limb (log 0036-1)
+// q-modulus-time.7 design-checked -- the counted sum is reduced once, after its last limb, as (c·(2^128 mod p) + s mod p) mod p, not a remainder taken every four products before the sum can wrap (not measured)
 /// The residue modulo p < 2^62 of the sum of the products of the pairs,
 /// given `top` = 2^128 mod p: the residue of an integer from its limbs and
 /// the powers 2^(64i) mod p, and a mixed-radix digit's sum. Each addition
@@ -473,10 +494,16 @@ fn wrapped_sum(pairs: impl Iterator<Item = (u64, u64)>, p: u64, top: u64) -> u64
 
 /// x mod p, for p < 2^63.
 pub(crate) fn residue(x: &BigUint, p: u64) -> u64 {
+    horner_residue(x.iter_u64_digits(), p)
+}
+
+/// x mod p from x's 64-bit digits, the least significant first, for p <
+/// 2^63.
+fn horner_residue(digits: impl DoubleEndedIterator<Item = u64>, p: u64) -> u64 {
     debug_assert!(p > 0 && p < 1 << 63);
     // Horner's rule over the 64-bit digits from the most significant: r < p
     // < 2^63 keeps r·2^64 + digit below 2^128.
-    x.iter_u64_digits().rev().fold(0u64, |r, digit| {
+    digits.rev().fold(0u64, |r, digit| {
         (((u128::from(r) << 64) | u128::from(digit)) % u128::from(p)).narrow()
     })
 }
@@ -561,7 +588,7 @@ pub(crate) fn reconstruct(u: &BigUint, m: &BigUint, bound: &BigUint) -> Option<R
     if den.is_zero() || den > *bound {
         return None;
     }
-    // q-lift.14 cited: collins-1995 §2 -- RATCONVERT applied to M = 12 and U = 5 outputs (−2, 2), since it does not check gcd(B, M) = 1; §4.3 -- gcd(A, B) = gcd(B, M), and A and B are at most about half the length of M
+    // q-lift.14 cited-checked: collins-1995 §2, §4.3 -- RATCONVERT applied to M = 12 and U = 5 outputs (−2, 2) because gcd(B, M) = 1 is not checked, so a correct reconstruction checks it; gcd(A, B) = gcd(B, M) with A and B at most about half the length of M, and method I, gcd(A, B), is used throughout over method II, a test of B by each prime of M
     if !r1.gcd(&den).is_one() {
         return None;
     }
@@ -596,10 +623,20 @@ pub(crate) fn scale(coefs: &[Rational]) -> (BigUint, Vec<BigInt>) {
     (l, ints)
 }
 
+// call-stop-latency.67 practice-checked: loop-invariant hoisting -- term_bound_q takes the monomial's longest text, which lift::finish computes once from the names, not the names, whose lengths it summed at every term of the reservation (log 0138-7)
 /// At least the text of a term over Q whose integer has `bits` bits: a
-/// sign, the integer's digits, a `*`, and the monomial's longest text.
-pub(crate) fn term_bound_q(names: &[&str], bits: u64) -> usize {
-    TERM_MARKS + digits_bound(bits) + monomial_longest(names)
+/// sign, the integer's digits, a `*`, and the monomial's longest text,
+/// `longest` (`monomial_longest`).
+pub(crate) fn term_bound_q(longest: usize, bits: u64) -> usize {
+    TERM_MARKS + digits_bound(bits) + longest
+}
+
+// call-stop-latency.74 design-checked -- the cofactor text over Q is reserved once, before its `[`, at the sum over its terms of what term_bound_q allows a numerator of `num_bits` bits and a `/` and the digits of a denominator of `den_bits`, capped as the basis text's reservation, not grown by doubling, whose step from half a gigabyte to a gigabyte was one stretch without a check (log 0138-7, 0138-8)
+/// At least the text of a cofactor term over Q whose numerator has
+/// `num_bits` bits and whose denominator `den_bits`: what `term_bound_q`
+/// allows the numerator, a `/`, and the denominator's digits.
+pub(crate) fn cofactor_term_bound_q(longest: usize, num_bits: u64, den_bits: u64) -> usize {
+    term_bound_q(longest, num_bits) + 1 + digits_bound(den_bits)
 }
 
 /// Writes a polynomial over Q with integer coefficients in the canonical
@@ -648,12 +685,13 @@ pub(crate) fn write_cofactor_q(
     write_terms(out, names, exponents, terms, budget)
 }
 
-// text-stop-latency.1 design -- every text spends a unit of work a byte on the call's budget as it is written, and a writer stops where the budget's check stops the call, not a tick per polynomial or entry nor one full check after each text (log 0057-1)
+// text-stop-latency.1 design-checked -- every text spends a unit of work a byte on the call's budget as it is written, and a writer stops where the budget's check stops the call, not a tick per polynomial or entry nor one full check after each text (log 0057-1)
 /// Writes the terms, each its sign, the absolute value of its numerator,
 /// and its denominator where it has one, as `write_poly_q` and
 /// `write_cofactor_q` say. Right after each term it writes it spends its
-/// bytes, its sign or `+` among them, and `decimal_units` of its numerator
-/// and of its denominator where it has one; a term of coefficient 0 and
+/// bytes, its sign or `+` among them, `decimal_units` of its numerator
+/// and of its denominator where it has one, and two units a variable of its
+/// monomial; a term of coefficient 0 and
 /// the `0` of no term spend nothing. A stop where the budget's check stops
 /// the call, the text then cut short.
 fn write_terms<'c>(
@@ -664,7 +702,7 @@ fn write_terms<'c>(
     budget: &mut Budget,
 ) -> Result<(), Stop> {
     let n = names.len();
-    // result-time.3 design -- the text is written as bytes into the vector under the String, ASCII and each name whole, not characters pushed into the String or a vector checked by `String::from_utf8` at the end (log 0042-1)
+    // result-time.3 design-checked -- the text is written as bytes into the vector under the String, ASCII and each name whole, not characters pushed into the String or a vector checked by `String::from_utf8` at the end (log 0042-1)
     // SAFETY: every byte written is ASCII or a byte of a name, and each name
     // is a `&str` written whole, so the String stays UTF-8.
     let out = unsafe { out.as_mut_vec() };
@@ -691,12 +729,14 @@ fn write_terms<'c>(
             }
         }
         if !constant {
-            // text-time.8 design -- over Q each monomial is written from its exponents at each term, not kept in a hash map keyed by its exponents (log 0048-1)
+            // text-time.8 design-checked -- over Q each monomial is written from its exponents at each term, not kept in a hash map keyed by its exponents (log 0048-1)
             push_monomial(out, names, monomial);
         }
-        // text-stop-latency.3 design -- over Q each term spends, right after it, its bytes plus the square of the limbs of its numerator and of its denominator, not its bytes alone nor a spend per polynomial (log 0057-1)
+        // text-stop-latency.3 design-checked -- over Q each term spends, right after it, its bytes plus the square of the limbs of its numerator and of its denominator, not its bytes alone nor a spend per polynomial (log 0057-1)
         let digits = decimal_units(abs) + den.map_or(0, decimal_units);
-        budget.spend(out.len() - mark + digits)?;
+        // call-stop-latency.29 design-checked -- a text spends the variables of each monomial it writes from its exponents, a basis text's first writing of each and each term of a cofactor text or a text over Q, beside its bytes, not its bytes alone (text-stop-latency.1, .2), as a monomial's writing scans every variable and writes the few it holds (log 0138-6)
+        // The monomial's test for 1 and its writing read each variable.
+        budget.spend(out.len() - mark + digits + 2 * n, Site::Text)?;
     }
     if !written {
         out.push(b'0');

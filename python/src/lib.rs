@@ -17,15 +17,15 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyString};
 
-// small-block-time.4 design -- the Python module sets the crate's allocator as its global allocator, not the crate setting it for every program that links it (not measured)
+// small-block-time.4 design-checked -- the Python module sets the crate's allocator as its global allocator, not the crate setting it for every program that links it (not measured)
 #[global_allocator]
 static GLOBAL: grobx_core::Allocator = grobx_core::Allocator;
 
-// f4-gfp.37 design -- every error of the core is raised as grobx.Error, a subclass of ValueError, not returned in a result's field (not measured)
+// f4-gfp.37 design-checked -- every error of the core is raised as grobx.Error, a subclass of ValueError, not returned in a result's field (not measured)
 create_exception!(grobx, Error, PyValueError);
 
 /// A flag another thread raises to stop a call.
-// f4-gfp.33 practice: releasing the GIL -- grobx.Cancel wraps the engine's flag, which the call polls with the GIL released, not a threading.Event polled through the GIL
+// f4-gfp.33 practice-checked: releasing the GIL -- grobx.Cancel wraps the engine's flag, which the call polls with the GIL released, not a threading.Event polled through the GIL
 #[pyclass(name = "Cancel", module = "grobx", frozen)]
 struct Cancel(grobx_core::Cancel);
 
@@ -49,7 +49,7 @@ impl Cancel {
 #[pyclass(name = "Result", module = "grobx", frozen)]
 struct Answer {
     /// The canonical basis text, None where a bound stopped the run.
-    // f4-gfp.54 design -- the basis and cofactor texts become Python strings inside the call, and every read returns the same object, not a copy made at each read (not measured)
+    // f4-gfp.54 design-checked -- the basis and cofactor texts become Python strings inside the call, and every read returns the same object, not a copy made at each read (not measured)
     #[pyo3(get)]
     basis: Option<Py<PyString>>,
     /// "deadline", "cancel", or "memory" where a bound stopped the run.
@@ -62,9 +62,13 @@ struct Answer {
     #[pyo3(get)]
     flaw: Option<String>,
     /// The call report where the call asked for it, else None.
-    // call-report.16 design -- Python takes a keyword report, False by default, and Result.report is a str made inside the call, or None, not a list of parsed lines nor a callback per line (not measured)
+    // call-report.16 design-checked -- Python takes a keyword report, False by default, and Result.report is a str made inside the call, or None, not a list of parsed lines nor a callback per line (not measured)
     #[pyo3(get)]
     report: Option<Py<PyString>>,
+    /// The first error `report_file`'s writes met, after which the call
+    /// wrote no line to it; None where every line reached it.
+    #[pyo3(get)]
+    sink_error: Option<String>,
     /// The seed the call ran under, the one drawn where `seed` was None.
     #[pyo3(get)]
     seed: u64,
@@ -73,7 +77,7 @@ struct Answer {
 #[pymethods]
 impl Answer {
     /// SHA-256 of the basis text, None where there is none.
-    // f4-gfp.36 design -- the digest is computed when it is read, outside the timed call, not inside it (not measured)
+    // f4-gfp.36 design-checked -- the digest is computed when it is read, outside the timed call, not inside it (not measured)
     #[getter]
     fn digest(&self, py: Python<'_>) -> PyResult<Option<String>> {
         match &self.basis {
@@ -84,9 +88,10 @@ impl Answer {
 }
 
 /// The reduced Gröbner basis of the instance `text` (`OBJECTIVES.md`,
-/// _Measurement_ and _Call parameters_). `order` is "grevlex", "lex", or a
-/// block order "block:k1,…,km", as the core's `MonomialOrder::from_str`
-/// says. In lex the grevlex basis of a zero-dimensional ideal of degree at
+/// _Measurement_ and _Call parameters_). `order` is "grevlex", "deglex",
+/// "lex", or a block order "block:k1,…,km", as the core's
+/// `MonomialOrder::from_str` says. In lex the grevlex basis of a
+/// zero-dimensional ideal of degree at
 /// most 65535 is changed to lex by FGLM, and otherwise F4 runs in lex. The
 /// characteristic is a prime below 2^64, or 0 for Q, where the basis is
 /// lifted from runs over primes of [2^61, 2^62), as the core's `groebner`
@@ -120,13 +125,13 @@ fn groebner(
     report: bool,
     report_file: Option<PathBuf>,
 ) -> PyResult<Answer> {
-    // f4-gfp.31 design -- threads = 0 means all the machine has, not None (not measured)
+    // f4-gfp.31 design-checked -- threads = 0 means all the machine has, not None (not measured)
     let threads = match NonZeroUsize::new(threads) {
         None => Threads::All,
         Some(n) => Threads::Count(n),
     };
     let order: MonomialOrder = order.parse().map_err(|e| raised(&e))?;
-    // input-redundancy-time.10 design -- no keyword, switch, or field sets Params::echelon: the call runs with it on, as with signatures, not a keyword, a switch, and a field for it (not measured)
+    // input-redundancy-time.10 design-checked -- no keyword, switch, or field sets Params::echelon: the call runs with it on, as with signatures, not a keyword, a switch, and a field for it (not measured)
     let mut params = Params::new(order, threads, seed.unwrap_or_else(grobx_core::random_seed));
     params.deadline = deadline.map(Duration::from_millis);
     params.cancel = cancel.map(|c| c.get().0.clone());
@@ -134,17 +139,17 @@ fn groebner(
     params.checker = checker.map(|c| checker_mode(&c)).transpose()?;
     params.cofactors = cofactors;
     params.report = report || report_file.is_some();
-    // error-report.3 design -- Python's report_file names a file the call writes each report line to as it meets it, unbuffered, not the report returned in Result.report alone, which a raising or aborted call never returns (not measured)
+    // error-report.3 design-checked -- Python's report_file names a file the call writes each report line to as it meets it, unbuffered, not the report returned in Result.report alone, which a raising or aborted call never returns (not measured)
     if let Some(path) = report_file {
         let file = File::create(&path)
             .map_err(|e| PyOSError::new_err(format!("{path}: {e}", path = path.display())))?;
         params.report_sink = Some(ReportSink::new(file));
     }
-    // f4-gfp.33 practice: releasing the GIL -- the call releases the GIL while it computes, so another Python thread can raise the flag
+    // f4-gfp.33 practice-checked: releasing the GIL -- the call releases the GIL while it computes, so another Python thread can raise the flag
     let outcome = py
         .detach(|| grobx_core::groebner(text, &params))
         .map_err(|e| raised(&e))?;
-    // text-stop-latency.10 design -- the Python module's copy of each text into a Python string, and the C interface's handover of its texts, stay without a check, not a copy in chunks with a check between them (log 0057-1)
+    // text-stop-latency.10 design-checked -- the Python module's copy of each text into a Python string, and the C interface's handover of its texts, stay without a check, not a copy in chunks with a check between them (log 0057-1)
     Ok(Answer {
         basis: outcome.basis.map(|t| string_of(py, t)).transpose()?,
         stopped: outcome.stopped.map(Stop::name),
@@ -152,11 +157,12 @@ fn groebner(
         certified: outcome.certified,
         flaw: outcome.flaw,
         report: outcome.report.map(|t| PyString::new(py, &t).unbind()),
+        sink_error: outcome.sink_error,
         seed: params.seed,
     })
 }
 
-// text-copy-peak.3 tuned -- a text is handed to its Python string 2^18 bytes at a time, not 2^16, 2^20, or 2^21 bytes (log 0081-1)
+// text-copy-peak.3 tuned-checked -- a text is handed to its Python string 2^18 bytes at a time, not 2^16, 2^20, or 2^21 bytes (log 0081-1)
 /// The bytes `string_of` copies into a Python string at a time; a text of
 /// at most this many is copied at once.
 #[allow(
@@ -165,9 +171,9 @@ fn groebner(
 )]
 const TEXT_CHUNK: NonZeroUsize = NonZeroUsize::new(1 << 18).expect("2^18 is not zero");
 
-// text-copy-peak.1 design -- a long text is copied into its Python string a chunk at a time by text::hand_over, which gives back the core's pages behind each chunk, not copied whole while the core's text stands, nor made a string at its first read after the call, nor written by the core into the string (log 0081-1)
-// text-copy-peak.5 design -- a text of at most TEXT_CHUNK bytes is copied into its string at once, not handed over in chunks (not measured)
-// text-copy-peak.8 design -- the basis and the cofactor texts become strings by string_of, and the report text by one copy, not the report text as well, whose CPU name may hold bytes past ASCII (not measured)
+// text-copy-peak.1 design-checked -- a long text is copied into its Python string a chunk at a time by text::hand_over, which gives back the core's pages behind each chunk, not copied whole while the core's text stands, nor made a string at its first read after the call, nor written by the core into the string (log 0081-1)
+// text-copy-peak.5 design-checked -- a text of at most TEXT_CHUNK bytes is copied into its string at once, not handed over in chunks (not measured)
+// text-copy-peak.8 design-checked -- the basis and the cofactor texts become strings by string_of, and the report text by one copy, not the report text as well, whose CPU name may hold bytes past ASCII (not measured)
 /// `text`, the core's ASCII, as a Python string. A text of at most
 /// `TEXT_CHUNK` bytes is copied at once. A longer one is copied into a
 /// string of its length a chunk at a time by `grobx_core::text::hand_over`,
@@ -189,7 +195,7 @@ fn string_of(py: Python<'_>, text: String) -> PyResult<Py<PyString>> {
         // returned.
         unsafe { ptr::copy_nonoverlapping(part.as_ptr(), at.add(from), part.len()) };
     })?;
-    // text-copy-peak.7 design -- the string is read back at its first, middle, and last character, not trusted unread, since the limited API does not say that PyUnicode_AsUTF8AndSize points at the string's characters (not measured)
+    // text-copy-peak.7 design-checked -- the string is read back at its first, middle, and last character, not trusted unread, since the limited API does not say that PyUnicode_AsUTF8AndSize points at the string's characters (not measured)
     for (i, byte) in ends.into_iter().zip(written) {
         let index = ffi::Py_ssize_t::try_from(i)?;
         // SAFETY: `string` is a str of len characters, and index < len.
@@ -206,7 +212,7 @@ fn string_of(py: Python<'_>, text: String) -> PyResult<Py<PyString>> {
     Ok(string.unbind())
 }
 
-// text-copy-peak.2 design -- a string of len ASCII characters is made under the limited API by growing a string of two characters with PyUnicode_Resize, its characters reached by PyUnicode_AsUTF8AndSize, not by PyUnicode_New and PyUnicode_DATA outside the limited API, nor by a module built without abi3 for one interpreter (f4-gfp.32) (not measured)
+// text-copy-peak.2 design-checked -- a string of len ASCII characters is made under the limited API by growing a string of two characters with PyUnicode_Resize, its characters reached by PyUnicode_AsUTF8AndSize, not by PyUnicode_New and PyUnicode_DATA outside the limited API, nor by a module built without abi3 for one interpreter (f4-gfp.32) (not measured)
 /// The characters of the string `blank` grows: two, since the
 /// interpreter may share a string of one character, which no resize may
 /// change in place.
@@ -246,7 +252,7 @@ fn blank(py: Python<'_>, len: usize) -> PyResult<(Bound<'_, PyString>, *mut u8)>
     Ok((string, at.cast_mut().cast::<u8>()))
 }
 
-// f4-gfp.34 design -- one keyword, "exact" or k >= 1 points of the cheap mode, not two keywords for the mode and the points (not measured)
+// f4-gfp.34 design-checked -- one keyword, "exact" or k >= 1 points of the cheap mode, not two keywords for the mode and the points (not measured)
 fn checker_mode(value: &Bound<'_, PyAny>) -> PyResult<CheckerMode> {
     if let Ok(name) = value.cast::<PyString>() {
         return match name.to_str()? {
@@ -273,8 +279,9 @@ fn raised(e: &CoreError) -> PyErr {
 }
 
 /// The name of the error's variant, which the message of grobx.Error opens
-/// with: "Error" for `Misfit`, which `groebner` never returns, for
-/// `Malloc`, and for a variant the crate adds later.
+/// with: "Error" for `Misfit`, which `groebner` never returns, for `Clock`,
+/// which it returns only on wasm32 in a browser, and for a variant the
+/// crate adds later.
 fn variant(e: &CoreError) -> &'static str {
     match e {
         CoreError::Syntax { .. }
@@ -286,12 +293,13 @@ fn variant(e: &CoreError) -> &'static str {
         | CoreError::NoInverse { .. }
         | CoreError::Order { .. }
         | CoreError::Memory
-        | CoreError::Drops { .. } => e.name(),
-        CoreError::Misfit { .. } | CoreError::Malloc { .. } | _ => "Error",
+        | CoreError::Drops { .. }
+        | CoreError::NotBuilt { .. } => e.name(),
+        CoreError::Misfit { .. } | CoreError::Clock | _ => "Error",
     }
 }
 
-// trace-replay.14 design -- the wrapper exposes neither grobx::learn nor grobx::replay, not keywords of grobx.groebner for the trace mode (not measured)
+// trace-replay.14 design-checked -- the wrapper exposes neither grobx::learn nor grobx::replay, not keywords of grobx.groebner for the trace mode (not measured)
 #[pymodule]
 fn grobx(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(groebner, m)?)?;

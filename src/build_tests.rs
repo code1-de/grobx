@@ -8,88 +8,20 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use std::cmp::Ordering;
-use std::convert::Infallible;
-
-use rand_core::{Rng, SeedableRng, TryRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::budget::Budget;
+use crate::columns::Columns;
+use crate::divisors::Divisors;
 use crate::field::{Field, Gf31};
 use crate::id::{ElementId, MonoId};
-use crate::matrix::Divisors;
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::order::Grevlex;
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::{HASHES, below, divides, exponents, grevlex, multipliers, rng, table};
 use crate::sig::{Sig, Signatures};
 use crate::table::{Limit, Table};
-
-pub(crate) fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
-
-pub(crate) fn below(r: &mut Xoshiro256PlusPlus, n: u64) -> u64 {
-    r.next_u64() % n
-}
-
-/// Hands out the given words in turn, then 0: the hash multipliers of a
-/// table, which `Table::new` draws one per variable, in order.
-struct Given(std::vec::IntoIter<u64>);
-
-impl TryRng for Given {
-    type Error = Infallible;
-
-    fn try_next_u32(&mut self) -> Result<u32, Infallible> {
-        Ok(self.try_next_u64()? as u32)
-    }
-
-    fn try_next_u64(&mut self) -> Result<u64, Infallible> {
-        Ok(self.0.next().unwrap_or(0))
-    }
-
-    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
-        dst.fill(0);
-        Ok(())
-    }
-}
-
-/// The hashes of `lookup_tests.rs`, by name.
-const HASHES: [&str; 4] = [
-    "drawn",
-    // Every hash's low 32 bits are 0: every slot's tag agrees.
-    "tags that agree",
-    // Every hash is 0: one probe chain from slot 0.
-    "one chain",
-    // Every hash is 2^64 minus the degree: every chain from a home slot
-    // past the unit monomial's wraps past the end.
-    "chains that wrap",
-];
-
-/// The n multipliers of the hashes `name`.
-fn multipliers(name: &str, n: usize, seed: u64) -> Vec<u64> {
-    let mut r = rng(seed ^ n as u64);
-    (0..n as u64)
-        .map(|i| match name {
-            "drawn" => r.next_u64(),
-            "tags that agree" => (i + 1) << 32,
-            "one chain" => 0,
-            "chains that wrap" => u64::MAX,
-            _ => unreachable!("{name}"),
-        })
-        .collect()
-}
-
-/// A table on `n` variables of format `M` whose hash multipliers are
-/// `multipliers`.
-fn table<M: Format>(n: usize, multipliers: Vec<u64>) -> Table<M> {
-    Table::new(M::new(n), &mut Given(multipliers.into_iter()))
-}
-
-pub(crate) fn exponents<M: Format>(t: &Table<M>, id: MonoId) -> Vec<u32> {
-    (0..t.format().variables())
-        .map(|i| t.exponent(id, i))
-        .collect()
-}
 
 /// Exponents of n variables, each drawn in [0, top], their sum at most
 /// `cap`.
@@ -126,13 +58,19 @@ fn doubled_inside(before: usize, after: usize) -> bool {
 /// distinct ones on one or two variables, then 150 rows of
 /// 1 to 40 distinct monomials and a multiplier, all drawn from the
 /// interned ones: on one twin by `row_products`, on the other by
-/// `Table::mul` per term with the stamp tested as `matrix::multiply`
-/// tested it. A third of the rows start a round of their own. Each row's
-/// columns, monomials new to the round, stamps, and the table's length
-/// agree; at the end every id names one monomial in both twins.
-fn agree<M: Format>(n: usize, name: &str, seed: u64) {
+/// `Table::mul` per term, each product entered into the round by its stamp
+/// and its column slot as `Table::enter` enters it. A third of the rows
+/// start a round of their own. Where `units` holds, the unit monomial is
+/// interned first and is every other row's multiplier, and such a row
+/// stores no monomial. Each row's columns, monomials new to the round,
+/// column slots before, stamps, and the table's length agree; at the end
+/// every id names one monomial in both twins, under the same stamp and
+/// column. The columns are a vector of 2-byte entries where `narrow`
+/// holds.
+pub(crate) fn agree<M: Format>(n: usize, name: &str, seed: u64, narrow: bool, units: bool) {
     let case = format!(
-        "{words} words of degree bound {max_degree} on {n} variables, {name}",
+        "{words} words of degree bound {max_degree} on {n} variables, {name}, narrow {narrow}, \
+         units {units}",
         words = M::new(n).words(),
         max_degree = M::MAX_DEGREE
     );
@@ -142,23 +80,43 @@ fn agree<M: Format>(n: usize, name: &str, seed: u64) {
     let top = (cap / n as u32).clamp(1, 40);
     let mut r = rng(seed ^ 0xb11d);
     let mut ids = Vec::new();
+    let unit = units.then(|| {
+        let one = a.intern(&vec![0; n], &mut Budget::unbounded()).unwrap();
+        assert_eq!(
+            b.intern(&vec![0; n], &mut Budget::unbounded()),
+            Ok(one),
+            "{case}: the twins intern the unit monomial alike"
+        );
+        ids.push(one);
+        one
+    });
     for _ in 0..600 {
         let e = draw(&mut r, n, top, cap);
-        let x = a.intern(&e).unwrap();
-        assert_eq!(b.intern(&e), Ok(x), "{case}: the twins intern alike");
+        let x = a.intern(&e, &mut Budget::unbounded()).unwrap();
+        assert_eq!(
+            b.intern(&e, &mut Budget::unbounded()),
+            Ok(x),
+            "{case}: the twins intern alike"
+        );
         if !ids.contains(&x) {
             ids.push(x);
         }
     }
     let (mut round, mut inside) = (1, 0);
-    // Columns and new monomials of rows before, as a matrix holds them.
-    let (mut cols, mut fresh) = (vec![MonoId::at(7), MonoId::at(3)], vec![MonoId::at(9)]);
-    let (mut want_cols, mut want_fresh) = (cols.clone(), fresh.clone());
+    // Columns, new monomials, and their slots before of rows before, as a
+    // matrix holds them.
+    let (mut cols, mut fresh) = (Columns::of(narrow, &[7, 3]), vec![MonoId::at(9)]);
+    let mut previous = vec![MonoId::NONE];
+    let (mut want_cols, mut want_fresh, mut want_previous) =
+        (cols.entries().to_wide(), fresh.clone(), previous.clone());
     for row in 0..150 {
         if below(&mut r, 3) == 0 {
             round += 1;
         }
-        let t = ids[below(&mut r, ids.len() as u64) as usize];
+        let t = match unit {
+            Some(one) if row % 2 == 0 => one,
+            Some(_) | None => ids[below(&mut r, ids.len() as u64) as usize],
+        };
         let len = 1 + below(&mut r, 40) as usize;
         let mut ms: Vec<MonoId> = Vec::new();
         while ms.len() < len.min(ids.len()) {
@@ -169,21 +127,43 @@ fn agree<M: Format>(n: usize, name: &str, seed: u64) {
         }
         let before = a.len();
         // SAFETY: t and every u are ids both twins returned by `intern`.
-        unsafe { a.row_products(t, &ms, round, &mut cols, &mut fresh) }
-            .unwrap_or_else(|e| panic!("{case}, row {row}: {e:?}"));
+        unsafe {
+            a.row_products(
+                t,
+                &ms,
+                round,
+                &mut cols,
+                &mut fresh,
+                &mut previous,
+                &mut Budget::unbounded(),
+            )
+        }
+        .unwrap_or_else(|e| panic!("{case}, row {row}: {e:?}"));
+        let mut products = Vec::new();
         for &u in &ms {
-            let p = b.mul(t, u).unwrap();
-            want_cols.push(p);
+            let p = b.mul(t, u, &mut Budget::unbounded()).unwrap();
             if b.stamp(p) != round {
                 b.set_stamp(p, round);
                 want_fresh.push(p);
+                want_previous.push(b.column(p));
+                b.set_column(p, MonoId::at(want_previous.len() - 1));
             }
+            want_cols.push(b.column(p));
+            products.push(p);
         }
         let name = format!("{case}, row {row} in round {round}");
-        assert_eq!(cols, want_cols, "{name}: the columns");
+        assert_eq!(cols.entries().to_wide(), want_cols, "{name}: the columns");
         assert_eq!(fresh, want_fresh, "{name}: the monomials new to the round");
+        assert_eq!(previous, want_previous, "{name}: the column slots before");
         assert_eq!(a.len(), b.len(), "{name}: the monomials stored");
-        for &p in &cols[cols.len() - ms.len()..] {
+        if Some(t) == unit {
+            assert_eq!(
+                a.len(),
+                before,
+                "{name}: a row by the unit monomial stores none"
+            );
+        }
+        for &p in &products {
             assert_eq!(a.stamp(p), round, "{name}: the stamp of {p}");
             assert_eq!(b.stamp(p), round, "{name}: the twin's stamp of {p}");
         }
@@ -203,21 +183,34 @@ fn agree<M: Format>(n: usize, name: &str, seed: u64) {
             "{case}: id {id} names one monomial"
         );
         assert_eq!(a.stamp(id), b.stamp(id), "{case}: the stamp of {id}");
+        assert_eq!(a.column(id), b.column(id), "{case}: the column of {id}");
     }
 }
 
-fn agree_in<M: Format>(counts: &[usize], seed: u64) {
+/// `agree` on tables of format `M` on each count of variables, under
+/// each hash, into columns of 4 bytes and of 2, every other row by the
+/// unit monomial where `units` holds.
+pub(crate) fn agree_units<M: Format>(counts: &[usize], seed: u64, units: bool) {
     for &n in counts {
         for name in HASHES {
-            agree::<M>(n, name, seed ^ n as u64);
+            for narrow in [false, true] {
+                agree::<M>(n, name, seed ^ n as u64, narrow, units);
+            }
         }
     }
 }
 
+/// `agree` on tables of format `M` on each count of variables, under
+/// each hash, into columns of 4 bytes and of 2.
+pub(crate) fn agree_in<M: Format>(counts: &[usize], seed: u64) {
+    agree_units::<M>(counts, seed, false);
+}
+
 /// matrix-build-time.1 to .6, test 1: a row's products by `row_products`
-/// are those of the lookup per term, for formats of one to six words, the
-/// copies for one to four and the per-term lookup past four, whatever the
-/// hashes, across the slot array's doublings inside a row.
+/// are those of the lookup per term, for formats of one to six words, which
+/// the copies take (wide-format-products-time.1), whatever the hashes,
+/// across the slot array's doublings inside a row, into columns of 4 bytes
+/// and of 2.
 #[test]
 fn a_rows_products_agree_with_the_lookup_per_term() {
     // Dense8: 8 lanes a word.
@@ -229,12 +222,14 @@ fn a_rows_products_agree_with_the_lookup_per_term() {
 }
 
 /// A row whose products reach the degree bound and pass it at the third
-/// term: Overflow, the columns and new monomials of the first two terms
-/// kept, and the table holding what the twin holds after them.
-fn at_the_bound<M: Format>(n: usize) {
+/// term: Overflow, the columns, new monomials, and column slots before of
+/// the first two terms kept, and the table holding what the twin holds
+/// after them. The columns are a vector of 2-byte entries where `narrow`
+/// holds.
+pub(crate) fn at_the_bound<M: Format>(n: usize, narrow: bool) {
     let max = M::MAX_DEGREE;
     let case = format!(
-        "{words} words of degree bound {max} on {n} variables",
+        "{words} words of degree bound {max} on {n} variables, narrow {narrow}",
         words = M::new(n).words()
     );
     let mut a = table::<M>(n, multipliers("drawn", n, 3));
@@ -259,45 +254,73 @@ fn at_the_bound<M: Format>(n: usize) {
     ];
     let mut ids = Vec::new();
     for e in &monomials {
-        let x = a.intern(e).unwrap();
-        assert_eq!(b.intern(e), Ok(x), "{case}");
+        let x = a.intern(e, &mut Budget::unbounded()).unwrap();
+        assert_eq!(b.intern(e, &mut Budget::unbounded()), Ok(x), "{case}");
         ids.push(x);
     }
     let t = ids[0];
     let row = &ids[1..];
-    let (mut cols, mut fresh) = (vec![MonoId::at(1)], Vec::new());
+    let (mut cols, mut fresh, mut previous) = (Columns::of(narrow, &[1]), Vec::new(), Vec::new());
     // SAFETY: t and the row's ids are ids `intern` returned.
-    let got = unsafe { a.row_products(t, row, 1, &mut cols, &mut fresh) };
+    let got = unsafe {
+        a.row_products(
+            t,
+            row,
+            1,
+            &mut cols,
+            &mut fresh,
+            &mut previous,
+            &mut Budget::unbounded(),
+        )
+    };
     assert_eq!(
         got,
         Err(Limit::Overflow),
         "{case}: the third product passes {max}"
     );
-    let p = b.mul(t, row[0]).unwrap();
-    let q = b.mul(t, row[1]).unwrap();
+    let p = b.mul(t, row[0], &mut Budget::unbounded()).unwrap();
+    let q = b.mul(t, row[1], &mut Budget::unbounded()).unwrap();
     assert_eq!(exponents(&b, p).iter().sum::<u32>(), max, "{case}");
-    assert_eq!(b.mul(t, row[2]), Err(Limit::Overflow), "{case}");
     assert_eq!(
-        cols,
-        vec![MonoId::at(1), p, q],
-        "{case}: the first two terms' columns"
+        b.mul(t, row[2], &mut Budget::unbounded()),
+        Err(Limit::Overflow),
+        "{case}"
+    );
+    assert_eq!(
+        cols.entries().to_wide(),
+        vec![MonoId::at(1), MonoId::at(0), MonoId::at(1)],
+        "{case}: the first two terms' local columns"
+    );
+    assert_eq!(
+        (a.column(p), a.column(q)),
+        (MonoId::at(0), MonoId::at(1)),
+        "{case}: the first two terms' column slots"
     );
     assert_eq!(fresh, vec![p, q], "{case}: the first two terms are new");
+    assert_eq!(
+        previous,
+        vec![MonoId::NONE; 2],
+        "{case}: the first two terms' column slots before"
+    );
     assert_eq!(a.len(), b.len(), "{case}: nothing stored past the bound");
 }
 
 /// matrix-build-time.1, .3, test 2: the degree bound of each format inside
-/// a row, in every copy and in the per-term lookup.
+/// a row, in every copy, one to eight words, and in the per-term lookup
+/// past eight (wide-format-products-time.1, .4), into columns of 4 bytes and
+/// of 2.
 #[test]
 fn a_row_at_the_degree_bound() {
-    for n in [1, 8, 9, 17, 25, 33, 41] {
-        at_the_bound::<Dense8>(n);
-    }
-    for n in [1, 4, 5, 9, 13, 17] {
-        at_the_bound::<Dense16>(n);
-    }
-    for n in [1, 2, 3, 5, 7, 9] {
-        at_the_bound::<Dense32>(n);
+    for narrow in [false, true] {
+        for n in [1, 8, 9, 17, 25, 33, 41, 57, 65] {
+            at_the_bound::<Dense8>(n, narrow);
+        }
+        for n in [1, 4, 5, 9, 13, 17, 29, 33] {
+            at_the_bound::<Dense16>(n, narrow);
+        }
+        for n in [1, 2, 3, 5, 7, 9, 15, 17] {
+            at_the_bound::<Dense32>(n, narrow);
+        }
     }
 }
 
@@ -317,24 +340,6 @@ fn monomial(r: &mut Xoshiro256PlusPlus, n: usize, degree: u64) -> Vec<u32> {
     e
 }
 
-pub(crate) fn divides(a: &[u32], b: &[u32]) -> bool {
-    a.iter().zip(b).all(|(x, y)| x <= y)
-}
-
-/// Grevlex on exponent vectors of any sign: the degree first, then the last
-/// variable where they differ, the smaller exponent the larger monomial.
-fn grevlex(a: &[i64], b: &[i64]) -> Ordering {
-    let (da, db): (i64, i64) = (a.iter().sum(), b.iter().sum());
-    da.cmp(&db).then_with(|| {
-        for i in (0..a.len()).rev() {
-            if a[i] != b[i] {
-                return b[i].cmp(&a[i]);
-            }
-        }
-        Ordering::Equal
-    })
-}
-
 /// A monic polynomial of `terms` terms whose leading monomial has exponents
 /// `lead`, its other terms of lower degree. `lead` has degree 2 or more,
 /// and n is 3 or more, so that the n + 1 monomials of degree at most 1 lie
@@ -347,14 +352,14 @@ pub(crate) fn poly<M: Format>(
     terms: usize,
 ) -> Poly<Gf31, Rank1> {
     let n = lead.len();
-    let mut monomials = vec![t.intern(lead).unwrap()];
+    let mut monomials = vec![t.intern(lead, &mut Budget::unbounded()).unwrap()];
     while monomials.len() < terms {
         let mut e = vec![0u32; n];
         let i = below(r, n as u64 + 1) as usize;
         if i < n {
             e[i] = 1;
         }
-        let m = t.intern(&e).unwrap();
+        let m = t.intern(&e, &mut Budget::unbounded()).unwrap();
         if !monomials.contains(&m) {
             monomials.push(m);
         }
@@ -437,11 +442,12 @@ pub(crate) fn reducer_agrees<M: Format>(n: usize, seed: u64) {
             let g = poly(&mut r, &mut t, &field, &l, terms);
             let s = monomial(&mut r, n, 8);
             let sig = Sig {
-                monomial: t.intern(&s).unwrap(),
+                monomial: t.intern(&s, &mut Budget::unbounded()).unwrap(),
                 index: below(&mut r, 2) as u32,
             };
             basis.push(g, false).unwrap();
-            sigs.push(&t, &Grevlex, &basis, sig).unwrap();
+            sigs.push(&t, &Grevlex, &basis, sig, &mut Budget::unbounded())
+                .unwrap();
             let ratio: Vec<i64> = s
                 .iter()
                 .zip(&l)
@@ -458,9 +464,9 @@ pub(crate) fn reducer_agrees<M: Format>(n: usize, seed: u64) {
                 .then(x.cmp(&y))
         });
         for q in queries(&mut r, n) {
-            let m = t.intern(&q).unwrap();
+            let m = t.intern(&q, &mut Budget::unbounded()).unwrap();
             let want = order.iter().copied().find(|&e| divides(&keys[e].3, &q));
-            let got = sigs.reducer(&t, m).map(ElementId::index);
+            let got = sigs.reducer(&t, m).0.map(ElementId::index);
             assert_eq!(got, want, "{case}: {q:?}");
             let not_m = !t.mask(m);
             let pass = |e: usize| t.mask(basis.lead(ElementId::at(e))) & not_m == 0;
@@ -516,9 +522,9 @@ fn divisors_agree<M: Format>(n: usize, seed: u64) {
                 .unwrap();
             elements.push((l, terms));
         }
-        let divisors = Divisors::new(&t, &basis);
+        let divisors = Divisors::new(&t, &basis, &mut Budget::unbounded()).unwrap();
         for q in queries(&mut r, n) {
-            let u = t.intern(&q).unwrap();
+            let u = t.intern(&q, &mut Budget::unbounded()).unwrap();
             let mut want: Option<usize> = None;
             for (e, (l, terms)) in elements.iter().enumerate() {
                 if divides(l, &q) && want.is_none_or(|b| elements[b].1 > *terms) {
@@ -534,7 +540,7 @@ fn divisors_agree<M: Format>(n: usize, seed: u64) {
                 })
                 .count();
             ties += u32::from(rivals > 0);
-            let got = divisors.find(&t, u).map(ElementId::index);
+            let got = divisors.find(&t, u).0.map(ElementId::index);
             assert_eq!(got, want, "{case}: {q:?}");
         }
     }

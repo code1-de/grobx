@@ -56,8 +56,17 @@ pub const STAGES: [&str; 8] = [
 
 /// The kinds that stand between a `run` line and its `ran` line, and only
 /// there.
-const IN_RUN: [&str; 6] = [
-    "inputs", "echelon", "round", "handover", "constant", "inter",
+const IN_RUN: [&str; 10] = [
+    "inputs",
+    "substitute",
+    "echelon",
+    "carry",
+    "enter",
+    "tails",
+    "round",
+    "handover",
+    "constant",
+    "inter",
 ];
 
 /// Whether `v` is a time: digits, a point, and six digits.
@@ -202,24 +211,15 @@ pub fn run_lines(lines: &[Line], number: u64) -> &[Line] {
     &lines[a..=b]
 }
 
+// unreached-test-paths.3 design-checked -- a stopped run's round lines are checked as a finished run's, as many as it counted and their sums, not one round more allowed and the sums left unchecked, which a round line a halt lost passes (log 0151-1)
 /// The run's `round` lines: the counts each holds are the run's `Stats`
-/// summed (`rounds`, `reductions`, `zero`), and its `ran` line holds them.
-/// A run a bound stopped has a line for every round it counted
-/// (call-report.19). Its check allows one round more, and leaves its sums
-/// unchecked.
+/// summed (`rounds`, `reductions`, `zero`), and its `ran` line holds them,
+/// whether the run ended or a bound stopped it: a stopped run has a line for
+/// every round it counted (call-report.19).
 pub fn assert_run_counts(run: &[Line]) {
     let ran = run.last().unwrap();
     let rounds: Vec<&Line> = run.iter().filter(|l| l.kind == "round").collect();
-    let stopped = ran.get("outcome") == Some("stop");
     let counted = ran.num("rounds");
-    if stopped {
-        let written = rounds.len() as u64;
-        assert!(
-            counted == written || counted == written + 1,
-            "{counted} rounds counted, {written} written: {run:?}"
-        );
-        return;
-    }
     assert_eq!(counted, rounds.len() as u64, "{run:?}");
     let reduced: u64 = rounds.iter().map(|l| l.num("reductions")).sum();
     let zero: u64 = rounds.iter().map(|l| l.num("zero")).sum();
@@ -237,20 +237,30 @@ pub fn assert_run_counts(run: &[Line]) {
 }
 
 /// Over GF(p): the last `ran` line whose outcome is `basis` or `stop`
-/// holds `stats`, and every run's counts agree with its `round` lines.
+/// holds `stats`, its counts summed with those of the `ran` line before it
+/// where that one's outcome is `carry` (signature-run-losses.9), and every
+/// run's counts agree with its `round` lines.
 pub fn assert_stats(lines: &[Line], stats: &Stats) {
     for ran in lines.iter().filter(|l| l.kind == "ran") {
         assert_run_counts(run_lines(lines, ran.num("number")));
     }
-    let last = lines
+    let at = lines
         .iter()
-        .rev()
-        .find(|l| l.is("ran", &[("outcome", "basis")]) || l.is("ran", &[("outcome", "stop")]))
+        .rposition(|l| l.is("ran", &[("outcome", "basis")]) || l.is("ran", &[("outcome", "stop")]))
         .unwrap_or_else(|| panic!("no run made a basis or stopped: {lines:?}"));
+    let counts = |l: &Line| [l.num("rounds"), l.num("reduced"), l.num("zero")];
+    let mut sum = counts(&lines[at]);
+    let before = lines[..at].iter().rev().find(|l| l.kind == "ran");
+    if let Some(carry) = before.filter(|l| l.is("ran", &[("outcome", "carry")])) {
+        for (s, c) in sum.iter_mut().zip(counts(carry)) {
+            *s += c;
+        }
+    }
     assert_eq!(
-        (last.num("rounds"), last.num("reduced"), last.num("zero")),
-        (u64::from(stats.rounds), stats.reduced, stats.zero),
-        "{last:?}"
+        sum,
+        [u64::from(stats.rounds), stats.reduced, stats.zero],
+        "{last:?}",
+        last = lines[at]
     );
 }
 

@@ -7,32 +7,15 @@ use std::num::NonZeroU32;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use grobx::{Cancel, Params, Stop};
+use grobx::{Cancel, Stop};
 use grobx_checker::{Mode, Order};
 
 use crate::common::{
-    P, P31, assert_accepted_in, degree_bound, dense, points, random_square, run, with_cofactors,
-    with_cofactors_in,
+    EDGE_GENERATORS, P, P31, assert_accepted_in, degree_bound, dense, generous, long, points,
+    random_square, run, with_cofactors, with_cofactors_in,
 };
 use crate::orders::accepted_in;
 use crate::q::accepted_q;
-
-/// Every bound set, none of them reached.
-fn generous(mut p: Params) -> Params {
-    p.deadline = Some(Duration::from_secs(3600));
-    p.cancel = Some(Cancel::new());
-    p.memory = Some(1 << 40);
-    p
-}
-
-/// The long calls of tests 6 and 8, over GF(65521) and over ℚ: each runs
-/// for seconds without a bound.
-fn long() -> [(&'static str, String); 2] {
-    [
-        ("cubic-8-p65521", dense(8, 3, P, 1)),
-        ("cubic-5-p0", dense(5, 3, 0, 1)),
-    ]
-}
 
 /// Test 6, .1 to .8: a call with cofactors with a deadline of 100, 200, or
 /// 300 ms stops with `Deadline`, with no basis and no cofactors, within
@@ -130,20 +113,6 @@ fn a_cancel_stops_a_call_with_cofactors_soon() {
     );
 }
 
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name and generators.
-const EDGE: [(&str, &str); 7] = [
-    ("the zero ideal", "0"),
-    ("F = (0, 0)", "0,\n0"),
-    ("no generator", ""),
-    ("the unit ideal", "x*z-1,\nx"),
-    ("already a Gröbner basis", "x+z,\nz^2+1"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-    ),
-    ("an eliminable variable", "x-y^2-z,\ny*z-1,\nz^2-y"),
-];
-
 /// Test 9, .1: the edge cases over GF(65521), GF(2^31 − 1), and ℚ, in
 /// grevlex, lex, and `block:1`, with cofactors. With generous bounds each
 /// basis and cofactor text is the one without bounds, and the exact
@@ -151,7 +120,7 @@ const EDGE: [(&str, &str); 7] = [
 /// with `Deadline`.
 #[test]
 fn the_edge_cases() {
-    for (case, generators) in EDGE {
+    for (case, generators) in EDGE_GENERATORS {
         for p in [P, P31, 0] {
             let text = format!("x,y,z\n{p}\n{generators}\n");
             for order in ["grevlex", "lex", "block:1"] {

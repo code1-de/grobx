@@ -15,7 +15,7 @@ use crate::rational::{cost, gcd_cost};
 /// (`Poll`).
 const WORDS: usize = 16;
 
-// checker-q.7 cited: monagan-2007 §1.2 -- dividing by {g₁, …, gₛ} with a heap of quotient terms and pointers into the divisors; johnson-1974 §3, §6 -- the heap merges the products, and division builds the quotient term by term while subtracting its product; monagan-2011 §2.3 -- fraction-free merging does Θ(qf + q²g) integer multiplications
+// checker-q.7 cited-checked: monagan-2007 §1.2 -- dividing by {g₁, …, gₛ} with a heap of quotient terms and pointers into the divisors; johnson-1974 §3, §6 -- the heap merges the products, and division builds the quotient term by term while subtracting its product; monagan-2011 §2.3 -- fraction-free merging does Θ(qf + q²g) integer multiplications
 /// A sum of streams, each the product of a quotient q = num/den, a monomial,
 /// and the terms of an integer polynomial from a position on. The heap yields
 /// the sum's terms in decreasing order.
@@ -31,7 +31,7 @@ pub struct Heap<'a> {
     live: Vec<usize>,
     /// The streams without one, whose places a new stream takes.
     free: Vec<usize>,
-    // checker-q.8 cited: monagan-2011 §2.3 -- fractions are scaled to a common denominator updated with each quotient term; all coefficient arithmetic is delayed to scale each term once
+    // checker-q.8 cited-checked: monagan-2011 §2.3 -- fractions are scaled to a common denominator updated with each quotient term; all coefficient arithmetic is delayed to scale each term once
     /// The common denominator s of the quotients: every den divides it.
     s: BigInt,
     /// Counts the changes of s.
@@ -125,7 +125,7 @@ impl<'a> Heap<'a> {
         }
         self.keys[k * w..(k + 1) * w].copy_from_slice(&key);
         self.shifts[k * w..(k + 1) * w].copy_from_slice(t);
-        // checker-q.9 design -- a quotient whose numerator lc(g) does not divide is brought to lowest terms, and s becomes the lcm of the denominators (log 0002-1)
+        // checker-q.9 design-checked -- a quotient whose numerator lc(g) does not divide is brought to lowest terms, and s becomes the lcm of the denominators (log 0002-1)
         if !den.is_one() && !self.s.is_multiple_of(&den) {
             if poll.work(gcd_cost(&self.s, &den)) {
                 self.free.push(k);
@@ -196,7 +196,7 @@ impl<'a> Heap<'a> {
                 if stream.next < stream.r.len() {
                     let mono = stream.r.mono(stream.next, w);
                     let shift = &self.shifts[k * w..(k + 1) * w];
-                    // checker-orders.12 cited: bigatti-2025 §1.1, Remark 5 -- xy >_Lex z^1000: Lex is not degree compatible
+                    // checker-orders.12 cited-checked: bigatti-2025 §1.1, Remark 1.5 -- term orders that are not degree compatible behave unorthodoxly: under Lex, xy >_Lex z^n for every n, so a smaller term can have a far larger degree
                     // A later term of r may have a higher degree than the
                     // first. Every exponent is at most its degree, so a
                     // degree that fits leaves every exponent sum fitting too.
@@ -226,7 +226,7 @@ impl<'a> Heap<'a> {
         }
     }
 
-    // checker-stop-latency.5 design -- the heap counts, per product it takes, 1 + 2·l·w/16 units, l the bits of its length and w a key's words, beside the product's cost, not a unit a product (log 0059-1)
+    // checker-stop-latency.5 design-checked -- the heap counts, per product it takes, 1 + 2·l·w/16 units, l the bits of its length and w a key's words, beside the product's cost, not a unit a product (log 0059-1)
     /// The units of work of a stream's turn at the top of the heap: one,
     /// and the words of the keys a sift compares, one unit per `WORDS`.
     fn depth(&self) -> usize {

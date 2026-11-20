@@ -8,38 +8,22 @@
 )]
 
 use std::cmp::Ordering;
-use std::num::NonZeroUsize;
-use std::time::Instant;
 
-use rand_core::{Rng, SeedableRng};
+use rand_core::Rng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::budget::Budget;
+use crate::budget::{Budget, Site};
 use crate::id::{MonoId, RowId};
-use crate::matrix::{by_signature, sort_decreasing};
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::order::{Block, Grevlex, Lex, Order};
+use crate::shared_tests::{budget, rng};
 use crate::sig::Sig;
+use crate::sort::{by_signature, sort_decreasing};
 use crate::table::Table;
-use crate::{MonomialOrder, Params, Threads};
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
-
-/// A budget with no bound, for the sorts' spends.
-fn budget() -> Budget {
-    let params = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    );
-    Budget::new(Instant::now(), &params).unwrap()
-}
 
 /// The grevlex key of the monomial with these exponents, in the format `M`
 /// on as many variables.
-fn key<M: Format>(exponents: &[u32]) -> u128 {
+pub(crate) fn key<M: Format>(exponents: &[u32]) -> u128 {
     let f = M::new(exponents.len());
     let mut m = vec![M::Word::default(); f.words()];
     let degree = f.encode(exponents, &mut m).expect("within the format");
@@ -122,15 +106,15 @@ fn monomials<M: Format>(n: usize, count: usize, seed: u64) -> (Table<M>, Vec<Mon
     let mut t = Table::new(M::new(n), &mut rng(seed));
     let mut r = rng(seed ^ 0x6b65);
     let top = (M::MAX_DEGREE / n as u32).max(1);
-    let mut ids = vec![t.intern(&vec![0; n]).unwrap()];
+    let mut ids = vec![t.intern(&vec![0; n], &mut Budget::unbounded()).unwrap()];
     for i in [0, n - 1] {
         let mut e = vec![0; n];
         e[i] = M::MAX_DEGREE;
-        ids.push(t.intern(&e).unwrap());
+        ids.push(t.intern(&e, &mut Budget::unbounded()).unwrap());
     }
     for _ in 0..count {
         let e = draw(&mut r, n, top);
-        ids.push(t.intern(&e).unwrap());
+        ids.push(t.intern(&e, &mut Budget::unbounded()).unwrap());
     }
     ids.sort_unstable();
     ids.dedup();
@@ -140,7 +124,7 @@ fn monomials<M: Format>(n: usize, count: usize, seed: u64) -> (Table<M>, Vec<Mon
 /// For every pair of distinct monomials: the smaller key is the smaller
 /// monomial in grevlex, and where n lanes of `bits` fit 96 bits the keys
 /// differ.
-fn orders<M: Format>(n: usize, bits: u32) {
+pub(crate) fn orders<M: Format>(n: usize, bits: u32) {
     let (t, ids) = monomials::<M>(n, 300, 0x6f72 ^ n as u64);
     let exact = n as u32 * bits <= 96;
     let mut agree = 0;
@@ -207,7 +191,7 @@ fn sorts<M: Format, O: Order<M>>(order: &O, n: usize, seed: u64) {
         .map(|a| {
             let mut e = vec![0; n];
             (e[0], e[1]) = (6 - a, a);
-            t.intern(&e).unwrap()
+            t.intern(&e, &mut Budget::unbounded()).unwrap()
         })
         .collect();
     sets.push(shuffled(&agreeing, &mut r));
@@ -217,7 +201,7 @@ fn sorts<M: Format, O: Order<M>>(order: &O, n: usize, seed: u64) {
     sets.push(all[..2].to_vec());
     for set in &sets {
         let mut got = set.clone();
-        sort_decreasing(&t, order, &mut got, &mut budget()).unwrap();
+        sort_decreasing(&t, order, &mut got, &mut budget(), Site::Columns).unwrap();
         let mut want = set.clone();
         want.sort_by(|&a, &b| t.cmp(order, b, a));
         assert_eq!(
@@ -238,7 +222,7 @@ fn sorts<M: Format, O: Order<M>>(order: &O, n: usize, seed: u64) {
         .collect();
     for len in [0, 1, 2, 17, sigs.len()] {
         let sigs = &sigs[..len];
-        let got = by_signature(&t, order, sigs, &mut budget()).unwrap();
+        let got = by_signature(&t, order, sigs, &mut budget(), Site::SigSort).unwrap();
         let mut want: Vec<RowId> = (0..len).map(RowId::at).collect();
         want.sort_by(|&a, &b| {
             sigs[a.index()]

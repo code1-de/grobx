@@ -6,8 +6,6 @@
 //! items_).
 
 use std::fmt::Write;
-use std::num::NonZeroUsize;
-use std::time::Duration;
 
 use grobx_checker::{Mode, Order, check};
 use num_bigint::{BigInt, BigUint};
@@ -15,35 +13,26 @@ use num_traits::{One, ToPrimitive};
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::catch_up_tests::{
-    L1, L2, L3, b, b_open, fits, image, minus_b, small_primes, wang, wrong_keep,
-};
+use crate::call::built;
+use crate::catch_up_tests::{b, b_open, fits, image, minus_b, wang, wrong_keep};
 use crate::lift::{Learns, Reconstruct, Replays, Report, lift_text_as};
 use crate::rational::Rational;
+use crate::shared_tests::{L1, L2, L3, L4, basis, lift_params, small_primes, with_cofactors};
 use crate::systems::{dense, random_square};
 use crate::trace::NoTrace;
-use crate::{MonomialOrder, Outcome, Params, Threads};
+use crate::{MonomialOrder, Outcome, Params};
 
-/// More primes near 2^31, beside `catch_up_tests.rs`'s L1 to L3.
-const L4: u64 = 2_147_483_579;
+/// The prime below `L4`, the fifth largest below 2^31.
 const L5: u64 = 2_147_483_563;
 /// A prime near 2^31 that no other case here forces.
 const P: u64 = 2_147_483_549;
 
-/// Every lift here in `order` with a deadline of 60 s.
+/// `lift_params(seed)` in `order`, with cofactors where `cofactors` holds.
 fn params_in(order: MonomialOrder, seed: u64, cofactors: bool) -> Params {
-    let mut p = Params::new(order, Threads::Count(NonZeroUsize::new(1).unwrap()), seed);
-    p.deadline = Some(Duration::from_secs(60));
+    let mut p = lift_params(seed);
+    p.order = order;
     p.cofactors = cofactors;
     p
-}
-
-pub(crate) fn params(seed: u64) -> Params {
-    params_in(MonomialOrder::Grevlex, seed, false)
-}
-
-pub(crate) fn with_cofactors(seed: u64) -> Params {
-    params_in(MonomialOrder::Grevlex, seed, true)
 }
 
 /// The lift of `text` under `how`, with the primes `forced` first: its
@@ -126,10 +115,6 @@ fn both(case: &str, text: &str, params: &Params, forced: &[u64]) -> (Outcome, Re
     (outcome, chain)
 }
 
-pub(crate) fn basis(outcome: &Outcome) -> &str {
-    outcome.basis.as_deref().unwrap()
-}
-
 /// The checker accepts the outcome's basis and cofactors in the exact mode
 /// in `order`.
 pub(crate) fn assert_accepted(case: &str, text: &str, outcome: &Outcome, order: &Order) {
@@ -161,13 +146,14 @@ pub(crate) fn generated() -> Vec<(String, String)> {
 #[test]
 fn the_two_lifts_agree_on_generated_systems() {
     for (case, text) in generated() {
-        both(&case, &text, &params(7), &[]);
+        both(&case, &text, &lift_params(7), &[]);
     }
 }
 
 /// q-rational-time.4 to .6 on the cofactor parts: each has a chain of its
 /// own, and the cofactor text is the same. The checker accepts.
 #[test]
+#[cfg_attr(not(feature = "checker"), ignore = "the build leaves out the checker")]
 fn the_two_lifts_agree_with_cofactors() {
     for (case, text) in generated() {
         let mut p = with_cofactors(7);
@@ -250,13 +236,20 @@ fn the_two_lifts_agree_on_random_systems() {
     for i in 0..40 {
         let text = random_system(&mut rng);
         let case = format!("system {i}:\n{text}");
-        both(&case, &text, &params(i), &[]);
-        let (outcome, _) = both(&case, &text, &with_cofactors(i), &[]);
+        both(&case, &text, &lift_params(i), &[]);
+        let tracked = with_cofactors(i);
+        if built(&tracked).is_err() {
+            continue;
+        }
+        let (outcome, _) = both(&case, &text, &tracked, &[]);
         assert_accepted(&case, &text, &outcome, &Order::Grevlex);
         if i % 4 == 0 {
             for order in [MonomialOrder::Lex, MonomialOrder::Block(vec![1])] {
                 let mut p = params_in(order.clone(), i, true);
                 p.checker = Some(crate::CheckerMode::Exact);
+                if built(&p).is_err() {
+                    continue;
+                }
                 let (outcome, _) = both(&case, &text, &p, &[]);
                 assert_eq!(
                     outcome.certified,
@@ -280,14 +273,14 @@ fn the_two_lifts_agree_on_the_kept_element_cases() {
     let b = b();
     let (c, p1, p2, p3) = wrong_keep();
     let text = format!("x,y\n0\nx-{b},\ny+{c}\n");
-    let (outcome, _) = both("a wrong keep", &text, &params(1), &[L1, p1, p2, p3]);
+    let (outcome, _) = both("a wrong keep", &text, &lift_params(1), &[L1, p1, p2, p3]);
     assert_eq!(basis(&outcome), format!("[y+{c},\nx-{b}]:\n"));
 
     let text = format!("x\n0\nx+{c}\n");
     let (outcome, _, report) = both_reports(
         "the one element kept wrongly",
         &text,
-        &params(1),
+        &lift_params(1),
         &[L1, p1, p2, p3],
     );
     assert_eq!(basis(&outcome), format!("[x+{c}]:\n"));
@@ -306,7 +299,7 @@ fn the_two_lifts_agree_on_the_kept_element_cases() {
         .unwrap();
     let n = q1 * q2;
     let text = format!("x,y,z,w\n0\nx-{b},\ny-z+{n}*w\n");
-    let (outcome, _) = both("a gained term", &text, &params(1), &[L1, q1, q2, q3]);
+    let (outcome, _) = both("a gained term", &text, &lift_params(1), &[L1, q1, q2, q3]);
     assert_eq!(basis(&outcome), format!("[y-z+{n}*w,\nx-{b}]:\n"));
 
     let m = BigUint::from(L2) * L3;
@@ -318,7 +311,7 @@ fn the_two_lifts_agree_on_the_kept_element_cases() {
         })
         .unwrap();
     let text = format!("x,y,z\n0\nx-{b},\ny+{q}*z\n");
-    let (outcome, _) = both("a lacking term", &text, &params(1), &[L1, L2, L3, q]);
+    let (outcome, _) = both("a lacking term", &text, &lift_params(1), &[L1, L2, L3, q]);
     assert_eq!(basis(&outcome), format!("[y+{q}*z,\nx-{b}]:\n"));
 }
 
@@ -380,7 +373,7 @@ fn a_prime_divides_a_chain_denominator() {
     let b = b();
     let text = format!("y,z,w\n0\ny+{c}*z+{b}*w\n");
     let case = format!("c = {c}, {p1}, {p2}, {p3}, {p4}");
-    let (outcome, report) = both(&case, &text, &params(1), &[L1, p1, p2, p3, p4]);
+    let (outcome, report) = both(&case, &text, &lift_params(1), &[L1, p1, p2, p3, p4]);
     assert_eq!(basis(&outcome), format!("[y+{c}*z+{b}*w]:\n"), "{case}");
     assert_eq!(report.combined[..4], [p1, p2, p3, p4], "{case}: {report:?}");
 }
@@ -452,7 +445,7 @@ fn a_prime_divides_the_chain_at_the_attempt() {
     let case = format!("c = {c}, e = {e}, {ps:?}");
     let mut forced = vec![L1];
     forced.extend(ps);
-    let (outcome, report) = both(&case, &text, &params(1), &forced);
+    let (outcome, report) = both(&case, &text, &lift_params(1), &forced);
     assert_eq!(
         basis(&outcome),
         format!("[y+2*t+{c}*z+{e}*w+x]:\n"),
@@ -471,7 +464,7 @@ fn the_verification_prime_divides_a_denominator() {
     let (outcome, report) = both(
         "a denominator P",
         &text,
-        &params(1),
+        &lift_params(1),
         &[L1, L2, L3, L4, L5, P],
     );
     assert_eq!(basis(&outcome), format!("[{P}*x-y,\ny^2-1]:\n"));
@@ -509,6 +502,10 @@ pub(crate) const EDGE: [(&str, &str); 9] = [
 /// result in the exact mode. Among them, elements of integers, whose chain
 /// is [1].
 #[test]
+#[cfg_attr(
+    not(feature = "cofactors"),
+    ignore = "the build leaves out the cofactors"
+)]
 fn the_edge_cases_through_both_lifts() {
     for (case, text) in EDGE {
         let (outcome, _) = both(case, text, &with_cofactors(3), &[]);

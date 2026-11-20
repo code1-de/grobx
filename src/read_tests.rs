@@ -3,20 +3,17 @@
 //! the end of the table, the basis, or a polynomial panics in the test profile, whose debug assertions
 //! check every index (plan.md, _Test code_, 1 and 2).
 
-use rand_core::{Rng, SeedableRng};
-use rand_xoshiro::Xoshiro256PlusPlus;
+use rand_core::Rng;
 
+use crate::budget::Budget;
 use crate::field::{Field, Gf31};
 use crate::id::{ElementId, MonoId};
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::order::Grevlex;
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::rng;
 use crate::table::Table;
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
 
 /// Drawn exponents of n variables of degree at most `bound`.
 fn drawn(r: &mut impl Rng, n: usize, bound: u32) -> Vec<u32> {
@@ -47,7 +44,7 @@ fn table<M: Format>(n: usize, seed: u64) -> (Table<M>, Vec<Vec<u32>>) {
     }
     let mut by_id: Vec<Vec<u32>> = Vec::new();
     for e in &all {
-        let id = table.intern(e).unwrap().index();
+        let id = table.intern(e, &mut Budget::unbounded()).unwrap().index();
         if id == by_id.len() {
             by_id.push(e.clone());
         }
@@ -86,7 +83,11 @@ fn reads_agree<M: Format>(n: usize) {
     // Interning again finds each id. Each id's hash is read in range, and
     // its value is not compared.
     for (id, e) in by_id.iter().enumerate() {
-        assert_eq!(table.intern(e).unwrap().index(), id, "{n} variables");
+        assert_eq!(
+            table.intern(e, &mut Budget::unbounded()).unwrap().index(),
+            id,
+            "{n} variables"
+        );
         let _ = table.hash(MonoId::at(id));
     }
 }
@@ -176,8 +177,8 @@ fn set_stamp_past_the_end() {
 fn one_element() -> Basis<Gf31, Rank1> {
     let field = Gf31::new(65521).unwrap();
     let mut table = Table::new(Dense8::new(1), &mut rng(1));
-    let x = table.intern(&[1]).unwrap();
-    let one = table.intern(&[0]).unwrap();
+    let x = table.intern(&[1], &mut Budget::unbounded()).unwrap();
+    let one = table.intern(&[0], &mut Budget::unbounded()).unwrap();
     let mut terms = vec![(x, field.coef(1)), (one, field.coef(1))];
     let poly = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
     let mut basis = Basis::new();

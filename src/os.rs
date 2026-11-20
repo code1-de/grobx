@@ -1,10 +1,12 @@
 //! What the engine asks of the operating system: its page size, the
-//! process's resident set and, off Linux, its peak, and whole pages of
-//! memory given back. Linux, macOS, and Windows each answer by calls of
-//! their own.
+//! process's resident set and its peak, whole pages of memory given back,
+//! and whether it has a clock. Linux, macOS, and Windows each answer by
+//! calls of their own. wasm32 in a browser answers none: it reads no page
+//! size, no resident set, and no peak, gives no pages back, and has no
+//! clock, since std's `Instant::now` panics there.
 
 #[cfg(target_os = "linux")]
-use std::fs::File;
+use std::fs::{self, File};
 use std::io;
 #[cfg(target_os = "macos")]
 use std::mem;
@@ -20,11 +22,26 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-// port.2 design -- a system other than Linux, macOS, and Windows fails the build, not a build that finds the page size or the resident set missing when a call reads it (not measured)
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-compile_error!("grobx builds on Linux, macOS, and Windows");
+// port.2 design-checked -- a system other than Linux, macOS, Windows, and wasm32 in a browser fails the build, not a build that finds the page size or the resident set missing when a call reads it (not measured)
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    windows,
+    all(target_family = "wasm", target_os = "unknown")
+)))]
+compile_error!("grobx builds on Linux, macOS, Windows, and wasm32-unknown-unknown");
+
+/// Whether `Instant::now` reads a clock, rather than panicking.
+pub(crate) const CLOCK: bool = !cfg!(all(target_family = "wasm", target_os = "unknown"));
 
 /// The system's page size in bytes; None where the system gives none.
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+pub(crate) fn page_size() -> Option<u64> {
+    None
+}
+
+/// The system's page size in bytes; None where the system gives none.
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 pub(crate) fn page_size() -> Option<u64> {
     #[cfg(unix)]
     // SAFETY: sysconf reads a constant of the system and touches no memory
@@ -41,11 +58,13 @@ pub(crate) fn page_size() -> Option<u64> {
     u64::try_from(page).ok().filter(|&p| p > 0)
 }
 
-// f4-gfp.28 design -- the resident set is read from /proc/self/statm, its second field times the page size, not getrusage's ru_maxrss, a high-water mark (not measured)
-// port.3 design -- on macOS the resident set is proc_pidinfo's pti_resident_size, not task_info's resident_size, whose mach_task_self libc deprecates (not measured)
-// port.4 design -- on Windows the resident set is the working set GetProcessMemoryInfo reads, not mimalloc's mi_process_info, which reads it by the same call (not measured)
+// f4-gfp.28 design-checked -- the resident set is read from /proc/self/statm, its second field times the page size, not getrusage's ru_maxrss, a high-water mark (not measured)
+// port.3 design-checked -- on macOS the resident set is proc_pidinfo's pti_resident_size, not task_info's resident_size, whose mach_task_self libc deprecates (not measured)
+// port.4 design-checked -- on Windows the resident set is the working set GetProcessMemoryInfo reads, not mimalloc's mi_process_info, which reads it by the same call (not measured)
 /// The process's resident set: on Linux read from `/proc/self/statm`, on
-/// macOS by `proc_pidinfo`, and on Windows the working set.
+/// macOS by `proc_pidinfo`, and on Windows the working set. The one reader
+/// of it, for the memory ceiling and for the call report's start figure
+/// (report-peak-inherited.2).
 pub(crate) struct Resident {
     #[cfg(target_os = "linux")]
     file: File,
@@ -113,6 +132,16 @@ impl Resident {
     pub(crate) fn bytes(&self) -> Option<u64> {
         u64::try_from(counters()?.WorkingSetSize).ok()
     }
+
+    /// The resident set in bytes, which a browser does not give.
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "a browser gives no resident set, which needs no state"
+    )]
+    pub(crate) fn bytes(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// The process's memory counters, the working set and its peak among them.
@@ -127,7 +156,29 @@ fn counters() -> Option<PROCESS_MEMORY_COUNTERS> {
     (ok != 0).then_some(counters)
 }
 
-// port.10 design -- on macOS the peak resident set is getrusage's ru_maxrss, in bytes there, not proc_pid_rusage's ri_lifetime_max_phys_footprint, a footprint and not a resident set; whether exec carries the high-water mark of the image the process was started from into it, as Linux does into its ru_maxrss, is not known (not measured)
+/// The bytes of the kB `/proc/self/status` counts in.
+#[cfg(target_os = "linux")]
+const KIB: u64 = 1024;
+
+// report-peak-inherited.1 design-checked -- the process's peak resident set is VmHWM of /proc/self/status, the kernel's high-water mark of the process's own image, not mimalloc's mi_process_info peak, getrusage's ru_maxrss, into which exec carries the high-water mark of the image the process was started from
+/// The process's peak resident set in bytes, `VmHWM` of
+/// `/proc/self/status`: the high-water mark since the process began, or
+/// since its owner last reset it through `/proc/self/clear_refs`. None
+/// where the file cannot be read or holds no `VmHWM` line of a count
+/// and `kB`.
+#[cfg(target_os = "linux")]
+pub(crate) fn peak() -> Option<u64> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find_map(|l| l.strip_prefix("VmHWM:"))?;
+    let mut words = line.split_ascii_whitespace();
+    let kib: u64 = words.next()?.parse().ok()?;
+    if words.next() != Some("kB") || words.next().is_some() {
+        return None;
+    }
+    kib.checked_mul(KIB)
+}
+
+// port.10 design-checked -- on macOS the peak resident set is getrusage's ru_maxrss, in bytes there, not proc_pid_rusage's ri_lifetime_max_phys_footprint, a footprint and not a resident set; whether exec carries the high-water mark of the image the process was started from into it, as Linux does into its ru_maxrss, is not known (not measured)
 /// The process's peak resident set in bytes, getrusage's `ru_maxrss`. None
 /// where getrusage fails.
 #[cfg(target_os = "macos")]
@@ -143,12 +194,18 @@ pub(crate) fn peak() -> Option<u64> {
     u64::try_from(usage.ru_maxrss).ok()
 }
 
-// port.11 design -- on Windows the peak resident set is the peak working set, PeakWorkingSetSize, of the GetProcessMemoryInfo call that reads the working set, not a reader of its own (not measured)
+// port.11 design-checked -- on Windows the peak resident set is the peak working set, PeakWorkingSetSize, of the GetProcessMemoryInfo call that reads the working set, not a reader of its own (not measured)
 /// The process's peak resident set in bytes, the peak working set. None
 /// where `GetProcessMemoryInfo` fails.
 #[cfg(windows)]
 pub(crate) fn peak() -> Option<u64> {
     u64::try_from(counters()?.PeakWorkingSetSize).ok()
+}
+
+/// The process's peak resident set in bytes, which a browser does not give.
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+pub(crate) fn peak() -> Option<u64> {
+    None
 }
 
 /// The resident set in bytes, for the test code.
@@ -159,8 +216,8 @@ pub(crate) fn resident() -> u64 {
         .expect("the resident set is readable here")
 }
 
-// port.5 design -- on macOS the pages are given back by madvise(MADV_DONTNEED), as on Linux, not by MADV_FREE_REUSABLE (not measured)
-// port.6 design -- on Windows the pages are given back by DiscardVirtualMemory, not by VirtualAlloc with MEM_RESET (not measured)
+// port.5 design-checked -- on macOS the pages are given back by madvise(MADV_DONTNEED), as on Linux, not by MADV_FREE_REUSABLE (not measured)
+// port.6 design-checked -- on Windows the pages are given back by DiscardVirtualMemory, not by VirtualAlloc with MEM_RESET (not measured)
 /// Gives `pages` back to the system: whole pages of `page` bytes. Their
 /// bytes afterwards may be anything: zero on Linux, kept or zero on macOS
 /// and Windows.
@@ -169,6 +226,7 @@ pub(crate) fn resident() -> u64 {
 ///
 /// `InvalidInput` where `pages` does not start and end at a page boundary,
 /// and the system's error where it refuses.
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 pub(crate) fn discard(pages: &mut [u8], page: usize) -> io::Result<()> {
     if pages.is_empty() {
         return Ok(());
@@ -209,26 +267,38 @@ pub(crate) fn discard(pages: &mut [u8], page: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// `Unsupported`: a wasm32 memory grows and never shrinks.
+///
+/// # Errors
+///
+/// Always.
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+pub(crate) fn discard(_pages: &mut [u8], _page: usize) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "wasm32 in a browser gives no pages back",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::child_tests;
+    use crate::child_tests::measures_here;
 
     /// In a child process of this test binary, which runs this test alone, a
     /// read reads the resident set anew: 64 MiB written raise it by about
     /// that much. The parent runs the child.
     #[test]
     fn the_resident_set_follows_allocations() {
-        if child_tests::running() {
-            let resident = Resident::open().expect("the resident set is readable here");
-            let before = resident.bytes().unwrap();
-            let block = std::hint::black_box(vec![1u8; 64 << 20]);
-            let after = resident.bytes().unwrap();
-            assert!(after >= before + (60 << 20), "{before} B, then {after} B");
-            drop(block);
+        if !measures_here("os::tests::the_resident_set_follows_allocations") {
             return;
         }
-        child_tests::run("os::tests::the_resident_set_follows_allocations");
+        let resident = Resident::open().expect("the resident set is readable here");
+        let before = resident.bytes().unwrap();
+        let block = std::hint::black_box(vec![1u8; 64 << 20]);
+        let after = resident.bytes().unwrap();
+        assert!(after >= before + (60 << 20), "{before} B, then {after} B");
+        drop(block);
     }
 
     /// Whole pages are given back, an empty range is nothing to give back,

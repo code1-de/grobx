@@ -11,83 +11,24 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use num_bigint::BigUint;
-use num_traits::ToPrimitive;
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
-use crate::entry::{Imaged, image_in};
-use crate::field::{Field, Gf31, Gf64, Gf64Pair, is_prime_64};
+use crate::entry::{Image, Imaged, image_in};
+use crate::field::{Field, Gf64, Gf64Pair, is_prime_64};
 use crate::id::MonoId;
 use crate::learn_pair_tests::systems;
-use crate::lift::{Image, Learns, Reconstruct, Replays, Report, lift_text_as};
+use crate::lift::{Learns, Reconstruct, Replays, Report, lift_text_as};
 use crate::shape::Kept;
+use crate::shared_tests::{
+    BELOW_62, L1, PAST_61, U1, U2, W1, W2, W3, basis, learn, lift_params, residue_of, what,
+};
 use crate::text::Header;
-use crate::trace::{NoLearner, NoTrace, Record, Recording};
-use crate::{Error, MonomialOrder, Outcome, Params, Threads};
-
-/// `modulus_tests.rs`'s primes and `lift_tests.rs`'s U2: near 2^31, lucky
-/// for every instance here; near 2^30.5, which the cases make unlucky; and
-/// past 2^61 + 2^60, which the cases make unlucky where they need to.
-pub(crate) const L1: u64 = 2_147_483_647;
-const U1: u64 = 1_518_500_279;
-const U2: u64 = 1_518_500_293;
-pub(crate) const W1: u64 = 3_458_764_513_820_540_933;
-pub(crate) const W2: u64 = 3_458_764_513_820_541_017;
-pub(crate) const W3: u64 = 3_458_764_513_820_541_041;
-/// The least prime past 2^61 and the largest below 2^62.
-const PAST_61: u64 = 2_305_843_009_213_693_967;
-const BELOW_62: u64 = 4_611_686_018_427_387_847;
-
-/// Every lift's deadline, far past what each takes: a fault that keeps the
-/// lift from completing stops it there and fails the test. A fault that
-/// makes the replays misfit ends it in `Error::Drops` before.
-const DEADLINE: Duration = Duration::from_secs(60);
-
-fn params(seed: u64) -> Params {
-    let mut p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    );
-    p.deadline = Some(DEADLINE);
-    p
-}
-
-fn basis(outcome: &Outcome) -> &str {
-    outcome.basis.as_deref().unwrap()
-}
-
-/// The record of a learn run over `text`, an instance over Q, at the
-/// prime `p` below 2^31.
-pub(crate) fn learn(text: &str, params: &Params, p: u64) -> Record {
-    let header = Header::read(text).unwrap();
-    let named = params.order.clone();
-    let mut budget = Budget::new(Instant::now(), params).unwrap();
-    let mut recording = Recording::new();
-    let got = image_in(
-        Gf31::prime(p),
-        text,
-        params,
-        None,
-        &named,
-        &header,
-        &mut budget,
-        &mut NoTrace,
-        &mut recording,
-        None,
-    )
-    .unwrap_or_else(|e| panic!("the learn run at {p} failed: {e:?}\non\n{text}"));
-    assert!(
-        matches!(got, Imaged::Image(_)),
-        "the learn run at {p} stopped"
-    );
-    recording.finish(named)
-}
+use crate::trace::{NoLearner, NoTrace, Record};
+use crate::{Error, Outcome, Params};
 
 /// The replay of `record` over `text` in `field`: from or into the shape
 /// `kept` holds where `kept` is Some, the full replay where it is None.
@@ -98,7 +39,7 @@ pub(crate) fn replay<F: Field>(
     record: &Record,
     kept: Option<&mut Kept>,
 ) -> Result<Imaged, Error> {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let named = params.order.clone();
     let mut budget = Budget::new(Instant::now(), params).unwrap();
     image_in(
@@ -126,16 +67,6 @@ pub(crate) fn alone(text: &str, params: &Params, record: &Record, p: u64) -> Ima
     }
 }
 
-fn what(got: &Result<Imaged, Error>) -> String {
-    match got {
-        Ok(Imaged::Image(_)) => "an image".to_string(),
-        Ok(Imaged::Lanes(images)) => format!("{len} lanes", len = images.len()),
-        Ok(Imaged::Pair(_)) => "a pair image".to_string(),
-        Ok(Imaged::Stopped(o)) => format!("a stop: {o:?}"),
-        Err(e) => format!("{e:?}"),
-    }
-}
-
 /// The lift of `text` with the primes `forced` first, its replays as
 /// `replays` says: its outcome, which must hold a basis.
 fn lift(text: &str, params: &Params, forced: &[u64], replays: Replays) -> Outcome {
@@ -156,13 +87,6 @@ fn lift(text: &str, params: &Params, forced: &[u64], replays: Replays) -> Outcom
         "the lift stopped: {outcome:?}\n{report:?}"
     );
     outcome
-}
-
-/// x mod p, x written in decimal.
-fn residue_of(digits: &str, p: u64) -> u64 {
-    (BigUint::parse_bytes(digits.as_bytes(), 10).unwrap() % p)
-        .to_u64()
-        .unwrap()
 }
 
 // --- 1: the lanes ---
@@ -283,7 +207,7 @@ fn each_lane_is_gf64() {
 /// left out.
 #[test]
 fn pairs_that_do_not_fit() {
-    let p = params(1);
+    let p = lift_params(1);
 
     // W1·x + y: at W1 the generator's leading monomial is y.
     let text = format!("x,y\n0\n{W1}*x+y,\nx^2-1\n");
@@ -376,9 +300,9 @@ fn pairs_that_do_not_fit() {
 #[test]
 fn pairs_against_alone() {
     for (name, text) in systems() {
-        let alone = lift(&text, &params(1), &[], Replays::Alone);
+        let alone = lift(&text, &lift_params(1), &[], Replays::Alone);
         for seed in 1..=2 {
-            let paired = lift(&text, &params(seed), &[], Replays::Pairs);
+            let paired = lift(&text, &lift_params(seed), &[], Replays::Pairs);
             assert_eq!(paired.basis, alone.basis, "{name}, seed {seed}");
         }
     }
@@ -411,9 +335,9 @@ fn the_edge_cases_in_both_modes() {
         ),
     ];
     for (case, text, expected) in cases {
-        let outcome = lift(text, &params(1), &[], Replays::Alone);
+        let outcome = lift(text, &lift_params(1), &[], Replays::Alone);
         assert_eq!(basis(&outcome), expected, "{case}, alone");
-        let outcome = lift(text, &params(1), &[], Replays::Pairs);
+        let outcome = lift(text, &lift_params(1), &[], Replays::Pairs);
         assert_eq!(basis(&outcome), expected, "{case}, in pairs");
     }
 }
@@ -428,7 +352,7 @@ fn an_unlucky_first_prime() {
     let n = U1 * U2;
     let text = format!("x,y\n0\nx+{n},\nx*y\n");
     for replays in [Replays::Pairs, Replays::Alone] {
-        let outcome = lift(&text, &params(1), &[U1, U2], replays);
+        let outcome = lift(&text, &lift_params(1), &[U1, U2], replays);
         assert_eq!(basis(&outcome), format!("[y,\nx+{n}]:\n"), "{replays:?}");
     }
 }

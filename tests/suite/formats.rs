@@ -3,7 +3,7 @@
 //! _Test code_). Past degree 65535 the oracle is the checker in the exact
 //! mode, with the bases written here (monomial-formats.16).
 
-// monomial-formats.16 design -- past degree 65535 the test code's oracle is the checker in the exact mode, with bases written by hand, not msolve's basis (not measured)
+// monomial-formats.16 design-checked -- past degree 65535 the test code's oracle is the checker in the exact mode, with bases written by hand, not msolve's basis (not measured)
 use std::cmp::Ordering;
 
 use grobx::monomial::{Dense8, Dense16, Dense32, Format, Overflow};
@@ -361,7 +361,10 @@ fn lex_goes_on_past_65535() {
 fn lex_on_a_staircase_of_127_and_of_128() {
     let cases = [
         ("x,y\n65521\nx-1,\ny^127-1\n", "[y^127+65520,\nx+65520]:\n"),
-        ("x,y\n65521\nx^8-1,\ny^16-1\n", "[y^16+65520,\nx^8+65520]:\n"),
+        (
+            "x,y\n65521\nx^8-1,\ny^16-1\n",
+            "[y^16+65520,\nx^8+65520]:\n",
+        ),
     ];
     for (text, want) in cases {
         let outcome = accepted_in("staircase", text, "lex", Mode::Exact);

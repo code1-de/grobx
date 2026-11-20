@@ -16,7 +16,7 @@ use crate::orders::{
 fn in_three_orders(name: &str, instance: &str, seed: u64) {
     let n = variables(instance);
     let mut rng = Rng::new(seed ^ 0x0de5);
-    // checker-orders.14 design -- the Accept cases take lex and block:k: k drawn from 1 to n − 1 on random systems, k = 1 on the edge cases (not measured)
+    // checker-orders.14 design-checked -- the Accept cases take lex and block:k: k drawn from 1 to n − 1 on random systems, k = 1 on the edge cases (not measured)
     let k = 1 + rng.index(n - 1);
     for jl in [Jl::Lex, Jl::Block(k)] {
         let (case, order) = solved_in(name, instance, jl);
@@ -24,7 +24,7 @@ fn in_three_orders(name: &str, instance: &str, seed: u64) {
         agree_full_in(&case, &order, seed);
     }
     let jl = [Jl::Grevlex, Jl::Lex, Jl::Block(k)][rng.index(3)];
-    // checker-orders.16 design -- matrix orders beyond grevlex, lex, and block:k are tested on Groebner.jl's results for the instance with its variable line permuted (not measured)
+    // checker-orders.16 design-checked -- matrix orders beyond grevlex, lex, and block:k are tested on Groebner.jl's results for the instance with its variable line permuted (not measured)
     let perm = permutation(n, &mut rng);
     let (case, order) = solved_permuted(&format!("{name}-permuted"), instance, jl, &perm);
     accept_and_reject_in(&case, &order, seed);

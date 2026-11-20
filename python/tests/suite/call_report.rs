@@ -11,7 +11,9 @@ use crate::wrapper::run_with;
 /// return None; a call a deadline stops returns a report that ends with
 /// its stop; an error raises grobx.Error as without the report.
 /// `report_file`, a str or a path, holds the report `report` returns; an
-/// error leaves it ending with the `error` line; a file that cannot be
+/// error leaves it ending with the `error` line; `sink_error` is None where
+/// the file took every line and holds the write error where it did not, the
+/// call returning its basis and report either way; a file that cannot be
 /// created raises `OSError`, and a value that is no path `TypeError`. The
 /// stopped call runs on `dense(8, 3, 65521, 1)`, which runs for seconds
 /// without the deadline.
@@ -69,6 +71,14 @@ for path in [os.path.join(d, "ok.report"), pathlib.Path(d) / "ok-path.report"]:
         written = f.read()
     assert written == r.report, (written, r.report)
     assert kinds(written)[-1] == "end", written
+    assert r.sink_error is None, r.sink_error
+
+if os.path.exists("/dev/full"):
+    full = grobx.groebner(P, order="grevlex", threads=1, seed=5, report_file="/dev/full")
+    plain = grobx.groebner(P, order="grevlex", threads=1, seed=5, report=True)
+    assert full.basis == plain.basis, full.basis
+    assert kinds(full.report) == kinds(plain.report), full.report
+    assert isinstance(full.sink_error, str) and full.sink_error, repr(full.sink_error)
 
 failed = os.path.join(d, "error.report")
 raises(grobx.Error, lambda: grobx.groebner("x\n7\nx^2147483648\n", order="grevlex",

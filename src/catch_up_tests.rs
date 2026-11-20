@@ -3,9 +3,6 @@
 //! the cases of `kept_unchecked_tests.rs`, which `chain_tests.rs` runs
 //! too, are here, with the helpers of `chain_tests.rs`'s own searches.
 
-use std::num::NonZeroUsize;
-use std::time::Duration;
-
 use grobx_checker::{Mode, Order, check};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
@@ -13,32 +10,9 @@ use num_traits::{Pow, ToPrimitive};
 
 use crate::lift::{Report, lift_text};
 use crate::rational::{Rational, bound, reconstruct};
+use crate::shared_tests::{basis, lift_params, small_primes, with_cofactors};
 use crate::systems::{dense, random_square};
-use crate::{MonomialOrder, Outcome, Params, Threads};
-
-/// Primes near 2^31, lucky for every case of `chain_tests.rs` and
-/// `kept_unchecked_tests.rs`, which take them from here.
-pub(crate) const L1: u64 = 2_147_483_647;
-pub(crate) const L2: u64 = 2_147_483_629;
-pub(crate) const L3: u64 = 2_147_483_587;
-
-/// Every lift here with a deadline of 60 s, so that a lift that never
-/// completes fails its test.
-fn params(seed: u64) -> Params {
-    let mut p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    );
-    p.deadline = Some(Duration::from_secs(60));
-    p
-}
-
-fn with_cofactors(seed: u64) -> Params {
-    let mut p = params(seed);
-    p.cofactors = true;
-    p
-}
+use crate::{Outcome, Params};
 
 /// The outcome of the lift of `text`, which must hold a basis.
 fn lift(text: &str, params: &Params) -> Outcome {
@@ -52,10 +26,6 @@ fn lift(text: &str, params: &Params) -> Outcome {
     outcome
 }
 
-fn basis(outcome: &Outcome) -> &str {
-    outcome.basis.as_deref().unwrap()
-}
-
 /// B = 10^30 + 57, a constant that Wang's reconstruction takes four replay
 /// primes of [2^61, 2^62) to reconstruct, about seven near 2^31, and the
 /// chain's two, about four near 2^31, so that its element x − B stays open
@@ -67,13 +37,6 @@ pub(crate) fn b() -> BigUint {
 /// −B, the coefficient of x − B past its leading one.
 pub(crate) fn minus_b() -> BigInt {
     -BigInt::from(b())
-}
-
-/// The primes from 101 below `limit`, by trial division.
-pub(crate) fn small_primes(limit: u64) -> Vec<u64> {
-    (101..limit)
-        .filter(|&n| (2..).take_while(|d| d * d <= n).all(|d| n % d != 0))
-        .collect()
 }
 
 /// a mod m, in [0, m).
@@ -151,7 +114,7 @@ pub(crate) fn wrong_keep() -> (i64, u64, u64, u64) {
 fn an_element_kept_early_through_the_lift() {
     let b = b();
     let text = format!("x,y\n0\nx-{b},\ny-1/2\n");
-    let outcome = lift(&text, &params(1));
+    let outcome = lift(&text, &lift_params(1));
     assert_eq!(basis(&outcome), format!("[2*y-1,\nx-{b}]:\n"));
 }
 
@@ -159,6 +122,10 @@ fn an_element_kept_early_through_the_lift() {
 /// the exact mode on a dense cubic system and on random square systems
 /// over Q.
 #[test]
+#[cfg_attr(
+    not(feature = "cofactors"),
+    ignore = "the build leaves out the cofactors"
+)]
 fn generated_systems_through_the_lift_with_cofactors() {
     let mut cases = vec![("cubic-3".to_string(), dense(3, 3, 0, 1))];
     for seed in 0..3 {
@@ -185,6 +152,10 @@ fn generated_systems_through_the_lift_with_cofactors() {
 /// `OBJECTIVES.md`, _Domain specifics the workflow points at_, over Q with cofactors: the checker
 /// accepts each result in the exact mode.
 #[test]
+#[cfg_attr(
+    not(feature = "cofactors"),
+    ignore = "the build leaves out the cofactors"
+)]
 fn the_edge_cases_through_the_lift() {
     for (case, text) in [
         ("F = (0)", "x,y\n0\n0\n"),

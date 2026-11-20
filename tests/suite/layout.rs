@@ -45,7 +45,7 @@ fn inventory() -> Vec<String> {
         .collect()
 }
 
-// test-build-time.7 design -- an inventory of the tests the integration test binaries listed before the move, checked against the suite's own --list, not the lists compared once by hand (not measured)
+// test-build-time.7 design-checked -- an inventory of the tests the integration test binaries listed before the move, checked against the suite's own --list, not the lists compared once by hand (not measured)
 #[test]
 fn every_test_of_the_inventory_is_listed() {
     let listed = listed();
@@ -93,7 +93,7 @@ fn declared(main: &str) -> BTreeSet<&str> {
         .collect()
 }
 
-// test-build-time.6 design -- a test fails where a test file lies outside its package's suite or a file of the suite is not declared, not a comment in main.rs asking for it (log 0019-1)
+// test-build-time.6 design-checked -- a test fails where a test file lies outside its package's suite or a file of the suite is not declared, not a comment in main.rs asking for it (log 0019-1)
 #[test]
 fn every_test_file_is_a_module_of_the_suite() {
     for tests in test_dirs() {
@@ -156,7 +156,7 @@ fn table<'a>(manifest: &'a str, name: &str) -> Vec<&'a str> {
         .collect()
 }
 
-// test-build-time.5 design -- grobx-python's lib, which holds no unit test, is compiled as no test binary, and a test fails where its source gains one (log 0019-1)
+// test-build-time.5 design-checked -- grobx-python's lib, which holds no unit test, is compiled as no test binary, and a test fails where its source gains one (log 0019-1)
 #[test]
 fn the_python_lib_is_no_test_binary() {
     let python = Path::new(env!("CARGO_MANIFEST_DIR")).join("python");

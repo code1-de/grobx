@@ -30,8 +30,8 @@ int main(void) {
     call("null-params", TINY, NULL);
     printf("null-result %d -\n", grobx_groebner(TINY, &p, NULL));
     grobx_params q = p;
-    q.order = 3;
-    call("order-3", TINY, &q);
+    q.order = 4;
+    call("order-4", TINY, &q);
     q.order = GROBX_BLOCK;
     q.nblocks = 1;
     call("null-blocks", TINY, &q);

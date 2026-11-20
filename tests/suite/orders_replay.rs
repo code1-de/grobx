@@ -4,27 +4,11 @@
 //! (order-family.15, plan.md, _Edge cases_).
 
 use grobx::Error;
-use grobx::trace::{NoTrace, Record};
+use grobx::trace::NoTrace;
 
-use crate::common::{P31, dense, params_in, random_system, run};
-
-/// The instance with its characteristic, the second line, replaced by p.
-fn over(text: &str, p: u64) -> String {
-    let mut lines = text.splitn(3, '\n');
-    let variables = lines.next().unwrap();
-    lines.next();
-    let rest = lines.next().unwrap_or("");
-    format!("{variables}\n{p}\n{rest}")
-}
-
-fn learn(name: &str, text: &str, order: &str) -> Record {
-    let (outcome, record) = grobx::learn(text, &params_in(order, 1), &mut NoTrace)
-        .unwrap_or_else(|e| panic!("{name}: learn failed in {order}: {e:?}"));
-    assert!(outcome.basis.is_some(), "{name}: the learn run stopped");
-    record.unwrap_or_else(|| panic!("{name}: no record"))
-}
-
-const TINY: &str = "x,y\n65521\nx^2+y,\nx*y+1\n";
+use crate::common::{P31, TINY, dense, params_in, random_system, run};
+use crate::large::over;
+use crate::orders::learn;
 
 #[test]
 fn a_lex_record_replays_in_lex() {

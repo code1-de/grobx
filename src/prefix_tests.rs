@@ -4,40 +4,14 @@
 //! polynomial whose coefficients grow to 3000 bits (plan.md, _Test code_).
 
 use std::fmt::Write;
-use std::num::NonZeroUsize;
 
 use num_bigint::{BigInt, BigUint};
 use num_traits::{One, ToPrimitive, Zero};
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::lift::{Report, lift_text};
 use crate::rational::{Rational, bound, reconstruct};
-use crate::{MonomialOrder, Outcome, Params, Threads};
-
-/// The learn prime of the forced cases, lucky for them.
-const L1: u64 = 2_147_483_647;
-
-fn params(seed: u64) -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    )
-}
-
-/// The lift of `text` with the primes `forced` first: its outcome, which
-/// must hold a basis.
-fn lift(text: &str, params: &Params, forced: &[u64]) -> Outcome {
-    let mut report = Report::default();
-    let outcome = lift_text(text, params, forced.to_vec(), &mut report)
-        .unwrap_or_else(|e| panic!("the lift failed: {e:?}\non\n{text}"));
-    assert!(
-        outcome.basis.is_some() && outcome.stopped.is_none(),
-        "the lift stopped: {outcome:?}\n{report:?}"
-    );
-    outcome
-}
+use crate::shared_tests::{L1, lift, params, small_primes};
 
 /// A monic polynomial in x of 40 terms over Q whose coefficients grow from
 /// 1 to 3000 bits, the first term past the leading one the smallest: its
@@ -76,13 +50,6 @@ fn a_polynomial_of_growing_coefficients_lifts() {
     let (text, basis) = growing();
     let outcome = lift(&text, &params(7), &[]);
     assert_eq!(outcome.basis.as_deref(), Some(basis.as_str()));
-}
-
-/// The primes from 101 below `limit`, by trial division.
-fn small_primes(limit: u64) -> Vec<u64> {
-    (101..limit)
-        .filter(|&n| (2..).take_while(|d| d * d <= n).all(|d| n % d != 0))
-        .collect()
 }
 
 /// a mod m, in [0, m).

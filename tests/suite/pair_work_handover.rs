@@ -11,39 +11,20 @@ use std::fmt::Write;
 use grobx::{Outcome, Params};
 use grobx_checker::Mode;
 
-use crate::common::{self, P, P31, Rng, assert_accepted, params, params_in, run, with_cofactors};
+use crate::common::systems::Q_BOUND;
+use crate::common::{
+    self, EDGE_BASES, P, P31, Rng, assert_accepted, params, params_in, reported, run,
+    with_cofactors,
+};
 use crate::orders::{accepted_in, assert_canonical};
 use crate::q::{accepted_q, assert_canonical_q};
 use crate::report::{Line, report as lines_of, run_lines, untimed};
-
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name, generators, and the
-/// basis over GF(65521) in grevlex.
-pub(crate) const EDGE: [(&str, &str, &str); 7] = [
-    ("the zero ideal", "0", "[]:\n"),
-    ("F = (0, 0)", "0,\n0", "[]:\n"),
-    ("no generator", "", "[]:\n"),
-    ("the unit ideal", "x*z-1,\nx", "[1]:\n"),
-    ("already a Gröbner basis", "x+z,\nz^2+1", "[x+z,\nz^2+1]:\n"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-        "[y^2+65520*x,\nx*y+65520*z,\nx^2+65520*y*z]:\n",
-    ),
-    (
-        "an eliminable variable",
-        "x-y^2-z,\ny*z-1,\nz^2-y",
-        "[x+65519*z,\nz^2+65520*y,\ny*z+65520,\ny^2+65520*z]:\n",
-    ),
-];
 
 /// The fewest S-pairs a round's update would form for the pair-work test
 /// to read the round, and how many times the entries subtracted they reach
 /// where it hands over: the crate's `PAIRS` and `PAIR_WORK`.
 const PAIRS: u64 = 1_000;
 const PAIR_WORK: u64 = 1;
-
-/// The bound of a drawn coefficient over ℚ.
-const Q_BOUND: u64 = 1 << 20;
 
 /// A system of random binomials over GF(p), or over ℚ where p is 0: n of
 /// the variables x1, x2, …, 3n generators, each a monomial of degree d and
@@ -100,13 +81,6 @@ fn system(p: u64, seed: u64) -> String {
     binomials(10 + (seed % 4) as usize, 3, p, seed)
 }
 
-/// `params` with the report on.
-pub(crate) fn reported(params: Params) -> Params {
-    let mut params = params;
-    params.report = true;
-    params
-}
-
 /// `params` with signatures off.
 pub(crate) fn unsigned(params: Params) -> Params {
     let mut params = params;
@@ -157,9 +131,10 @@ fn pair_work_rounds(case: &str, run: &[Line]) -> (Vec<bool>, Option<bool>) {
                 let round = line.num("round");
                 let counts = read.iter().find(|(r, ..)| *r == round);
                 let Some(verdict) = line.get("pair-work") else {
-                    // pair-work-handover.6: the test reads no round that the
-                    // early, the gap, or the outgrown test handed over.
-                    let earlier = ["early", "gap", "outgrown"]
+                    // pair-work-handover.6, cyclic-9-unsolved.6: the test reads
+                    // no round that the early, the gap, the outgrown, or the
+                    // large-round test handed over.
+                    let earlier = ["early", "gap", "outgrown", "large"]
                         .into_iter()
                         .any(|test| line.get(test) == Some("hand-over"));
                     match counts {
@@ -236,7 +211,7 @@ pub(crate) fn handed_by_pair_work(case: &str, outcome: &Outcome) -> bool {
 /// written.
 #[test]
 fn the_edge_cases() {
-    for (case, generators, want) in EDGE {
+    for (case, generators, want) in EDGE_BASES {
         for p in [P, 7, P31] {
             let text = format!("x,y,z\n{p}\n{generators}\n");
             for signatures in [true, false] {

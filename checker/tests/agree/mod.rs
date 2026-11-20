@@ -2,14 +2,13 @@
 //! mutant of it, the cheap mode reaches the exact mode's verdict. The mutants
 //! are those Reject draws with the same seed (`common::accept_and_reject`).
 
-
 use std::num::NonZeroU32;
 
 use grobx_checker::{Error, Flaw, Mode, Order, Verdict, check, check_cofactors};
 
 use crate::common::{Case, Rng, mutations};
 
-// checker-cheap.16 design -- the test code chooses k per case from p and the case's degree bound (not measured)
+// checker-cheap.16 design-checked -- the test code chooses k per case from p and the case's degree bound (not measured)
 /// The number of points that bounds the chance of a false row of degree at
 /// most `d` passing them by 2^-64 over GF(p): the least k with
 /// (d′/p)^k ≤ 2^-64, d′ = min(d, p − 1) and at least 1. A row of degree p or
@@ -38,10 +37,11 @@ pub fn cheap(points: NonZeroU32, seed: u64, n: u64) -> Mode {
     }
 }
 
+// hygiene.21 design-checked -- the checker's tests share `variants` and `case_points` from here, beside the `points` that `case_points` takes, and `orders` takes them from here, not from `common`, which would take `points` from this module as this module takes from it (not measured)
 /// Calls `each` on the case's texts, then on every mutant's, with the label
 /// and number of each; a mutant is built just before its call and dropped
 /// after it.
-fn variants(case: &Case, seed: u64, mut each: impl FnMut(&str, u64, &str, &str)) {
+pub fn variants(case: &Case, seed: u64, mut each: impl FnMut(&str, u64, &str, &str)) {
     each("Accept", 0, &case.basis_text(), &case.cofactor_text());
     let mut rng = Rng::new(seed);
     for (n, mutation) in mutations(case, &mut rng).into_iter().enumerate() {
@@ -52,7 +52,7 @@ fn variants(case: &Case, seed: u64, mut each: impl FnMut(&str, u64, &str, &str))
 
 /// The k Agree uses on `case` and its mutants: a mutation raises a degree by
 /// at most 3.
-fn case_points(case: &Case) -> NonZeroU32 {
+pub fn case_points(case: &Case) -> NonZeroU32 {
     points(case.prime(), case.degree_bound() + 3)
 }
 
@@ -94,7 +94,9 @@ pub fn agree_full(case: &Case, seed: u64) {
         let (exact, got) = match (run(Mode::Exact), run(mode)) {
             (Ok(exact), Ok(got)) => (exact, got),
             (exact, got) => {
-                failures.push(format!("{label}: exact {exact:?}, cheap {got:?} ({mode:?})"));
+                failures.push(format!(
+                    "{label}: exact {exact:?}, cheap {got:?} ({mode:?})"
+                ));
                 return;
             }
         };
@@ -105,7 +107,9 @@ pub fn agree_full(case: &Case, seed: u64) {
             ));
         }
         if got != exact {
-            failures.push(format!("{label}: exact {exact:?}, cheap {got:?} ({mode:?})"));
+            failures.push(format!(
+                "{label}: exact {exact:?}, cheap {got:?} ({mode:?})"
+            ));
         }
         for (name, (full, rows)) in [("exact", &exact), ("cheap", &got)] {
             if !consistent(full, rows) {

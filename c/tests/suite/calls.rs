@@ -143,7 +143,7 @@ fn the_edge_cases_match_the_crate() {
 /// `Drops`: its status and the crate's message, and no other text.
 #[test]
 fn the_errors_of_the_crate_match() {
-    // test-mq-systems.10 design -- the order error of block:5 takes the dense cubic system on five variables, all of which block:5 puts in one block, not the map's on three (not measured)
+    // test-mq-systems.10 design-checked -- the order error of block:5 takes the dense cubic system on five variables, all of which block:5 puts in one block, not the map's on three (not measured)
     let five = dense(5, 3, 65521, 1);
     let cases = [
         ("empty", "", Grevlex, GROBX_SYNTAX),
@@ -260,7 +260,7 @@ fn the_result_frees_what_it_holds() {
         ),
         (
             "error",
-            // test-mq-systems.10 design -- the order error of block:5 takes the dense cubic system on five variables, all of which block:5 puts in one block, not the map's on three (not measured)
+            // test-mq-systems.10 design-checked -- the order error of block:5 takes the dense cubic system on five variables, all of which block:5 puts in one block, not the map's on three (not measured)
             dense(5, 3, 65521, 1),
             Args::new(Block(vec![5]), 1),
         ),

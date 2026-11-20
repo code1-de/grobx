@@ -9,27 +9,20 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::budget::Budget;
 use crate::build_tests::reducer_agrees;
 use crate::divisibility_tests::{check_masks_on, check_updates_on};
+use crate::divisors::Divisors;
 use crate::field::{Field, Gf31};
 use crate::id::ElementId;
-use crate::matrix::Divisors;
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::order::{Grevlex, Lex};
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::{below, rng};
 use crate::table::Table;
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
-
-fn below(rng: &mut Xoshiro256PlusPlus, n: u64) -> u64 {
-    rng.next_u64() % n
-}
 
 /// Test 1, many-variables-time.1, .2: the masks on 71 to 140 variables,
 /// in every format, are `mask_of`'s, and a divisor's mask lies in its
@@ -73,7 +66,10 @@ fn check_coprime<M: Format>(seed: u64) {
     for n in [31usize, 32, 33, 40, 63, 64, 65, 100, 140] {
         let mut table: Table<M> = Table::new(M::new(n), &mut rng(seed ^ n as u64));
         let agree = |table: &mut Table<M>, a: &[u32], b: &[u32]| {
-            let (ia, ib) = (table.intern(a).unwrap(), table.intern(b).unwrap());
+            let (ia, ib) = (
+                table.intern(a, &mut Budget::unbounded()).unwrap(),
+                table.intern(b, &mut Budget::unbounded()).unwrap(),
+            );
             let want = coprime_by_exponents(a, b);
             assert_eq!(table.coprime(ia, ib), want, "n {n}: {a:?}, {b:?}");
             assert_eq!(
@@ -144,17 +140,17 @@ fn check_divisors<M: Format>(n: usize, seed: u64) {
     let mut table: Table<M> = Table::new(M::new(n), &mut rng(seed ^ 0xd17));
     let mut basis: Basis<Gf31, Rank1> = Basis::new();
     let mut elements: Vec<(Vec<u32>, usize)> = Vec::new();
-    let one = table.intern(&vec![0; n]).unwrap();
+    let one = table.intern(&vec![0; n], &mut Budget::unbounded()).unwrap();
     for _ in 0..40 {
         let l = lead(&mut r, n);
         let terms = 1 + 2 * below(&mut r, 2) as usize;
-        let mut monomials = vec![table.intern(&l).unwrap()];
+        let mut monomials = vec![table.intern(&l, &mut Budget::unbounded()).unwrap()];
         if terms == 3 {
             // A variable of the lead alone, then 1: both below it.
             let k = l.iter().position(|&e| e > 0).unwrap();
             let mut x = vec![0u32; n];
             x[k] = 1;
-            monomials.push(table.intern(&x).unwrap());
+            monomials.push(table.intern(&x, &mut Budget::unbounded()).unwrap());
             monomials.push(one);
         }
         let coefs = vec![field.coef(1); monomials.len()];
@@ -166,7 +162,7 @@ fn check_divisors<M: Format>(n: usize, seed: u64) {
         basis.push(poly, false).unwrap();
         elements.push((l, terms));
     }
-    let divisors = Divisors::new(&table, &basis);
+    let divisors = Divisors::new(&table, &basis, &mut Budget::unbounded()).unwrap();
     let mut found = 0;
     for _ in 0..400 {
         let mut q = sparse(&mut r, n);
@@ -184,8 +180,8 @@ fn check_divisors<M: Format>(n: usize, seed: u64) {
             }
         }
         found += u32::from(want.is_some());
-        let u = table.intern(&q).unwrap();
-        let got = divisors.find(&table, u).map(ElementId::index);
+        let u = table.intern(&q, &mut Budget::unbounded()).unwrap();
+        let got = divisors.find(&table, u).0.map(ElementId::index);
         assert_eq!(got, want, "n {n}: {q:?}");
     }
     assert!(found > 100, "n {n}: {found} of 400 queries had a divisor");

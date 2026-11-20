@@ -16,14 +16,16 @@ use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::Params;
-use crate::catch_up_tests::L1;
-use crate::chain_tests::{assert_accepted, basis, both_reports, params, with_cofactors};
+use crate::call::built;
+use crate::chain_tests::{assert_accepted, both_reports};
 use crate::lehmer::{First, Mqrr, threshold};
-use crate::lift_growth_tests::{coprime, primes_for, wide};
+use crate::lift_growth_tests::{primes_for, wide};
 use crate::mixed_radix_tests::{crt_of, from_limbs, mixed, word};
-use crate::mqrr_tests::{continued, limbs, of_bits, primes};
+use crate::mqrr_tests::{continued, of_bits, primes};
 use crate::rational::{Converted, Crt, Rational};
-use crate::shortcut_tests::{image, integer, product};
+use crate::shared_tests::{
+    L1, basis, drawn_coprime, image, integer, lift_params, limbs, product, with_cofactors,
+};
 
 /// x = Σ dᵢ·p₀⋯pᵢ₋₁ over the digits given, one a prime of `ps`.
 fn from_digits(digits: &[u64], ps: &[u64]) -> BigUint {
@@ -336,7 +338,7 @@ fn a_chain_that_grows_at_each_coefficient() {
         let mut others: Vec<&BigUint> = q.iter().collect();
         let small_primes = BigUint::from(105u32);
         others.push(&small_primes);
-        let next = coprime(&mut rng, 300, &others);
+        let next = drawn_coprime(&mut rng, 300, &others);
         q.push(next);
     }
     let sharing: Vec<BigUint> = q
@@ -353,7 +355,7 @@ fn a_chain_that_grows_at_each_coefficient() {
             .iter()
             .enumerate()
             .map(|(i, d)| {
-                let a = BigInt::from(coprime(&mut rng, 300, &[d]));
+                let a = BigInt::from(drawn_coprime(&mut rng, 300, &[d]));
                 if i % 2 == 1 { -a } else { a }
             })
             .collect();
@@ -365,7 +367,10 @@ fn a_chain_that_grows_at_each_coefficient() {
         let (text, want) = linear(&b, &coefs);
         let bits = nums.iter().map(BigInt::bits).max().unwrap() + b.bits();
         let (_, most) = primes_for(bits);
-        for params in [params(21), with_cofactors(21)] {
+        for params in [lift_params(21), with_cofactors(21)] {
+            if built(&params).is_err() {
+                continue;
+            }
             let cofactors = params.cofactors;
             let case = format!("{case}, cofactors {cofactors}");
             let (outcome, chain, _) = both_reports(&case, &text, &params, &[]);
@@ -382,13 +387,16 @@ fn a_chain_that_grows_at_each_coefficient() {
     let m = product(&ws[..3]);
     let t = threshold(&m);
     let room = m.bits() - t - 20;
-    let b = coprime(&mut rng, room / 2, &[]);
-    let a = BigInt::from(coprime(&mut rng, room - room / 2 - 1, &[&b]));
+    let b = drawn_coprime(&mut rng, room / 2, &[]);
+    let a = BigInt::from(drawn_coprime(&mut rng, room - room / 2 - 1, &[&b]));
     let (low, high) = (&m / (&b << (t + 1)) + 1u32, &m / (&b << t));
     let n = &low + integer(&mut rng, high.bits()) % (&high - &low);
     let (text, want) = linear(&b, &[a, BigInt::from(&n * &b)]);
     let forced = [L1, ws[0], ws[1], ws[2], ws[3]];
-    for params in [params(22), with_cofactors(22)] {
+    for params in [lift_params(22), with_cofactors(22)] {
+        if built(&params).is_err() {
+            continue;
+        }
         let cofactors = params.cofactors;
         let case = format!("f = 1, cofactors {cofactors}");
         let (outcome, chain, _) = both_reports(&case, &text, &params, &forced);
@@ -428,7 +436,13 @@ fn a_digit_below_the_top() {
         for sign in ['+', '-'] {
             let text = format!("y,x\n0\ny{sign}{c}*x\n");
             let want = format!("[y{sign}{c}*x]:\n");
-            for params in [within_20_s(params(23)), within_20_s(with_cofactors(23))] {
+            for params in [
+                within_20_s(lift_params(23)),
+                within_20_s(with_cofactors(23)),
+            ] {
+                if built(&params).is_err() {
+                    continue;
+                }
                 let cofactors = params.cofactors;
                 let case = format!("{case}, {sign}, cofactors {cofactors}");
                 let (outcome, chain, _) = both_reports(&case, &text, &params, &forced);

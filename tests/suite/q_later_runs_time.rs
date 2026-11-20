@@ -7,23 +7,8 @@ use std::time::Duration;
 
 use grobx::{CheckerMode, Stop};
 
-use crate::common::{params_in, run, with_cofactors_in};
+use crate::common::{FAR_DEADLINE, ORDERS, bounded_in, params_in, run, with_cofactors_in};
 use crate::q::{assert_canonical_q, finished_q, random_q_system};
-
-const ORDERS: [&str; 3] = ["grevlex", "lex", "block:1"];
-
-/// The deadline of every call of test 8, far past what each takes: a fault
-/// that keeps the lift from completing stops the call there and fails the
-/// test. A fault that makes the replays misfit ends it in `Error::Drops`
-/// before.
-const DEADLINE: Duration = Duration::from_secs(60);
-
-/// `params_in` with the deadline.
-fn bounded_in(order: &str, seed: u64) -> grobx::Params {
-    let mut p = params_in(order, seed);
-    p.deadline = Some(DEADLINE);
-    p
-}
 
 /// `OBJECTIVES.md`, _Domain specifics the workflow points at_, over Q: each case, its text, and
 /// its basis in grevlex, as `q_edge.rs` and `kept_tests.rs` write them.
@@ -68,12 +53,12 @@ fn the_edge_cases_in_pairs() {
             if name == "grevlex" {
                 assert_eq!(basis, grevlex, "{case}");
             }
-            let alone = finished_q(case, text, name, DEADLINE)
+            let alone = finished_q(case, text, name, FAR_DEADLINE)
                 .unwrap_or_else(|| panic!("{case} in {name}: stopped by the deadline"));
             assert_eq!(alone.basis.as_deref(), Some(basis), "{case} in {name}");
             let mut checked = with_cofactors_in(name, 2);
             checked.checker = Some(CheckerMode::Exact);
-            checked.deadline = Some(DEADLINE);
+            checked.deadline = Some(FAR_DEADLINE);
             let outcome = run(text, &checked);
             assert_eq!(outcome.basis.as_deref(), Some(basis), "{case} in {name}");
             assert_eq!(

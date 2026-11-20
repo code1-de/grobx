@@ -10,57 +10,28 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
-
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::Stop;
+use crate::band_tests::setup_units;
 use crate::budget::Budget;
 use crate::cofactors::NoCofactors;
-use crate::f4::Halt;
 use crate::field::{BAND, Field, Gf31};
-use crate::id::{MonoId, RowId};
-use crate::matrix::{self, BLOCK, Buffers, Combine, Matrix, Reduced, Reducer, Reduction};
+use crate::halt::Halt;
+use crate::id::{RowId, RowSource};
+use crate::matrix::{self, BLOCK, Buffers, Combine, Reducer};
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::Grevlex;
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::{Random, budget, passed_after, read_all, rows};
 use crate::systems::Rng;
 use crate::table::Table;
-use crate::trace::RowSource;
-use crate::{MonomialOrder, Params, Stop, Threads};
 
 /// The primes of the band: below 2^16, from 2^16, and the largest below
 /// 2^31, each past the combinations' bound of 46341.
 const PRIMES: [u64; 3] = [65521, 65537, 2_147_483_647];
-
-fn params() -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    )
-}
-
-/// A budget with no bound.
-fn budget() -> Budget {
-    Budget::new(Instant::now(), &params()).unwrap()
-}
-
-/// A budget whose deadline passed before the test began, unchecked, with
-/// `units` of work between two full checks.
-pub(crate) fn passed_after(units: u64) -> Budget {
-    let mut p = params();
-    p.deadline = Some(Duration::from_millis(1));
-    let mut b = Budget::new(
-        Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
-        &p,
-    )
-    .unwrap();
-    b.set_work(units);
-    b
-}
 
 /// The shape of a random matrix: basis elements, S-pairs drawn, every
 /// `twice`-th draw's rows given twice, `doubles` basis elements given
@@ -82,19 +53,12 @@ struct Shape {
     lead: Option<u32>,
 }
 
-/// A random matrix over GF(p) on four variables, as `band_tests.rs`
-/// builds one: a basis of random monic polynomials, given rows that are
-/// the halves of random S-pairs of the basis and basis elements given
-/// twice, and the reducers symbolic preprocessing adds. A basis element
-/// given twice is a row to reduce that the other copy reduces to zero.
-struct Random {
-    field: Gf31,
-    basis: Basis<Gf31, Rank1>,
-    matrix: Matrix,
-}
-
 impl Random {
-    fn new(p: u64, seed: u64, shape: Shape) -> Random {
+    /// A random matrix over GF(p) on four variables, as `band_tests.rs` builds one: a basis of
+    /// random monic polynomials, given rows that are the halves of random S-pairs of the basis and
+    /// basis elements given twice, and the reducers symbolic preprocessing adds. A basis element
+    /// given twice is a row to reduce that the other copy reduces to zero.
+    fn shaped(p: u64, seed: u64, shape: Shape) -> Random {
         let field = Gf31::new(p).unwrap();
         let mut table = Table::new(
             Dense16::new(4),
@@ -113,7 +77,7 @@ impl Random {
                     degree -= k;
                 }
                 e[3] = degree;
-                let m = table.intern(&e).unwrap();
+                let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                 terms.push((m, field.coef(1 + rng.below(p - 1))));
             }
             for _ in 0..shape.least + rng.below(shape.most - shape.least + 1) {
@@ -124,7 +88,7 @@ impl Random {
                     *x = k;
                     degree -= k;
                 }
-                let m = table.intern(&e).unwrap();
+                let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                 terms.push((m, field.coef(1 + rng.below(p - 1))));
             }
             let mut g = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
@@ -132,10 +96,10 @@ impl Random {
                 continue;
             }
             g.make_monic(&field);
-            basis.push_min(&table, g).unwrap();
+            basis.push_min(&table, g, &mut Budget::unbounded()).unwrap();
         }
         let min = basis.min().to_vec();
-        let one = table.intern(&[0; 4]).unwrap();
+        let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
         let mut rows = Vec::new();
         for k in 0..shape.pairs {
             let i = min[rng.below(min.len() as u64) as usize];
@@ -143,11 +107,15 @@ impl Random {
             if i == j {
                 continue;
             }
-            let lcm = table.lcm(basis.lead(i), basis.lead(j)).unwrap();
+            let lcm = table
+                .lcm(basis.lead(i), basis.lead(j), &mut Budget::unbounded())
+                .unwrap();
             for g in [i, j] {
                 let row = RowSource {
                     element: g,
-                    multiplier: table.div(lcm, basis.lead(g)).unwrap(),
+                    multiplier: table
+                        .div(lcm, basis.lead(g), &mut Budget::unbounded())
+                        .unwrap(),
                 };
                 rows.push(row);
                 if shape.twice > 0 && k % shape.twice == 0 {
@@ -167,9 +135,8 @@ impl Random {
             &mut table,
             &basis,
             &Grevlex,
-            1,
             rows,
-            Vec::new(),
+            &mut Buffers::new(),
             &mut budget(),
         )
         .unwrap();
@@ -183,28 +150,6 @@ impl Random {
     /// Whether the plain run's reduction of this matrix takes bands.
     fn long(&self) -> bool {
         matrix::takes_bands::<Gf31, Dense16, NoCofactors>(&self.matrix)
-    }
-
-    fn reduce(&self, combine: Option<&mut Combine>) -> Reduction<Gf31> {
-        self.reduce_in(combine, &mut budget()).unwrap()
-    }
-
-    fn reduce_in(
-        &self,
-        combine: Option<&mut Combine>,
-        b: &mut Budget,
-    ) -> Result<Reduction<Gf31>, Halt> {
-        matrix::reduce::<Gf31, Dense16, Rank1, NoCofactors>(
-            &self.field,
-            &self.basis,
-            &self.matrix,
-            &mut NoCofactors,
-            b,
-            true,
-            combine,
-            &mut Buffers::new(),
-            None,
-        )
     }
 
     /// Row r's coefficients, its element's.
@@ -238,23 +183,14 @@ fn long(p: u64, seed: u64) -> Random {
         degree: 6,
         lead: Some(7),
     };
-    Random::new(p, seed, shape)
-}
-
-/// The made rows, each as its columns and coefficients, by leading column.
-fn rows(reduction: &Reduction<Gf31>) -> Vec<(Vec<MonoId>, Vec<u32>)> {
-    let mut made: Vec<&Reduced<Gf31>> = reduction.made.iter().collect();
-    made.sort_by_key(|r| r.cols[0]);
-    made.iter()
-        .map(|r| (r.cols.clone(), r.coefs.clone()))
-        .collect()
+    Random::shaped(p, seed, shape)
 }
 
 /// How many given rows the reduction must reduce: those that are not the
 /// pivot of their leading column.
 fn to_reduce(m: &Random) -> usize {
     let mut leads: Vec<u32> = (0..m.matrix.rows.len())
-        .map(|r| m.matrix.row(RowId::at(r))[0].raw())
+        .map(|r| m.matrix.row(RowId::at(r)).lead().raw())
         .collect();
     let given = m.matrix.given;
     let reducers: std::collections::HashSet<u32> = leads[given..].iter().copied().collect();
@@ -265,25 +201,13 @@ fn to_reduce(m: &Random) -> usize {
     given - pivots
 }
 
-/// Every entry of the band and of the four dense rows read by `take`: the
-/// values agree, and both hold zeros after.
-fn read_all(f: &Gf31, band: &mut [[i64; BAND]], dense: &mut [Vec<i64>; BAND], case: &str) {
-    for (c, entry) in band.iter_mut().enumerate() {
-        for k in 0..BAND {
-            let a = f.take(&mut entry[k]);
-            let b = f.take(&mut dense[k][c]);
-            assert_eq!(a, b, "{case}: column {c}, band row {k}");
-        }
-    }
-    assert!(band.iter().all(|e| e.iter().all(|&x| x == 0)), "{case}");
-}
-
 /// Test 1: plain-reduction-time.2, .6. `Reducer::add_band` against
 /// four dense rows: the band, empty from `Reducer::new`, takes the
 /// matrix's width at the first row added; each row added with four
 /// coefficients, some 0, agrees with `sub_mul` of the negated coefficient
 /// into a dense row of its own; and each row spends `BAND` times its
-/// length.
+/// length, beside the band's fill, `BAND` units a column
+/// (call-stop-latency.53).
 #[test]
 fn a_band_forms_four_combinations_in_one_pass() {
     let mut cases = 0;
@@ -299,7 +223,7 @@ fn a_band_forms_four_combinations_in_one_pass() {
             assert!(red.band.is_empty(), "{name}: a band before the first row");
             let mut dense: [Vec<i64>; BAND] = std::array::from_fn(|_| vec![0i64; width]);
             let mut rng = Rng::new(seed ^ p.rotate_left(3));
-            let mut want = 0u64;
+            let mut want = (BAND * width) as u64;
             for _ in 0..=rng.below(BLOCK as u64) {
                 let r = RowId::at(rng.below(m.matrix.rows.len() as u64) as usize);
                 let k: [u32; BAND] = std::array::from_fn(|_| {
@@ -314,7 +238,14 @@ fn a_band_forms_four_combinations_in_one_pass() {
                 for j in 0..BAND {
                     // SAFETY: every column of the matrix lies below its
                     // width.
-                    unsafe { f.sub_mul(&mut dense[j], m.matrix.row(r), m.coefs(r), f.neg(k[j])) };
+                    unsafe {
+                        f.sub_mul(
+                            &mut dense[j],
+                            &m.matrix.row(r).to_wide(),
+                            m.coefs(r),
+                            f.neg(k[j]),
+                        );
+                    };
                 }
             }
             assert_eq!(red.band.len(), width, "{name}: the band's width");
@@ -350,10 +281,11 @@ fn banded_combinations_make_what_rows_make() {
 
 /// Test 5: plain-reduction-time.6. A matrix of long rows whose first block
 /// takes a band, with a deadline passed and unchecked, the setup's units
+/// (`band_tests::setup_units`) and the band's fill, `BAND` units a column,
 /// and `T` more between two full checks: the reduction stops with
 /// `Deadline` after one full check and at most `T` + `BAND`·L units past
-/// the setup's, L the matrix's longest row, where unbounded it spends
-/// more than four times that.
+/// the setup's and the fill's, L the matrix's longest row, where unbounded
+/// it spends more than four times that.
 #[test]
 fn a_deadline_stops_a_banded_block() {
     const T: u64 = 256;
@@ -364,7 +296,7 @@ fn a_deadline_stops_a_banded_block() {
             if !m.long() || to_reduce(&m) < 2 {
                 continue;
             }
-            let setup = (m.matrix.rows.len() + m.matrix.columns()) as u64;
+            let setup = setup_units(&m.matrix) + (BAND * m.matrix.columns()) as u64;
             let bound = T + (BAND * m.longest()) as u64;
             let mut b = budget();
             m.reduce_in(Some(&mut Combine::new(seed)), &mut b).unwrap();

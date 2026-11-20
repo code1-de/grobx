@@ -1,59 +1,30 @@
 //! q-lift, sub-item 2: the image of a run, and the lift over Q, with
 //! unlucky primes forced first where a case needs one.
 
-use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use grobx_checker::{Mode, Order, check};
 use num_bigint::BigUint;
 
 use crate::budget::Budget;
-use crate::entry::{Imaged, image_in};
+use crate::call::built;
+use crate::entry::{Image, Imaged, image_in};
 use crate::field::Gf31;
-use crate::lift::{Image, Report, Sparse, lift_text};
+use crate::lift::{Report, lift_text};
+use crate::poly::{Exponents, Sparse};
 use crate::rational::{Rational, bound, reconstruct};
+use crate::shared_tests::{L1, L2, L3, U1, U2, basis, lift, params, small_primes};
 use crate::systems::{dense, random_square};
 use crate::text::Header;
 use crate::trace::{NoLearner, NoTrace};
-use crate::{Cancel, MonomialOrder, Outcome, Params, Stop, Threads};
+use crate::{Cancel, Outcome, Params, Stop};
 
-/// Two primes near 2^30.5 that the test code makes unlucky.
-const U1: u64 = 1_518_500_279;
-const U2: u64 = 1_518_500_293;
-/// Primes near 2^31, lucky for every instance here.
-const L1: u64 = 2_147_483_647;
-const L2: u64 = 2_147_483_629;
-const L3: u64 = 2_147_483_587;
-
-fn params(seed: u64) -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    )
-}
-
+// hygiene.19 design-checked -- this copy of `with_cofactors` stays, its `params` without the lift's deadline, which the shared `with_cofactors` sets; not the shared one, which would give these tests a deadline they ran without, and not one `fn` that takes the parameters (not measured)
+/// `params(seed)` with cofactors, and with no deadline.
 fn with_cofactors(seed: u64) -> Params {
     let mut p = params(seed);
     p.cofactors = true;
     p
-}
-
-/// The outcome of the lift of `text` with the primes `forced` first, which
-/// must hold a basis.
-fn lift(text: &str, params: &Params, forced: &[u64]) -> Outcome {
-    let mut report = Report::default();
-    let outcome = lift_text(text, params, forced.to_vec(), &mut report)
-        .unwrap_or_else(|e| panic!("the lift failed: {e:?}\non\n{text}"));
-    assert!(
-        outcome.basis.is_some() && outcome.stopped.is_none(),
-        "the lift stopped: {outcome:?}\n{report:?}"
-    );
-    outcome
-}
-
-fn basis(outcome: &Outcome) -> &str {
-    outcome.basis.as_deref().unwrap()
 }
 
 /// The checker accepts the lift's outcome over Q in grevlex, in the exact
@@ -81,7 +52,7 @@ fn assert_accepted(case: &str, text: &str, outcome: &Outcome) {
 /// coefficients, as `Sparse` holds them.
 fn read_poly(poly: &str, names: &[&str]) -> Sparse {
     let mut out = Sparse {
-        exponents: Vec::new(),
+        exponents: Exponents::new(),
         coefs: Vec::new(),
     };
     if poly == "0" {
@@ -139,7 +110,7 @@ fn read_cofactors(text: &str, names: &[&str]) -> Vec<Vec<Sparse>> {
 
 /// The image of a run over `text`'s own prime, below 2^31.
 fn image(text: &str, params: &Params) -> Image {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let p: u64 = header.characteristic.parse().unwrap();
     let named = params.order.clone();
     let mut budget = Budget::new(Instant::now(), params).unwrap();
@@ -176,6 +147,9 @@ fn images_match_the_texts() {
     for text in &cases {
         let names: Vec<&str> = text.lines().next().unwrap().split(',').collect();
         for params in [params(3), with_cofactors(3)] {
+            if built(&params).is_err() {
+                continue;
+            }
             let outcome = crate::groebner(text, &params).unwrap();
             let image = image(text, &params);
             let read = read_basis(basis(&outcome), &names);
@@ -183,12 +157,12 @@ fn images_match_the_texts() {
             assert!(read.iter().all(|g| g.coefs[0] == 1), "monic");
             let leads: Vec<u32> = read
                 .iter()
-                .flat_map(|g| g.exponents[..n].to_vec())
+                .flat_map(|g| g.exponents.values().take(n))
                 .collect();
             let tails: Vec<Sparse> = read
                 .iter()
                 .map(|g| Sparse {
-                    exponents: g.exponents[n..].to_vec(),
+                    exponents: g.exponents.values().skip(n).collect(),
                     coefs: g.coefs[1..].to_vec(),
                 })
                 .collect();
@@ -262,14 +236,7 @@ fn a_vanishing_coefficient() {
     }
 }
 
-/// The primes below `limit`, from 101, by trial division.
-fn small_primes(limit: u64) -> Vec<u64> {
-    (101..limit)
-        .filter(|&n| (2..).take_while(|d| d * d <= n).all(|d| n % d != 0))
-        .collect()
-}
-
-// q-lift.40 design -- the test code's premature reconstruction comes from small forced primes p₁, p₂ and an integer c the test searches for, Wang's reconstruction of −c mod p₁ a rational r ≠ −c with r ≡ −c mod p₂, not no test of a verification that fails on coefficients (not measured)
+// q-lift.40 design-checked -- the test code's premature reconstruction comes from small forced primes p₁, p₂ and an integer c the test searches for, Wang's reconstruction of −c mod p₁ a rational r ≠ −c with r ≡ −c mod p₂, not no test of a verification that fails on coefficients (not measured)
 /// q-lift.40: an integer c and small primes p₁ ≠ p₂, neither dividing c,
 /// such that Wang's reconstruction of −c mod p₁ is a rational r ≠ −c with
 /// r ≡ −c mod p₂.
@@ -322,6 +289,10 @@ fn a_verification_prime_of_a_denominator() {
 /// dense cubic system, with cofactors: the checker accepts, and the basis is the
 /// one without cofactors.
 #[test]
+#[cfg_attr(
+    not(feature = "cofactors"),
+    ignore = "the build leaves out the cofactors"
+)]
 fn cofactors_are_lifted() {
     let cases = [
         ("zero", "x,y\n0\n0\n".to_string()),

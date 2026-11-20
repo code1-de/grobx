@@ -12,46 +12,28 @@
 )]
 
 use std::cmp::Reverse;
-use std::num::NonZeroUsize;
-use std::time::Instant;
 
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
 use crate::cofactors::NoCofactors;
-use crate::f4::Halt;
 use crate::field::{Field, Gf31};
-use crate::id::{ElementId, MonoId, RowId};
-use crate::matrix::{self, BLOCK, Buffers, Combine, Matrix, Reduced, Reduction};
+use crate::halt::Halt;
+use crate::id::{ElementId, RowId, RowSource};
+use crate::matrix::{self, BLOCK, Buffers, Combine, Matrix, Reduction};
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
-use crate::order::Grevlex;
+use crate::order::{Grevlex, Order};
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::{COMBINING, budget, params, rows};
 use crate::systems::{Rng, dense, random_system};
 use crate::table::Table;
-use crate::trace::{NoTrace, RowSource};
-use crate::{MonomialOrder, Params, Threads};
-
-/// The primes of the combinations: below 2^16 and the largest below 2^31,
-/// each past the combinations' bound of 46341.
-const COMBINING: [u64; 2] = [65521, 2_147_483_647];
+use crate::trace::NoTrace;
 
 /// The primes of each row on its own: 7, below the combinations' bound,
 /// and the two of `COMBINING`.
 const ALONE: [u64; 3] = [7, 65521, 2_147_483_647];
-
-fn params(seed: u64) -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    )
-}
-
-pub(crate) fn budget() -> Budget {
-    Budget::new(Instant::now(), &params(1)).unwrap()
-}
 
 /// The shape of a random matrix, as `plain_band_tests.rs`'s: `elements`
 /// basis elements, each of `least` to `most` terms of degree 1 to
@@ -74,16 +56,27 @@ pub(crate) struct Shape {
 
 /// A random matrix over GF(p) on four variables: a basis of random monic
 /// polynomials, given rows of `Shape`, and the reducers symbolic
-/// preprocessing adds.
+/// preprocessing adds; and the table it was built in.
 pub(crate) struct Random {
     pub(crate) field: Gf31,
     pub(crate) basis: Basis<Gf31, Rank1>,
     pub(crate) matrix: Matrix,
+    pub(crate) table: Table<Dense16>,
 }
 
 impl Random {
     pub(crate) fn new(p: u64, seed: u64, shape: &Shape) -> Random {
         Random::with_rows(p, seed, shape, |_, _, rows| rows)
+    }
+
+    /// As `new`, the elements and the matrix in `order`.
+    pub(crate) fn with_order<O: Order<Dense16>>(
+        p: u64,
+        seed: u64,
+        shape: &Shape,
+        order: &O,
+    ) -> Random {
+        Random::with_rows_in(p, seed, shape, order, |_, _, rows| rows)
     }
 
     /// As `new`, the given rows passed through `edit` before the build:
@@ -92,6 +85,17 @@ impl Random {
         p: u64,
         seed: u64,
         shape: &Shape,
+        edit: impl FnOnce(&mut Table<Dense16>, &Basis<Gf31, Rank1>, Vec<RowSource>) -> Vec<RowSource>,
+    ) -> Random {
+        Random::with_rows_in(p, seed, shape, &Grevlex, edit)
+    }
+
+    /// As `with_rows`, the elements and the matrix in `order`.
+    fn with_rows_in<O: Order<Dense16>>(
+        p: u64,
+        seed: u64,
+        shape: &Shape,
+        order: &O,
         edit: impl FnOnce(&mut Table<Dense16>, &Basis<Gf31, Rank1>, Vec<RowSource>) -> Vec<RowSource>,
     ) -> Random {
         let field = Gf31::new(p).unwrap();
@@ -112,7 +116,7 @@ impl Random {
                     degree -= k;
                 }
                 e[3] = degree;
-                let m = table.intern(&e).unwrap();
+                let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                 terms.push((m, field.coef(1 + rng.below(p - 1))));
             }
             for _ in 0..shape.least + rng.below(shape.most - shape.least + 1) {
@@ -123,18 +127,18 @@ impl Random {
                     *x = k;
                     degree -= k;
                 }
-                let m = table.intern(&e).unwrap();
+                let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                 terms.push((m, field.coef(1 + rng.below(p - 1))));
             }
-            let mut g = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
+            let mut g = Poly::from_terms(&mut terms, &field, &table, order, ());
             if g.is_zero() || table.degree(g.lead()) == 0 {
                 continue;
             }
             g.make_monic(&field);
-            basis.push_min(&table, g).unwrap();
+            basis.push_min(&table, g, &mut Budget::unbounded()).unwrap();
         }
         let min = basis.min().to_vec();
-        let one = table.intern(&[0; 4]).unwrap();
+        let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
         let mut rows = Vec::new();
         for k in 0..shape.pairs {
             let i = min[rng.below(min.len() as u64) as usize];
@@ -142,11 +146,15 @@ impl Random {
             if i == j {
                 continue;
             }
-            let lcm = table.lcm(basis.lead(i), basis.lead(j)).unwrap();
+            let lcm = table
+                .lcm(basis.lead(i), basis.lead(j), &mut Budget::unbounded())
+                .unwrap();
             for g in [i, j] {
                 let row = RowSource {
                     element: g,
-                    multiplier: table.div(lcm, basis.lead(g)).unwrap(),
+                    multiplier: table
+                        .div(lcm, basis.lead(g), &mut Budget::unbounded())
+                        .unwrap(),
                 };
                 rows.push(row);
                 if shape.twice > 0 && k % shape.twice == 0 {
@@ -166,10 +174,9 @@ impl Random {
         let matrix = matrix::build(
             &mut table,
             &basis,
-            &Grevlex,
-            1,
+            order,
             rows,
-            Vec::new(),
+            &mut Buffers::new(),
             &mut budget(),
         )
         .unwrap();
@@ -177,6 +184,7 @@ impl Random {
             field,
             basis,
             matrix,
+            table,
         }
     }
 
@@ -211,18 +219,19 @@ impl Random {
             combine,
             &mut Buffers::new(),
             tests,
+            None,
         )
     }
 
     pub(crate) fn lead(&self, r: usize) -> u32 {
-        self.matrix.row(RowId::at(r))[0].raw()
+        self.matrix.row(RowId::at(r)).lead().raw()
     }
 
     /// Row r as a dense vector over the matrix's columns, mod p.
     pub(crate) fn dense(&self, r: usize) -> Vec<u64> {
         let mut v = vec![0u64; self.matrix.columns()];
         let coefs = &self.basis.element(self.matrix.rows[r].element).coefs;
-        for (&c, &a) in self.matrix.row(RowId::at(r)).iter().zip(coefs) {
+        for (&c, &a) in self.matrix.row(RowId::at(r)).to_wide().iter().zip(coefs) {
             v[c.index()] = u64::from(a);
         }
         v
@@ -332,15 +341,6 @@ pub(crate) fn alone(m: &Random) -> (Vec<u32>, Vec<u32>) {
         }
     }
     (zero, made)
-}
-
-/// The made rows, each as its columns and coefficients, by leading column.
-pub(crate) fn rows(reduction: &Reduction<Gf31>) -> Vec<(Vec<MonoId>, Vec<u32>)> {
-    let mut made: Vec<&Reduced<Gf31>> = reduction.made.iter().collect();
-    made.sort_by_key(|r| r.cols[0]);
-    made.iter()
-        .map(|r| (r.cols.clone(), r.coefs.clone()))
-        .collect()
 }
 
 /// Each row on its own: `reduction`'s zero rows and made rows, each in its
@@ -499,7 +499,7 @@ pub(crate) fn with_rest(p: u64, seed: u64, shape: &Shape, n: usize) -> Option<Ra
         return None;
     }
     let m = Random::with_rows(p, seed, shape, |table, basis, mut rows| {
-        let one = table.intern(&[0; 4]).unwrap();
+        let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
         let g = basis.min()[0];
         for _ in 0..=n - base {
             rows.push(RowSource {
@@ -525,7 +525,7 @@ fn the_edges_of_the_order() {
     for seed in 0..4u64 {
         // Every element of G_min given once: every row a pivot.
         let m = Random::with_rows(p, seed, &led(5, 0), |table, basis, _| {
-            let one = table.intern(&[0; 4]).unwrap();
+            let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
             let min = basis.min();
             min.iter()
                 .map(|&g| RowSource {
@@ -590,10 +590,14 @@ fn one_column(p: u64, seed: u64) -> Random {
     Random::with_rows(p, seed, &led(6, 0), |table, basis, _| {
         let min = basis.min();
         let (i, j) = (min[0], min[1 + seed as usize % (min.len() - 1)]);
-        let lcm = table.lcm(basis.lead(i), basis.lead(j)).unwrap();
+        let lcm = table
+            .lcm(basis.lead(i), basis.lead(j), &mut Budget::unbounded())
+            .unwrap();
         let mut half = |g: ElementId| RowSource {
             element: g,
-            multiplier: table.div(lcm, basis.lead(g)).unwrap(),
+            multiplier: table
+                .div(lcm, basis.lead(g), &mut Budget::unbounded())
+                .unwrap(),
         };
         let (a, b) = (half(i), half(j));
         vec![a, b, a, b, a, b]
@@ -639,7 +643,7 @@ fn a_record_learned_from_the_right_replays() {
 }
 
 /// `text` with its characteristic, its second line, set to `p`.
-fn over(text: &str, p: u64) -> String {
+pub(crate) fn over(text: &str, p: u64) -> String {
     let mut lines = text.splitn(3, '\n');
     let variables = lines.next().unwrap();
     lines.next().unwrap();

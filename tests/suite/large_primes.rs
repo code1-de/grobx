@@ -7,36 +7,18 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use grobx::trace::NoTrace;
-use grobx::{CheckerMode, Error, Params};
+use grobx::{CheckerMode, Error};
 use grobx_checker::Mode;
 
 use crate::common::{
-    assert_accepted, degree_bound, dense, params, points, random_square, random_system, run,
-    with_cofactors,
+    accept, assert_accepted, degree_bound, dense, params, plain, points, random_square,
+    random_system, run, with_cofactors,
 };
 use crate::large::{LARGE, LARGEST, LEAST, over};
 use crate::orders::finished_in;
 
-/// The parameters of a measured call with signatures off: with no
-/// cofactors the plain run reduces the rows in random combinations
-/// (gfp-unsolved.2), which every prime of `LARGE` takes.
-fn plain(seed: u64) -> Params {
-    let mut p = params(seed);
-    p.signatures = false;
-    p
-}
-
-/// Computes `text` with cofactors, has the checker accept it in the exact
-/// mode, compares it with `want` where given, and returns the basis.
-fn accept(name: &str, text: &str, want: Option<&str>) -> String {
-    let outcome = run(text, &with_cofactors(0x1a29e));
-    assert_accepted(name, text, &outcome, Mode::Exact);
-    let basis = outcome.basis.unwrap();
-    if let Some(want) = want {
-        assert_eq!(basis, want, "{name}");
-    }
-    basis
-}
+/// The seed of every call of `accept` here.
+const SEED: u64 = 0x1a29e;
 
 // --- the edge cases of OBJECTIVES.md ---
 
@@ -47,13 +29,20 @@ fn the_zero_ideal() {
             &format!("zero-{p}"),
             &format!("x,y\n{p}\n0\n"),
             Some("[]:\n"),
+            SEED,
         );
         accept(
             &format!("zeros-{p}"),
             &format!("x,y\n{p}\n0,\n0\n"),
             Some("[]:\n"),
+            SEED,
         );
-        accept(&format!("none-{p}"), &format!("x,y\n{p}\n"), Some("[]:\n"));
+        accept(
+            &format!("none-{p}"),
+            &format!("x,y\n{p}\n"),
+            Some("[]:\n"),
+            SEED,
+        );
     }
 }
 
@@ -64,16 +53,19 @@ fn the_unit_ideal() {
             &format!("unit-{p}"),
             &format!("x,y\n{p}\nx*y-1,\nx\n"),
             Some("[1]:\n"),
+            SEED,
         );
         accept(
             &format!("unit-x-{p}"),
             &format!("x\n{p}\nx,\nx+1\n"),
             Some("[1]:\n"),
+            SEED,
         );
         accept(
             &format!("unit-constant-{p}"),
             &format!("x,y\n{p}\n5\n"),
             Some("[1]:\n"),
+            SEED,
         );
     }
 }
@@ -85,9 +77,10 @@ fn input_already_a_groebner_basis() {
             &format!("gb-{p}"),
             &format!("x,y\n{p}\nx+y,\ny^2+1\n"),
             Some("[x+y,\ny^2+1]:\n"),
+            SEED,
         );
         let text = dense(3, 3, p, 1);
-        let basis = accept(&format!("cubic-3-{p}"), &text, None);
+        let basis = accept(&format!("cubic-3-{p}"), &text, None, SEED);
         let elements = basis
             .trim_end()
             .trim_start_matches('[')
@@ -96,6 +89,7 @@ fn input_already_a_groebner_basis() {
             &format!("gb-cubic-3-{p}"),
             &format!("x1,x2,x3\n{p}\n{elements}\n"),
             Some(&basis),
+            SEED,
         );
     }
 }
@@ -106,9 +100,17 @@ fn input_already_a_groebner_basis() {
 fn a_zero_generator() {
     for p in LARGE {
         let name = format!("zero-generator-{p}");
-        let basis = accept(&name, &format!("x,y,z\n{p}\nx*y-z,\n0,\ny^2-x\n"), None);
+        let basis = accept(
+            &name,
+            &format!("x,y,z\n{p}\nx*y-z,\n0,\ny^2-x\n"),
+            None,
+            SEED,
+        );
         let without = format!("x,y,z\n{p}\nx*y-z,\ny^2-x\n");
-        assert_eq!(basis, accept(&format!("{name}-without"), &without, None));
+        assert_eq!(
+            basis,
+            accept(&format!("{name}-without"), &without, None, SEED)
+        );
     }
 }
 
@@ -123,7 +125,7 @@ fn an_eliminable_variable() {
                 format!("x,y,z\n{p}\nx-2*y+3*z-5,\nx*y-z^2,\ny^3-x*z+1\n"),
             ),
         ] {
-            accept(&format!("eliminable-{case}-{p}"), &text, None);
+            accept(&format!("eliminable-{case}-{p}"), &text, None, SEED);
         }
     }
 }
@@ -170,7 +172,7 @@ fn coefficients_as_written() {
             five_sevenths = (5 * u128::from(inverse(7, p)) % q) as u64,
         );
         let name = format!("written-{p}");
-        let basis = accept(&name, &text, None);
+        let basis = accept(&name, &text, None, SEED);
         assert_eq!(basis, run(&reduced, &params(3)).basis.unwrap(), "{name}");
         // A denominator that is 0 mod p.
         for d in [q, 2 * q] {
@@ -237,7 +239,7 @@ fn random_systems_over(p: u64) {
     for seed in 0..4 {
         let text = random_system(p, 0x1a7e + seed);
         let name = format!("random-p{p}-{seed}");
-        let basis = accept(&name, &text, None);
+        let basis = accept(&name, &text, None, SEED);
         let without = run(&text, &params(seed)).basis.unwrap();
         assert_eq!(without, basis, "{name} without cofactors");
         let combined = run(&text, &plain(seed)).basis.unwrap();

@@ -6,20 +6,11 @@
 
 use std::time::Duration;
 
-use grobx::id::RowId;
-use grobx::trace::{RowSource, Trace};
 use grobx::{CheckerMode, Outcome, Params, Stop};
 
-use crate::common::{P, dense, params, random_square, random_system, run, with_cofactors};
-
-/// A trace that listens and keeps nothing: the run takes no test
-/// (signature-zero-time.10).
-struct Listening;
-
-impl Trace for Listening {
-    fn matrix(&mut self, _: &[RowSource]) {}
-    fn counted(&mut self, _: &[RowId]) {}
-}
+use crate::common::{
+    EDGE_BASES, Listening, P, dense, params, random_square, random_system, run, with_cofactors,
+};
 
 /// The outcome of `text` under `params` with a trace that listens.
 fn listened(text: &str, params: &Params) -> Outcome {
@@ -61,32 +52,12 @@ fn same_basis(name: &str, text: &str, seed: u64) -> String {
     on
 }
 
-/// The edge cases of `OBJECTIVES.md` on x, y, z, as text-time's test 4
-/// takes them: name, generators, and the basis over GF(65521) in grevlex.
-const EDGE: [(&str, &str, &str); 7] = [
-    ("the zero ideal", "0", "[]:\n"),
-    ("F = (0, 0)", "0,\n0", "[]:\n"),
-    ("no generator", "", "[]:\n"),
-    ("the unit ideal", "x*z-1,\nx", "[1]:\n"),
-    ("already a Gröbner basis", "x+z,\nz^2+1", "[x+z,\nz^2+1]:\n"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-        "[y^2+65520*x,\nx*y+65520*z,\nx^2+65520*y*z]:\n",
-    ),
-    (
-        "an eliminable variable",
-        "x-y^2-z,\ny*z-1,\nz^2-y",
-        "[x+65519*z,\nz^2+65520*y,\ny*z+65520,\ny^2+65520*z]:\n",
-    ),
-];
-
 /// Test 4: the edge cases over every prime of `PRIMES`, signatures on,
 /// and two texts that `Dense16` and `Dense32` read: each basis as with a
 /// trace that listens and as the plain run's, and over 65521 as written.
 #[test]
 fn the_edge_cases() {
-    for (case, generators, want) in EDGE {
+    for (case, generators, want) in EDGE_BASES {
         for p in PRIMES {
             let text = format!("x,y,z\n{p}\n{generators}\n");
             let basis = same_basis(&format!("{case} over {p}"), &text, 0x5e70);

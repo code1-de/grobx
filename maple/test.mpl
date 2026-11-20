@@ -80,7 +80,7 @@ systems := [
     "zero-dim" = [x^2 + y^2 + z^2 - 1, x - y, y - z^2],
     "positive-dim" = [x*y - z, x*z - y]
 ]:
-orders := [tdeg(x, y, z), plex(x, y, z), lexdeg([x], [y, z]), prod(tdeg(x, y), tdeg(z))]:
+orders := [tdeg(x, y, z), grlex(x, y, z), plex(x, y, z), lexdeg([x], [y, z]), prod(tdeg(x, y), tdeg(z))]:
 primes := [0, 65521, nextprime(2^63)]:
 for s in systems do
     for T in orders do
@@ -103,10 +103,10 @@ for p in [0, 65521] do
     Agree(sprintf("rational coefficients p=%d", p), [1/3*x^2 - 2/5*y, 7/2*x*y - 1], tdeg(x, y), p);
 end do:
 
-Refused("grlex", () -> Grobx:-Basis([x - y], grlex(x, y)), "takes the orders");
 Refused("wdeg", () -> Grobx:-Basis([x - y], wdeg([1, 2], [x, y])), "takes the orders");
 Refused("plex_min", () -> Grobx:-Basis([x - y], plex_min(x, y)), "takes the orders");
 Refused("prod with plex", () -> Grobx:-Basis([x - y], prod(plex(x), tdeg(y))), "takes the orders");
+Refused("prod with grlex", () -> Grobx:-Basis([x - y], prod(grlex(x), tdeg(y))), "takes the orders");
 Refused("no variable", () -> Grobx:-Basis([1], tdeg()), "at least one variable");
 Refused("empty block", () -> Grobx:-Basis([x - y], lexdeg([x, y], [])), "no empty block");
 Refused("repeated variable", () -> Grobx:-Basis([x - y], tdeg(x, y, x)), "each variable once");

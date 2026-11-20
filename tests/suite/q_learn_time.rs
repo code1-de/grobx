@@ -7,35 +7,11 @@ use std::time::Duration;
 
 use grobx::{CheckerMode, Stop};
 
-use crate::common::{dense, params_in, random_square, run, with_cofactors_in};
+use crate::common::{
+    EDGE_GENERATORS, FAR_DEADLINE, bounded_in, dense, params_in, random_square, run,
+    with_cofactors_in,
+};
 use crate::q::{accepted_q, assert_canonical_q};
-
-/// The deadline of the calls here that set one, far past what each takes:
-/// a fault that keeps the lift from completing stops the call there and
-/// fails the test. A fault that makes it learn afresh ends it in
-/// `Error::Drops` before.
-const DEADLINE: Duration = Duration::from_secs(60);
-
-/// `params_in` with the deadline.
-fn bounded_in(order: &str, seed: u64) -> grobx::Params {
-    let mut p = params_in(order, seed);
-    p.deadline = Some(DEADLINE);
-    p
-}
-
-/// The edge cases of `OBJECTIVES.md` on x, y, z over Q.
-const EDGE: [(&str, &str); 7] = [
-    ("the zero ideal", "0"),
-    ("F = (0, 0)", "0,\n0"),
-    ("no generator", ""),
-    ("the unit ideal", "x*z-1,\nx"),
-    ("already a Gröbner basis", "x+z,\nz^2+1"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-    ),
-    ("an eliminable variable", "x-y^2-z,\ny*z-1,\nz^2-y"),
-];
 
 /// Test 8, q-learn-time.10: the edge cases over Q in grevlex, lex, and
 /// `block:1`: each basis canonical and accepted by the checker in the
@@ -43,7 +19,7 @@ const EDGE: [(&str, &str); 7] = [
 /// same basis.
 #[test]
 fn the_edge_cases() {
-    for (case, generators) in EDGE {
+    for (case, generators) in EDGE_GENERATORS {
         let text = format!("x,y,z\n0\n{generators}\n");
         for order in ["grevlex", "lex", "block:1"] {
             let checked = accepted_q(case, &text, order);
@@ -69,7 +45,7 @@ fn orders_and_the_checker() {
     ] {
         let mut checked = with_cofactors_in(order, 3);
         checked.checker = Some(CheckerMode::Exact);
-        checked.deadline = Some(DEADLINE);
+        checked.deadline = Some(FAR_DEADLINE);
         let outcome = run(&text, &checked);
         let basis = outcome.basis.as_deref().unwrap();
         assert_canonical_q(name, &text, basis, order);

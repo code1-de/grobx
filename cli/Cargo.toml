@@ -1,12 +1,13 @@
 [package]
 name = "grobx-cli"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# cli.1 design -- a library reads the arguments and the outcome, and the binary reads the files, calls, writes, and takes SIGINT, not the binary alone (not measured)
-# test-build-time.5 design -- the lib, which holds no unit test, is compiled as no test binary, not as a test binary that lists no test (log 0019-1)
+# cli.1 practice-checked: library and thin binary -- a library reads the arguments and the outcome, and the binary reads the files, calls, writes, and takes SIGINT, not the binary alone (not measured)
+# test-build-time.5 design-checked -- the lib, which holds no unit test, is compiled as no test binary, not as a test binary that lists no test (log 0019-1)
 [lib]
 name = "grobx_cli"
 test = false
@@ -21,7 +22,14 @@ test = false
 doc = false
 
 [dependencies]
-grobx = { path = ".." }
+grobx = { path = "..", default-features = false }
+
+# The core's features, passed on: a build without one leaves it out of the
+# core (`../Cargo.toml`, `[features]`).
+[features]
+default = ["cofactors", "checker"]
+cofactors = ["grobx/cofactors"]
+checker = ["cofactors", "grobx/checker"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

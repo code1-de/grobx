@@ -19,8 +19,9 @@ fn after(
 ) -> bool {
     h.after_round(gap, gap, made, zeros, || {
         calls.set(calls.get() + 1);
-        n
+        Ok(n)
     })
+    .unwrap()
 }
 
 /// Test 1, handover-time.1 to .4: the gap round hands over where it

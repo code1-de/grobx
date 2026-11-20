@@ -30,8 +30,8 @@ mod rational;
 
 use std::num::{NonZeroU32, NonZeroUsize};
 
-// checker-gfp.2 design -- the checker takes the instance, the basis, and the cofactors as text (not measured)
-// checker-orders.1 design -- the order is a parameter of check, check_polled, and check_cofactors, which every call states, not functions of their own beside three that keep grevlex (not measured)
+// checker-gfp.2 design-checked -- the checker takes the instance, the basis, and the cofactors as text (not measured)
+// checker-orders.1 design-checked -- the order is a parameter of check, check_polled, and check_cofactors, which every call states, not functions of their own beside three that keep grevlex (not measured)
 /// Rules on the basis `basis` of the instance `instance`, with the cofactor
 /// matrix `cofactors`: row i holds, for every generator j of the instance,
 /// the cofactor of generator j in element i.
@@ -88,8 +88,8 @@ pub fn check(
     Ok(verdict.expect("a poll that never stops does not stop the check"))
 }
 
-// f4-gfp.26 practice: cooperative cancellation -- the checker calls a poll between its steps and stops where it answers true, not run on a thread of its own that is abandoned at the deadline
-// checker-stop-latency.1 design -- the check counts its work in units, a unit about the work of one term, and calls its poll once per 4096 units beside its poll per element, generator, row, pair, and point, not per 4096 reduction steps whatever a step's work (log 0059-1)
+// f4-gfp.26 practice-checked: cooperative cancellation -- the checker calls a poll between its steps and stops where it answers true, not run on a thread of its own that is abandoned at the deadline
+// checker-stop-latency.1 design-checked -- the check counts its work in units, a unit about the work of one term, and calls its poll once per 4096 units beside its poll per element, generator, row, pair, and point, not per 4096 reduction steps whatever a step's work (log 0059-1)
 /// As `check`, and `poll` is called as the check's work goes: at least once per
 /// element of G in the reduced verdict, per generator, per row of the
 /// cofactor matrix, per pair of nonzero elements i < j, per point of the cheap mode,
@@ -156,7 +156,7 @@ pub fn check_cofactors(
     check::check_cofactors(instance, basis, cofactors, order, mode, None)
 }
 
-// checker-points-abort.6 design -- the test code reaches a batch size and the drawn moduli through two public functions hidden from the documentation, not through unit tests inside the crate on hand-built texts alone (not measured)
+// checker-points-abort.6 design-checked -- the test code reaches a batch size and the drawn moduli through two public functions hidden from the documentation, not through unit tests inside the crate on hand-built texts alone (not measured)
 /// As `check_cofactors` in the cheap mode at `points` points drawn from
 /// `seed`, with `per` points to a batch. For the test code.
 #[doc(hidden)]
@@ -173,7 +173,7 @@ pub fn check_cofactors_batched(
     check::check_cofactors(instance, basis, cofactors, order, mode, Some(per))
 }
 
-// checker-points-abort.6 design -- the test code reaches a batch size and the drawn moduli through two public functions hidden from the documentation, not through unit tests inside the crate on hand-built texts alone (not measured)
+// checker-points-abort.6 design-checked -- the test code reaches a batch size and the drawn moduli through two public functions hidden from the documentation, not through unit tests inside the crate on hand-built texts alone (not measured)
 /// The modulus of each of the `points` points the cheap mode draws from
 /// `seed` for the instance and the basis, in order. For the test code.
 #[doc(hidden)]
@@ -187,7 +187,7 @@ pub fn cheap_moduli(
     check::cheap_moduli(instance, basis, order, points.get(), seed)
 }
 
-// instance-grammar-agreement.7 design -- the test code compares the generators through a public function hidden from the documentation, the counterpart of `grobx::text::generators`, not the checker's verdict on the engine's result alone or a comparison inside the checker with a list the engine wrote (not measured)
+// instance-grammar-agreement.7 design-checked -- the test code compares the generators through a public function hidden from the documentation, the counterpart of `grobx::text::generators`, not the checker's verdict on the engine's result alone or a comparison inside the checker with a list the engine wrote (not measured)
 /// The instance's nonzero generators over GF(p), each monic with its terms
 /// in decreasing grevlex order, in the instance's order, as a bracketed
 /// list in the canonical basis text's spelling. For the test code: the
@@ -206,7 +206,7 @@ pub fn generators(instance: &str) -> Result<String, Error> {
     Ok(gfp::text(field, &header.ring, &polys))
 }
 
-// checker-orders.2 cited: robbiano-1985 Theorems 4 and 5, via bachmann-1998 §2.1 -- every term ordering is given by orthogonal u_1, …, u_s ∈ R^n, s ≤ n: v > w ⇔ (v·u_1, …, v·u_s) >_lex (w·u_1, …, w·u_s)
+// checker-orders.2 cited-checked: robbiano-1985 Theorems 4 and 5, via bachmann-1998 §2.1 -- every term ordering is given by orthogonal u_1, …, u_s ∈ R^n, s ≤ n: v > w ⇔ (v·u_1, …, v·u_s) >_lex (w·u_1, …, w·u_s)
 /// A monomial order on the instance's variables, numbered in the order the
 /// instance lists them, the first numbered 0.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -232,8 +232,8 @@ pub enum Order {
 pub enum Mode {
     /// The row of every nonzero gᵢ is expanded: Σⱼ Cᵢⱼ·fⱼ − gᵢ is zero.
     Exact,
-    // checker-cheap.1 design -- the cheap mode is a variant of Mode that carries k and the seed, not a seed parameter of check beside the mode (not measured)
-    // checker-cheap.2 design -- k is a NonZeroU32, not a u32 with an error for k = 0 (not measured)
+    // checker-cheap.1 design-checked -- the cheap mode is a variant of Mode that carries k and the seed, not a seed parameter of check beside the mode (not measured)
+    // checker-cheap.2 design-checked -- k is a NonZeroU32, not a u32 with an error for k = 0 (not measured)
     /// The row of every nonzero gᵢ is checked at `points` random points
     /// (`OBJECTIVES.md`, _Checker_), and every random choice is drawn from `seed`. The
     /// generators, the S-pairs, and the reduced verdict are checked as in
@@ -243,7 +243,9 @@ pub enum Mode {
     /// once per batch, at the batch's points. A batch holds as many points
     /// as fit 16 MiB, and at least one. A point counts with its
     /// coordinates, its power table, the values of F and G at it, a row's
-    /// values at it, and a coefficient's residue. The
+    /// values at it, and a coefficient's residue. A row's values are held
+    /// for one entry per generator at most, and the entries past these,
+    /// which make the row `Shape`, are read at no point. The
     /// result is that of one batch of all the points.
     ///
     /// A true row passes at every point. A row's degree bound d is the

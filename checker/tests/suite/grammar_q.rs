@@ -1,22 +1,9 @@
 //! The input grammar over Q (checker-gfp.3): spellings that denote the same
 //! result get the same verdict, and malformed text is an error.
 
-use grobx_checker::{Mode, Order, Verdict, check};
+use grobx_checker::Verdict;
 
-const INSTANCE: &str = "x,y\n0\nx+y,\ny^2+1\n";
-const BASIS: &str = "[x+y,\ny^2+1]:\n";
-const COFACTORS: &str = "[[1,0],\n[0,1]]:\n";
-
-fn holds() -> Verdict {
-    Verdict {
-        groebner: Ok(()),
-        reduced: Ok(()),
-    }
-}
-
-fn ruled(instance: &str, basis: &str, cofactors: &str) -> Result<Verdict, String> {
-    check(instance, basis, cofactors, &Order::Grevlex, Mode::Exact).map_err(|e| format!("{e:?}"))
-}
+use crate::common::{BASIS, COFACTORS, INSTANCE_Q, holds, ruled};
 
 /// The results that do not hold, each with what the checker said.
 fn not_holding<'a>(
@@ -45,7 +32,7 @@ fn accepted<'a>(
 
 #[test]
 fn canonical() {
-    assert_eq!(ruled(INSTANCE, BASIS, COFACTORS), Ok(holds()));
+    assert_eq!(ruled(INSTANCE_Q, BASIS, COFACTORS), Ok(holds()));
 }
 
 #[test]
@@ -64,7 +51,7 @@ fn basis_spellings() {
         "[y+x,\n1+y^2]:",
         "[ x + y ,\n\n y^2 + 1 ] :",
     ];
-    let failures = not_holding(&spellings, |b| ruled(INSTANCE, b, COFACTORS));
+    let failures = not_holding(&spellings, |b| ruled(INSTANCE_Q, b, COFACTORS));
     assert!(
         failures.is_empty(),
         "{failures}",
@@ -82,7 +69,7 @@ fn cofactor_spellings() {
         "[[1/2+1/2,0],\n[0,1]]:",
         "[[-1/2+3/2,0],[0,1]]:",
     ];
-    let failures = not_holding(&spellings, |c| ruled(INSTANCE, BASIS, c));
+    let failures = not_holding(&spellings, |c| ruled(INSTANCE_Q, BASIS, c));
     assert!(
         failures.is_empty(),
         "{failures}",
@@ -97,6 +84,11 @@ fn instance_spellings() {
         "x,y\n0\nx+y,\ny^2+2-1\n",
         "x,y\n0\n18446744073709551617*x-18446744073709551616*x+y,\ny^2+1\n",
         "x,y\n 0 \n\nx+y,\n\ny^2+1\n\n",
+        "x,y\n0\n2*x/2+y,\ny^2+1\n",
+        "x,y\n0\nx+6*y/2/3,\ny^2+1\n",
+        "x,y\n0\nx+y,\n3*y^2/3+1\n",
+        "x,y\n0\nx + 2 * y / 2,\ny^2/1+1\n",
+        "x,y\n0\n4/2*x/2+y,\ny*2/2*y+1\n",
     ];
     let failures = not_holding(&spellings, |i| ruled(i, BASIS, COFACTORS));
     assert!(
@@ -118,11 +110,7 @@ fn scaled_generators() {
         Ok(holds())
     );
     assert_eq!(
-        ruled(
-            "x,y\n0\n1/2*x+1/2*y,\ny^2+1\n",
-            BASIS,
-            "[[2,0],\n[0,1]]:\n"
-        ),
+        ruled("x,y\n0\n1/2*x+1/2*y,\ny^2+1\n", BASIS, "[[2,0],\n[0,1]]:\n"),
         Ok(holds())
     );
 }
@@ -140,7 +128,7 @@ fn malformed_basis() {
         "[x+y,\ny^2+1e3]:",
         "[x+y,\ny^2+/2]:",
     ];
-    let read = accepted(&bad, |b| ruled(INSTANCE, b, COFACTORS));
+    let read = accepted(&bad, |b| ruled(INSTANCE_Q, b, COFACTORS));
     assert!(
         read.is_empty(),
         "read as results:\n{read}",
@@ -155,7 +143,7 @@ fn malformed_cofactors() {
         "[[1,0],\n[0,x/1]]:",
         "[[1,0],\n[0,1/0*x]]:",
     ];
-    let read = accepted(&bad, |c| ruled(INSTANCE, BASIS, c));
+    let read = accepted(&bad, |c| ruled(INSTANCE_Q, BASIS, c));
     assert!(
         read.is_empty(),
         "read as results:\n{read}",
@@ -169,7 +157,10 @@ fn malformed_instance() {
         "x,y\n0\nx+1/0*y,\ny^2+1\n",
         "x,y\n-0\nx+y,\ny^2+1\n",
         "x,y\n0/1\nx+y,\ny^2+1\n",
-        "x,y\n0\nx+y/2,\ny^2+1\n",
+        "x,y\n0\nx+y/x,\ny^2+1\n",
+        "x,y\n0\nx+y/,\ny^2+1\n",
+        "x,y\n0\nx+y/0,\ny^2+1\n",
+        "x,y\n0\nx+y/-2,\ny^2+1\n",
     ];
     let read = accepted(&bad, |i| ruled(i, BASIS, COFACTORS));
     assert!(

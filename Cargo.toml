@@ -1,7 +1,9 @@
 [package]
 name = "grobx"
-version = "0.73.3"
-description = "Reduced Gröbner bases of polynomial ideals over GF(p) and over the rationals"
+version.workspace = true
+description.workspace = true
+keywords = ["groebner", "groebner-basis", "polynomial", "computer-algebra", "gf2"]
+categories = ["mathematics", "science", "algorithms"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,13 +11,13 @@ repository.workspace = true
 homepage.workspace = true
 exclude = ["maple/"]
 
-# f4-gfp.38 design -- the hash multipliers come from rand_xoshiro's Xoshiro256PlusPlus seeded by seed_from_u64, not from a generator written for the engine (not measured)
+# f4-gfp.38 design-checked -- the hash multipliers come from rand_xoshiro's Xoshiro256PlusPlus seeded by seed_from_u64, not from a generator written for the engine (not measured)
 [dependencies]
-grobx-checker = { path = "checker", version = "0.73.3" }
+grobx-checker = { workspace = true, optional = true }
 libc = "0.2"
-# q-lift.1 design -- the lift's integers past u128 come from a crate, not from arithmetic of the engine's own on limbs (not measured)
-# q-lift.2 design -- the crate is num-bigint, the checker's, under MIT or Apache-2.0, not malachite under LGPL-3.0-only (not measured)
-# q-lift.3 design -- the crate is num-bigint, not rug, whose GMP is built from C source (not measured)
+# q-lift.1 design-checked -- the lift's integers past u128 come from a crate, not from arithmetic of the engine's own on limbs (not measured)
+# q-lift.2 design-checked -- the crate is num-bigint, the checker's, under MIT or Apache-2.0, not malachite under LGPL-3.0-only (not measured)
+# q-lift.3 design-checked -- the crate is num-bigint, not rug, whose GMP is built from C source (not measured)
 num-bigint = "0.5"
 num-integer = "0.1"
 num-traits = "0.2"
@@ -23,12 +25,7 @@ rand_core = "0.10"
 rand_xoshiro = "0.8"
 sha2 = "0.11"
 
-# small-block-time.5 design -- mimalloc 0.1.52 with its default features, mimalloc 3, not the features v2, local_dynamic_tls, or no_thp (log 0053-1)
-# port.26 design -- mimalloc serves the small blocks on Linux alone, where small-block-time was measured; elsewhere every request is the system's, not mimalloc with its arena reservation turned off, nor a hook before main that sets it (not measured)
-[target.'cfg(target_os = "linux")'.dependencies]
-mimalloc = "0.1.52"
-
-# port.1 design -- the calls to Windows come from windows-sys, not from the windows crate's wrappers or from declarations of the engine's own (not measured)
+# port.1 design-checked -- the calls to Windows come from windows-sys, not from the windows crate's wrappers or from declarations of the engine's own (not measured)
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
@@ -38,20 +35,46 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# The tests judge every build's results with the checker, the feature
+# checker off included.
+grobx-checker = { workspace = true }
 serde_json = "1"
+
+# A build without one of them refuses a call that asks for it with
+# Error::NotBuilt. The cofactor tracking is a monomorphization of every run
+# of its own, the bulk of what leaving it out saves. The checker rules on
+# the cofactors, over Q on the lifted ones, so it takes the tracking along.
+[features]
+default = ["cofactors", "checker"]
+cofactors = []
+checker = ["cofactors", "dep:grobx-checker"]
+
+# The suite judges its calls by the checker, on their cofactors and by the
+# engine's verdict, so a build without either feature leaves it out.
+[[test]]
+name = "suite"
+path = "tests/suite/main.rs"
+required-features = ["cofactors", "checker"]
 
 [lints]
 workspace = true
 
 [workspace]
-members = ["checker", "python", "cli", "c"]
+members = ["checker", "python", "cli", "c", "wasm"]
 
 [workspace.package]
+# The engine's, shared by grobx-wasm; step 9 bumps it here (`OBJECTIVES.md`,
+# _Harness_, `[version]`). The checker and the Python binding keep their own.
+version = "0.155.1"
+description ="Fast reduced Gröbner (Groebner) bases by F4 over GF(2), GF(p), and the rationals"
 edition = "2024"
 rust-version = "1.97"
 license = "GPL-3.0-only"
 repository = "https://github.com/code1-de/grobx"
 homepage = "https://grobx.com"
+
+[workspace.dependencies]
+grobx-checker = { path = "checker", version = "0.155.1" }
 
 # Every package of the workspace takes these by `[lints] workspace = true`.
 [workspace.lints.clippy]
@@ -60,7 +83,7 @@ pedantic = { level = "warn", priority = -1 }
 # question no measurement has answered attribute by attribute.
 inline_always = "allow"
 # Rules of CLAUDE.md, _Rust_, that clippy checks.
-# rule-breaches.14 design -- the lint check names a suppression without a reason, not a scan in the test code alone (not measured)
+# rule-breaches.14 design-checked -- the lint check names a suppression without a reason, not a scan in the test code alone (not measured)
 allow_attributes_without_reason = "warn"
 expect_used = "warn"
 let_underscore_must_use = "warn"
@@ -86,3 +109,9 @@ debug-assertions = true
 lto = false
 opt-level = 1
 overflow-checks = true
+
+# The browser's module, grobx-wasm: stripped of its symbols, which a page
+# downloads for nothing. Fat LTO made it no smaller once compressed.
+[profile.wasm]
+inherits = "release"
+strip = true

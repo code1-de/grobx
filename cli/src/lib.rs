@@ -21,7 +21,7 @@ pub const STOPPED: u8 = 1;
 /// An error: the watch on SIGINT, the arguments, the instance, an
 /// output file or standard output, or a call the crate refuses.
 pub const ERROR: u8 = 2;
-// cli.14 design -- a result the checker rejects exits 3, with its basis and cofactors written, not 0 with the verdict on standard error alone (not measured)
+// cli.14 design-checked -- a result the checker rejects exits 3, with its basis and cofactors written, not 0 with the verdict on standard error alone (not measured)
 /// The checker rejected the result, which was written all the same.
 pub const REJECTED: u8 = 3;
 
@@ -45,13 +45,14 @@ separated by commas:
   z^3 - x
 
 Switches:
-  --order NAME      grevlex, lex, or block:k1,...,km; default grevlex
-  --threads N       how many threads the call may use, 0 for all; default 1
+  --order NAME      grevlex, deglex, lex, or block:k1,...,km; default grevlex
+  --threads N      how many threads the call may use, 0 for all; default 1
   --seed N          the seed of every random choice, 0 to 2^64-1; drawn at
                     random and written to standard error where absent
   --deadline TIME   a time limit on the call: milliseconds, or a number with
                     s, m, or h for seconds, minutes, or hours
-  --memory BYTES    a ceiling on the process's resident set, in bytes
+  --memory BYTES    a ceiling on the process's resident set: bytes, or a number
+                    with k, m, g, or t (either case) for KiB, MiB, GiB, or TiB
   --checker MODE    the checker rules on the result: exact, or a number of
                     random points for its cheap mode
   --cofactors FILE  writes the cofactor text to FILE; cofactors will make
@@ -62,7 +63,7 @@ Switches:
                     call writes one too
   --output FILE     writes the basis text to FILE, not to standard output
   -h, --help        prints this help and exits
-  --version         prints the version and exits
+  -V, --version     prints the version and exits
 
 A switch takes its value as --name VALUE or --name=VALUE. -- ends the
 switches. Ctrl-C ends grobx while it reads the instance. After that,
@@ -79,7 +80,7 @@ fn title() -> String {
     format!("grobx {version}", version = grobx::VERSION)
 }
 
-// cli.8 practice: GNU --version convention -- --version prints grobx, the version, and a line feed, not the version alone
+// cli.8 practice-checked: GNU --version convention -- --version prints grobx, the version, and a line feed, not the version alone
 /// What `--version` prints.
 #[must_use]
 pub fn version() -> String {
@@ -134,9 +135,9 @@ pub enum Command {
 pub struct Usage(pub String);
 
 /// The switches that take a value.
-// cli.11 design -- field and prime are the instance text's, and no switch sets them, not a switch --prime that replaces its second line (not measured)
-// cli.12 design -- no switch turns Params::signatures off, not a switch for it (not measured)
-// input-redundancy-time.10 design -- no keyword, switch, or field sets Params::echelon: the call runs with it on, as with signatures, not a keyword, a switch, and a field for it (not measured)
+// cli.11 design-checked -- field and prime are the instance text's, and no switch sets them, not a switch --prime that replaces its second line (not measured)
+// cli.12 design-checked -- no switch turns Params::signatures off, not a switch for it (not measured)
+// input-redundancy-time.10 design-checked -- no keyword, switch, or field sets Params::echelon: the call runs with it on, as with signatures, not a keyword, a switch, and a field for it (not measured)
 #[derive(Clone, Copy)]
 enum Switch {
     Order,
@@ -150,7 +151,7 @@ enum Switch {
     Output,
 }
 
-// cli.4 design -- every switch is long and -h is the one short switch, not short switches as msolve's -f, -o, and -t (not measured)
+// cli.4 design-checked -- every switch is long and -h is the one short switch, not short switches as msolve's -f, -o, and -t (not measured)
 const SWITCHES: [(&str, Switch); 9] = [
     ("--order", Switch::Order),
     ("--threads", Switch::Threads),
@@ -159,7 +160,7 @@ const SWITCHES: [(&str, Switch); 9] = [
     ("--memory", Switch::Memory),
     ("--checker", Switch::Checker),
     ("--cofactors", Switch::Cofactors),
-    // call-report.18 design -- the CLI's --report FILE writes the report text to FILE, a stopped call's too, not the report on standard error, which carries the checker's verdict, nor on standard output, which carries the basis (not measured)
+    // call-report.18 design-checked -- the CLI's --report FILE writes the report text to FILE, a stopped call's too, not the report on standard error, which carries the checker's verdict, nor on standard output, which carries the basis (not measured)
     ("--report", Switch::Report),
     ("--output", Switch::Output),
 ];
@@ -198,14 +199,14 @@ impl Values {
     fn set(&mut self, switch: Switch, name: &str, value: OsString) -> Result<(), Usage> {
         match switch {
             Switch::Order => self.order = Some(order(name, &text(name, value)?)?),
-            // f4-gfp.31 design -- threads = 0 means all the machine has, not None (not measured)
+            // f4-gfp.31 design-checked -- threads = 0 means all the machine has, not None (not measured)
             Switch::Threads => {
                 let n = number(name, &text(name, value)?, usize::MAX)?;
                 self.threads = Some(NonZeroUsize::new(n).map_or(Threads::All, Threads::Count));
             }
             Switch::Seed => self.seed = Some(number(name, &text(name, value)?, u64::MAX)?),
             Switch::Deadline => self.deadline = Some(deadline(name, &text(name, value)?)?),
-            Switch::Memory => self.memory = Some(number(name, &text(name, value)?, u64::MAX)?),
+            Switch::Memory => self.memory = Some(memory(name, &text(name, value)?)?),
             Switch::Checker => self.checker = Some(checker(name, &text(name, value)?)?),
             Switch::Cofactors => self.cofactors = Some(value.into()),
             Switch::Report => self.report = Some(value.into()),
@@ -223,7 +224,7 @@ fn text(name: &str, value: OsString) -> Result<String, Usage> {
         .map_err(|_| Usage(format!("{name}: the value is not UTF-8")))
 }
 
-// cli.13 design -- a number is decimal digits alone, with no sign, no space, and no suffix but a deadline's s, m, or h, in the units of grobx.groebner's keywords where it has none, not suffixes K, M, and G and a deadline in seconds (not measured)
+// cli.13 design-checked -- a number is decimal digits alone, with no sign, no space, and no suffix but a deadline's s, m, or h and a memory ceiling's k, m, g, or t in either case, in the units of grobx.groebner's keywords where it has none, not a deadline in seconds (not measured)
 /// The number `value` of the switch `name`: one or more ASCII digits that
 /// lie in `T`, whose largest value is `max`.
 fn number<T: FromStr + Display + Copy>(name: &str, value: &str, max: T) -> Result<T, Usage> {
@@ -242,6 +243,41 @@ fn digits<T: FromStr>(value: &str) -> Option<T> {
     value.parse().ok()
 }
 
+/// `value` as decimal digits, or as digits followed by a suffix of `units`
+/// and multiplied by that suffix's multiple, where the result lies in `u64`.
+fn scaled(value: &str, units: &[(char, u64)]) -> Option<u64> {
+    let (count, unit) = units
+        .iter()
+        .find_map(|&(suffix, unit)| value.strip_suffix(suffix).map(|count| (count, unit)))
+        .unwrap_or((value, 1));
+    digits::<u64>(count).and_then(|n| n.checked_mul(unit))
+}
+
+/// The suffixes of `--memory`, each with its bytes.
+const MEMORY_UNITS: [(char, u64); 8] = [
+    ('k', 1 << 10),
+    ('K', 1 << 10),
+    ('m', 1 << 20),
+    ('M', 1 << 20),
+    ('g', 1 << 30),
+    ('G', 1 << 30),
+    ('t', 1 << 40),
+    ('T', 1 << 40),
+];
+
+/// The value of `--memory`: decimal digits, in bytes, or followed by `k`,
+/// `m`, `g`, or `t`, in either case, for KiB, MiB, GiB, or TiB, at most
+/// 2^64 − 1 bytes in all.
+fn memory(name: &str, value: &str) -> Result<u64, Usage> {
+    scaled(value, &MEMORY_UNITS).ok_or_else(|| {
+        Usage(format!(
+            "{name} {value:?}: a decimal number of bytes, or one followed by k, m, g, or t \
+             in either case, up to {max} bytes",
+            max = u64::MAX
+        ))
+    })
+}
+
 /// The suffixes of `--deadline`, each with its milliseconds.
 const DEADLINE_UNITS: [(char, u64); 3] = [('s', 1_000), ('m', 60_000), ('h', 3_600_000)];
 
@@ -249,12 +285,7 @@ const DEADLINE_UNITS: [(char, u64); 3] = [('s', 1_000), ('m', 60_000), ('h', 3_6
 /// by `s`, `m`, or `h` for seconds, minutes, or hours, at most 2^64 − 1
 /// milliseconds in all.
 fn deadline(name: &str, value: &str) -> Result<Duration, Usage> {
-    let (count, unit) = DEADLINE_UNITS
-        .iter()
-        .find_map(|&(suffix, ms)| value.strip_suffix(suffix).map(|count| (count, ms)))
-        .unwrap_or((value, 1));
-    digits::<u64>(count)
-        .and_then(|n| n.checked_mul(unit))
+    scaled(value, &DEADLINE_UNITS)
         .map(Duration::from_millis)
         .ok_or_else(|| {
             Usage(format!(
@@ -280,17 +311,17 @@ fn checker(name: &str, value: &str) -> Result<CheckerMode, Usage> {
     }
 }
 
-/// The value of `--order`: `grevlex`, `lex`, or `block:k1,…,km`. Whether a
-/// block order's sizes fit the variables, the call finds.
+/// The value of `--order`: `grevlex`, `deglex`, `lex`, or `block:k1,…,km`.
+/// Whether a block order's sizes fit the variables, the call finds.
 fn order(name: &str, value: &str) -> Result<MonomialOrder, Usage> {
     value.parse().map_err(|_| {
         Usage(format!(
-            "{name} {value:?}: grevlex, lex, or block:k1,...,km"
+            "{name} {value:?}: grevlex, deglex, lex, or block:k1,...,km"
         ))
     })
 }
 
-// cli.2 design -- the switches are read by code of the CLI's own, not by clap (not measured)
+// cli.2 design-checked -- the switches are read by code of the CLI's own, not by clap (not measured)
 /// The command the arguments after the program's name ask for, read in
 /// order.
 ///
@@ -318,12 +349,12 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Usage
             operand = Some(arg);
             continue;
         }
-        // cli.5 practice: POSIX end-of-options marker -- -- ends the switches and every argument after it is an operand, not a path that begins with - written ./-x
+        // cli.5 practice-checked: POSIX end-of-options marker -- -- ends the switches and every argument after it is an operand, not a path that begins with - written ./-x
         if bytes == b"--" {
             ended = true;
             continue;
         }
-        // cli.3 practice: GNU long options -- a switch takes its value as --name value or --name=value, not in one form alone
+        // cli.3 practice-checked: GNU long options -- a switch takes its value as --name value or --name=value, not in one form alone
         let (name, inline) = match bytes.iter().position(|&b| b == b'=') {
             Some(at) if bytes.starts_with(b"--") => {
                 // SAFETY: the bytes start right after `=`, and bytes of
@@ -334,10 +365,10 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Usage
             }
             Some(_) | None => (bytes, None),
         };
-        // cli.7 design -- --help and --version act where the reading reaches them, and an error before them is returned, not either one anywhere on the line before every error (not measured)
+        // cli.7 design-checked -- --help and --version act where the reading reaches them, and an error before them is returned, not either one anywhere on the line before every error (not measured)
         let command = match name {
             b"--help" | b"-h" => Some(Command::Help),
-            b"--version" => Some(Command::Version),
+            b"--version" | b"-V" => Some(Command::Version),
             _ => None,
         };
         if let Some(command) = command {
@@ -353,7 +384,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Usage
                 arg = arg.to_string_lossy()
             )));
         };
-        // cli.6 design -- a switch given twice is a usage error, not the last one counting (not measured)
+        // cli.6 design-checked -- a switch given twice is a usage error, not the last one counting (not measured)
         if values.has(switch) {
             return Err(Usage(format!("{name} given twice")));
         }
@@ -369,9 +400,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Usage
         Some(seed) => (seed, false),
         None => (random_seed(), true),
     };
-    // cli.9 design -- --order defaults to grevlex, as grobx.groebner's keyword does, not a required switch (not measured)
+    // cli.9 design-checked -- --order defaults to grevlex, as grobx.groebner's keyword does, not a required switch (not measured)
     let order = values.order.unwrap_or(MonomialOrder::Grevlex);
-    // cli.10 design -- --threads defaults to 1, not 0, all the machine has (not measured)
+    // cli.10 design-checked -- --threads defaults to 1, not 0, all the machine has (not measured)
     let threads = values.threads.unwrap_or(Threads::Count(NonZeroUsize::MIN));
     let mut params = Params::new(order, threads, seed);
     params.deadline = values.deadline;

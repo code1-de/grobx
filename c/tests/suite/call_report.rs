@@ -64,10 +64,7 @@ fn the_report_through_c() {
             Threads::Count(std::num::NonZeroUsize::MIN),
             11,
         );
-        let basis = grobx::groebner(&text, &params)
-            .unwrap()
-            .basis
-            .unwrap();
+        let basis = grobx::groebner(&text, &params).unwrap().basis.unwrap();
         assert_eq!(
             lines["on"],
             format!("{ok} 0 0 {bytes}", bytes = basis.len()),

@@ -6,9 +6,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 
 use grobx::{CheckerMode, Error, MonomialOrder, Params, Threads};
 
-use crate::common::{P, basis, dense, params, random_system, run};
-
-const TINY: &str = "x,y\n65521\nx^2+y,\nx*y+1\n";
+use crate::common::{P, TINY, basis, dense, params, random_system, run};
 
 #[test]
 fn params_new_leaves_every_option_absent() {
@@ -25,7 +23,7 @@ fn params_new_leaves_every_option_absent() {
 
 #[test]
 fn unknown_orders_are_refused() {
-    for name in ["deglex", "degrevlex", "drl", "", "GREVLEX"] {
+    for name in ["degneglex", "degrevlex", "drl", "", "GREVLEX"] {
         assert!(
             matches!(name.parse::<MonomialOrder>(), Err(Error::Order { .. })),
             "{name:?}"

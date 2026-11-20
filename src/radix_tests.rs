@@ -10,40 +10,13 @@ use num_traits::{One, ToPrimitive, Zero};
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::field::Gf31;
 use crate::mixed_radix_tests::converted;
 use crate::rational::{Crt, Radix, Rational, residue};
+use crate::shared_tests::{integer, limbs, prime};
 
 /// The primes residues are taken modulo: a small one, GF(65521)'s, and
 /// three near 2^30 and 2^31.
 const PRIMES: [u64; 5] = [101, 65521, 1_073_741_827, 2_147_483_629, 2_147_483_647];
-
-/// A random prime of [2^30, 2^31) not among `used`, by `Gf31::new`'s test.
-fn prime(rng: &mut Xoshiro256PlusPlus, used: &[u64]) -> u64 {
-    loop {
-        let mut c = (1u64 << 30) + (rng.next_u64() >> 34);
-        while c < 1 << 31 && Gf31::new(c).is_none() {
-            c += 1;
-        }
-        if c < 1 << 31 && !used.contains(&c) {
-            return c;
-        }
-    }
-}
-
-/// A random integer below 2^bits.
-fn integer(rng: &mut Xoshiro256PlusPlus, bits: u64) -> BigUint {
-    let mut x = BigUint::zero();
-    for _ in 0..bits.div_ceil(64) {
-        x = (x << 64u32) + BigUint::from(rng.next_u64());
-    }
-    x >> (bits.div_ceil(64) * 64 - bits)
-}
-
-/// x on limbs, the least significant first, no zero limb at the top.
-fn limbs(x: &BigUint) -> Vec<u64> {
-    x.to_u64_digits()
-}
 
 /// q-crt-time.4: the sum of the limbs times the powers of 2^64, reduced
 /// once, is the remainder Horner's rule takes limb by limb.

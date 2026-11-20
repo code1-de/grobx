@@ -249,6 +249,29 @@ fn run(args: &[&str]) -> Run {
 }
 
 #[test]
+fn memory_takes_a_suffix() {
+    for (value, bytes) in [
+        ("0", 0),
+        ("4096", 4096),
+        ("18446744073709551615", u64::MAX),
+        ("0k", 0),
+        ("1k", 1 << 10),
+        ("3m", 3 << 20),
+        ("4g", 4 << 30),
+        ("2t", 2 << 40),
+        ("1K", 1 << 10),
+        ("3M", 3 << 20),
+        ("4G", 4 << 30),
+        ("2T", 2 << 40),
+        ("16777215t", 16_777_215 << 40),
+        ("16777215T", 16_777_215 << 40),
+    ] {
+        let r = run(&["--seed", "1", "--memory", value]);
+        assert_eq!(r.params.memory, Some(bytes), "{value}");
+    }
+}
+
+#[test]
 fn the_switches_fill_the_params() {
     let r = run(&["--seed", "1"]);
     let p = &r.params;
@@ -447,6 +470,7 @@ fn help_lists_every_switch() {
         assert!(long.stdout.contains(switch), "--help names {switch}");
     }
     assert!(long.stdout.contains("-h,"));
+    assert!(long.stdout.contains("-V,"));
     let short = grobx(&["-h"], "");
     assert_eq!(
         (short.code(), &short.stdout, &short.stderr),
@@ -459,6 +483,7 @@ fn help_lists_every_switch() {
         Command::Help
     ));
     assert!(matches!(parse(&["--version", "--help"]), Command::Version));
+    assert!(matches!(parse(&["-V", "--help"]), Command::Version));
     // A value spelled like a switch is the value; --output's is any text.
     assert!(matches!(
         parse(&["--output", "--help", "--version"]),
@@ -475,4 +500,9 @@ fn version_prints_the_crate_version() {
         format!("grobx {version}\n", version = grobx::VERSION)
     );
     assert_eq!(ran.stderr, "");
+    let short = grobx(&["-V"], "");
+    assert_eq!(
+        (short.code(), &short.stdout, &short.stderr),
+        (0, &ran.stdout, &String::new())
+    );
 }

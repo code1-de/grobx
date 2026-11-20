@@ -87,7 +87,7 @@ impl Point {
     }
 }
 
-// checker-cheap.14 practice: rejection sampling -- a residue is drawn by rejection, a draw below 2^64 mod m drawn again, not taken mod m at once
+// checker-cheap.14 practice-checked: rejection sampling -- a residue is drawn by rejection, a draw below 2^64 mod m drawn again, not taken mod m at once
 /// A residue in [0, m), every one equally likely.
 fn uniform(rng: &mut Xoshiro256PlusPlus, m: u64) -> u64 {
     debug_assert!(m > 0, "m > 0");
@@ -100,11 +100,15 @@ fn uniform(rng: &mut Xoshiro256PlusPlus, m: u64) -> u64 {
     }
 }
 
-/// The primes below 2^16.
+/// The bound of `small_primes`' sieve, 2^16, the square root of 2^32, the
+/// bound of the primes drawn (checker-cheap.6).
+const SIEVE: usize = 1 << 16;
+
+/// The primes below `SIEVE`.
 fn small_primes() -> &'static [u64] {
     static PRIMES: OnceLock<Vec<u64>> = OnceLock::new();
     PRIMES.get_or_init(|| {
-        let mut composite = vec![false; 1 << 16];
+        let mut composite = vec![false; SIEVE];
         let mut primes = Vec::new();
         for p in 2..composite.len() {
             if composite[p] {
@@ -123,7 +127,7 @@ fn small_primes() -> &'static [u64] {
 /// (checker-cheap.6).
 const LEAST_MODULUS: u64 = 1 << 31;
 
-// checker-cheap.6 design -- the primes are drawn uniformly from [2^31, 2^32) and tested by trial division by the primes below 2^16, not taken near 2^62 and tested by Miller–Rabin (not measured)
+// checker-cheap.6 design-checked -- the primes are drawn uniformly from [2^31, 2^32) and tested by trial division by the primes below 2^16, not taken near 2^62 and tested by Miller–Rabin (not measured)
 /// A prime drawn uniformly from those in [2^31, 2^32). Every composite below
 /// 2^32 has a prime factor below 2^16.
 fn prime(rng: &mut Xoshiro256PlusPlus) -> u64 {
@@ -136,12 +140,12 @@ fn prime(rng: &mut Xoshiro256PlusPlus) -> u64 {
     }
 }
 
-// checker-points-abort.2 design -- a batch holds as many points as fit a budget in bytes, counted from a point's arrays and a row's entries at it, and at least one, not a fixed number of points (not measured)
-// checker-points-abort.3 design -- the budget is 2^24 bytes, not 2^20 or 2^26 (not measured)
+// checker-points-abort.2 design-checked -- a batch holds as many points as fit a budget in bytes, counted from a point's arrays and a row's entries at it, and at least one, not a fixed number of points (not measured)
+// checker-points-abort.3 design-checked -- the budget is 2^24 bytes, not 2^20 or 2^26 (not measured)
 /// The bytes the points of a batch and a row's entries at them may take.
 const BUDGET: usize = 1 << 24;
 
-// checker-points-abort.1 cited: demin-2026 §4.3, Remark _Memory consumption_ -- a larger batch of primes raises the memory, Katsura-13 from 2.7 GB at N = 1 to 29.3 GB at N = 32, and large batches are unattractive
+// checker-points-abort.1 design-checked -- the cheap mode draws its k points in batches and reads the cofactor rows at a batch's points before it draws the next, not every point drawn and room for all k reserved before the rows are read (not measured)
 /// The cheap mode's points, drawn from the seed a batch at a time. The
 /// points of the batches, one after the other, are the points one batch of
 /// them all holds: the generator runs on from batch to batch.
@@ -158,9 +162,9 @@ impl Draws {
     /// The draws from `seed`. A term of F and G is a unit of work for
     /// `poll`; where it stops, the draws mean nothing.
     fn new<S: Side>(side: &S, ring: &Ring, seed: u64, poll: &mut Poll) -> Draws {
-        // checker-cheap.13 design -- the generator is seeded with the seed xor a constant of the checker's own, not with the seed as passed (not measured)
+        // checker-cheap.13 design-checked -- the generator is seeded with the seed xor a constant of the checker's own, not with the seed as passed (not measured)
         let generator = Xoshiro256PlusPlus::seed_from_u64(seed ^ SALT);
-        // checker-cheap.10 design -- each point keeps a table of its coordinates' powers up to the largest exponent in F and G, at most 1024, not square-and-multiply for every factor (not measured)
+        // checker-cheap.10 design-checked -- each point keeps a table of its coordinates' powers up to the largest exponent in F and G, at most 1024, not square-and-multiply for every factor (not measured)
         let largest = (0..side.generators())
             .map(|j| side.generator_monos(j))
             .chain((0..side.len()).map(|i| side.monos(i)))
@@ -180,7 +184,8 @@ impl Draws {
 
     /// The bytes one point and a row's entries at it take: the point's
     /// coordinates, powers, and values of F and G, a value per entry of a
-    /// row of one entry per generator, and a coefficient's residue.
+    /// row for one entry per generator, the most a row holds at the points
+    /// (checker-long-row-memory.1), and a coefficient's residue.
     fn point_bytes<S: Side>(&self, side: &S) -> usize {
         let words = self.n + self.n * self.stride + 2 * side.generators() + side.len() + 1;
         8 * words + size_of::<Point>()
@@ -200,7 +205,7 @@ impl Draws {
             if poll.step() {
                 return None;
             }
-            // checker-cheap.5 cited: parisse-2013 §2 _Probabilistic checking algorithm_ -- the check runs modulo several primes and stops once the inverse of their product is below a fixed ε
+            // checker-cheap.5 cited-checked: parisse-2013 §2 _Probabilistic checking algorithm_ -- the check runs modulo several primes and stops once the inverse of their product is below a fixed ε
             let field = match self.characteristic {
                 0 => Field::new(prime(&mut self.rng)),
                 p => Field::new(p),
@@ -225,7 +230,7 @@ impl Draws {
                 g: Vec::new(),
             };
             let (mut f, mut g) = (Vec::new(), Vec::new());
-            // checker-cheap.7 cited: monagan-2004 _Remark 3_ -- if a prime divides a denominator of a coefficient of the polynomial being reconstructed, the modular algorithm must either not use it or discard it
+            // checker-cheap.7 practice-checked: discarding bad primes -- a point whose prime divides a denominator of F or G is drawn again, prime and coordinates, not every row checked exactly
             let defined = side.values(&point, &mut f, &mut g, poll);
             if poll.stopped() {
                 return None;
@@ -263,16 +268,19 @@ pub fn moduli<S: Side>(side: &S, ring: &Ring, k: u32, seed: u64) -> Vec<u64> {
     moduli
 }
 
-// checker-cheap.9 design -- a row's entries are evaluated at the points as they are read, not read into polynomials and evaluated (not measured)
-// checker-stop-latency.9 design -- the `Numbers` functions take the poll as a parameter, not a poll held in `Eval` behind a `RefCell` or a `Numbers` wrapper that holds the poll for the exact reading (not measured)
+// checker-cheap.9 design-checked -- a row's entries are evaluated at the points as they are read, not read into polynomials and evaluated (not measured)
+// checker-stop-latency.9 design-checked -- the `Numbers` functions take the poll as a parameter, not a poll held in `Eval` behind a `RefCell` or a `Numbers` wrapper that holds the poll for the exact reading (not measured)
 /// The numbers the cheap mode reads a row with: each term's value at the
 /// points is added to its entry's as the term is read. Once the check's
-/// poll has stopped, no term is evaluated.
+/// poll has stopped, no term is evaluated. Over no points it refuses what
+/// it refuses over some and evaluates nothing, as a row's entries past one
+/// per generator are read (checker-long-row-memory.1, .3).
 struct Eval<'a> {
     points: &'a [Point],
-    /// Over Q every point has a modulus of its own; over GF(p) all share
-    /// the first point's.
-    q: bool,
+    // checker-long-row-memory.3 design-checked -- the entries past one per generator are read by Eval over no points, which holds GF(p)'s field for that, not by the side's exact numbers or by Eval at the batch's points
+    /// Over GF(p) the field every point shares; None over Q, where every
+    /// point has a modulus of its own.
+    gfp: Option<Field>,
     /// The residues of the last term, kept for the next.
     spare: Cell<Vec<u64>>,
     /// The variable factors of the last term, kept for the next.
@@ -302,7 +310,7 @@ struct Entry {
     vanished: bool,
 }
 
-// checker-points-abort.7 design -- the poll is asked as a row's terms are evaluated at the points, a term at a point a unit, and 19 digits of a numerator, and over Q of a denominator, a unit at each point over Q and once for the batch over GF(p), not once per row alone (log 0047-2)
+// checker-points-abort.7 design-checked -- the poll is asked as a row's terms are evaluated at the points, a term at a point a unit, and 19 digits of a numerator, and over Q of a denominator, a unit at each point over Q and once for the batch over GF(p), not once per row alone (log 0047-2)
 impl Numbers for Eval<'_> {
     type Term = Coef;
     type Terms = Entry;
@@ -311,7 +319,11 @@ impl Numbers for Eval<'_> {
     fn one(&self) -> Coef {
         let mut res = self.spare.take();
         res.clear();
-        res.resize(if self.q { self.points.len() } else { 1 }, 1);
+        let len = match self.gfp {
+            Some(_) => 1,
+            None => self.points.len(),
+        };
+        res.resize(len, 1);
         Coef {
             res,
             zero: false,
@@ -320,28 +332,32 @@ impl Numbers for Eval<'_> {
     }
 
     fn times(&self, c: &mut Coef, digits: &[u8], poll: &mut Poll) {
-        if self.q && digits.iter().all(|&b| b == b'0') {
+        if self.gfp.is_none() && digits.iter().all(|&b| b == b'0') {
             c.zero = true;
         }
         if c.zero || poll.work(c.res.len() * digits.len().div_ceil(DIGITS)) {
             return;
         }
-        for (r, point) in c.res.iter_mut().zip(self.points) {
-            *r = point.field.mul(*r, point.field.decimal(digits));
+        match self.gfp {
+            Some(field) => c.res[0] = field.mul(c.res[0], field.decimal(digits)),
+            None => {
+                for (r, point) in c.res.iter_mut().zip(self.points) {
+                    *r = point.field.mul(*r, point.field.decimal(digits));
+                }
+            }
         }
     }
 
     fn over(&self, c: &mut Coef, digits: &[u8], poll: &mut Poll) -> Option<()> {
-        if !self.q {
+        if let Some(field) = self.gfp {
             if poll.work(INVERSE) {
                 return Some(());
             }
-            let field = self.points[0].field;
             let inverse = field.inv(field.decimal(digits))?;
             c.res[0] = field.mul(c.res[0], inverse);
             return Some(());
         }
-        // checker-cheap.17 design -- over Q a denominator that is the integer 0 is refused as it is read, not marked and refused when the row is read again (not measured)
+        // checker-cheap.17 design-checked -- over Q a denominator that is the integer 0 is refused as it is read, not marked and refused when the row is read again (not measured)
         if digits.iter().all(|&b| b == b'0') {
             return None;
         }
@@ -364,7 +380,7 @@ impl Numbers for Eval<'_> {
             vanished,
         } = c;
         // Over GF(p) a residue of 0 is a zero coefficient.
-        let zero = zero || !self.q && res[0] == 0;
+        let zero = zero || self.gfp.is_some() && res[0] == 0;
         if vanished {
             entry.vanished = true;
         } else if !zero && !entry.vanished && !poll.work(self.points.len()) {
@@ -383,7 +399,11 @@ impl Numbers for Eval<'_> {
             );
             for (t, (point, value)) in self.points.iter().zip(&mut entry.values).enumerate() {
                 let field = point.field;
-                let x = point.term(res[if self.q { t } else { 0 }], &factors);
+                let c = match self.gfp {
+                    Some(_) => res[0],
+                    None => res[t],
+                };
+                let x = point.term(c, &factors);
                 *value = field.add(*value, if negative { field.neg(x) } else { x });
             }
             self.factors.set(factors);
@@ -451,11 +471,15 @@ pub fn rows<S: Side>(
         return Ok(None);
     }
     let per = per.map_or_else(|| draws.per(side), NonZeroUsize::get);
-    // checker-cheap.3 design -- a row whose degree bound reaches the smallest modulus is read again and checked exactly, not at points in an extension field (not measured)
-    // checker-points-abort.5 design -- the bound is p over GF(p) and 2^31 over Q, at or below every modulus a point can have, not the least modulus among the drawn points, which is known only once every point is drawn (not measured)
+    // checker-cheap.3 design-checked -- a row whose degree bound reaches the smallest modulus is read again and checked exactly, not at points in an extension field (not measured)
+    // checker-points-abort.5 design-checked -- the bound is p over GF(p) and 2^31 over Q, at or below every modulus a point can have, not the least modulus among the drawn points, which is known only once every point is drawn (not measured)
     let least = match ring.characteristic {
         0 => LEAST_MODULUS,
         p => p,
+    };
+    let gfp = match ring.characteristic {
+        0 => None,
+        p => Some(Field::new(p)),
     };
     // In an order that is not degree compatible the leading term need not
     // have the largest degree.
@@ -467,7 +491,7 @@ pub fn rows<S: Side>(
     let mut checked: Vec<bool> = Vec::new();
     let mut exact: Vec<Read<S>> = Vec::new();
     let mut left = k as usize;
-    // checker-points-abort.1 cited: demin-2026 §4.3, Remark _Memory consumption_ -- a larger batch of primes raises the memory, Katsura-13 from 2.7 GB at N = 1 to 29.3 GB at N = 32, and large batches are unattractive
+    // checker-points-abort.1 design-checked -- the cheap mode draws its k points in batches and reads the cofactor rows at a batch's points before it draws the next, not every point drawn and room for all k reserved before the rows are read (not measured)
     while left > 0 {
         let count = left.min(per);
         left -= count;
@@ -476,10 +500,19 @@ pub fn rows<S: Side>(
         };
         let eval = Eval {
             points: &points,
-            q: ring.characteristic == 0,
+            gfp,
             spare: Cell::default(),
             factors: Cell::default(),
         };
+        // checker-long-row-memory.3 design-checked -- the entries past one per generator are read by Eval over no points into a spare with a scratch of its own, not by the side's exact numbers or by Eval at the batch's points
+        let none = Eval {
+            points: &[],
+            gfp,
+            spare: Cell::default(),
+            factors: Cell::default(),
+        };
+        // checker-long-row-memory.1 design-checked -- a row's entries past one per generator are read at no point, and the batch keeps its size, not a batch sized by the longest row of the text
+        let mut past = parse::Past::new(side.generators(), &none);
         let mut rows = Rows::new(text)?;
         let mut entries = Vec::new();
         for i in 0.. {
@@ -491,7 +524,7 @@ pub fn rows<S: Side>(
             {
                 break;
             }
-            let next = rows.next(ring, &eval, &mut entries, poll);
+            let next = rows.next(ring, &eval, Some(&mut past), &mut entries, poll);
             if poll.stopped() {
                 return Ok(None);
             }
@@ -518,8 +551,10 @@ pub fn rows<S: Side>(
             if checked[i] {
                 continue;
             }
-            let row = &entries[..k];
-            // checker-cheap.8 design -- a row in which a denominator vanishes modulo a point's prime is read again and checked exactly, not every row again at a new point (not measured)
+            // `entries` holds no entry past one per generator, and `k`
+            // counts them all.
+            let row = &entries[..k.min(side.generators())];
+            // checker-cheap.8 design-checked -- a row in which a denominator vanishes modulo a point's prime is read again and checked exactly, not every row again at a new point (not measured)
             let again = if row.iter().any(|entry| entry.vanished) {
                 true
             } else {
@@ -541,7 +576,7 @@ pub fn rows<S: Side>(
                     continue;
                 };
                 let d = bound(g, &degrees, row);
-                // checker-cheap.4 design -- a row whose degree bound passes u32 is read again and checked exactly, not refused with Overflow at once (not measured)
+                // checker-cheap.4 design-checked -- a row whose degree bound passes u32 is read again and checked exactly, not refused with Overflow at once (not measured)
                 d > u64::from(u32::MAX) || d >= least
             };
             if again {
@@ -609,7 +644,7 @@ impl Event {
     }
 }
 
-// checker-points-abort.4 design -- the result is the earliest event in row order over all k points, the row that failed at a point read again in later batches, not each batch's first flaw as it comes (not measured)
+// checker-points-abort.4 design-checked -- the result is the earliest event in row order over all k points, the row that failed at a point read again in later batches, not each batch's first flaw as it comes (not measured)
 /// Records `event` where it lies before the earliest event so far, or at
 /// that event's row where that row failed at a point. A pass reads no row
 /// past the earliest event, so every event it meets is one of these.

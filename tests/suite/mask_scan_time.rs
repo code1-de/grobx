@@ -7,15 +7,11 @@
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, assert_accepted_in, dense, params_in, random_square, random_system, run,
+    ORDERS, P, P31, agree, assert_accepted_in, dense, params_in, random_square, random_system, run,
     systems::random_binomials, with_cofactors_in,
 };
 use crate::many_variables_time::{EDGE, P62};
 use crate::orders::{Family, names};
-use crate::row_scan_time::agree;
-
-/// The orders of tests 3 and 4: grevlex, lex, and a block order.
-const ORDERS: [&str; 3] = ["grevlex", "lex", "block:1"];
 
 /// With cofactors and signatures off in `order`, so that the plain run
 /// computes: the checker accepts the result in the order in the exact

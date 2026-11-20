@@ -229,6 +229,27 @@ fn members() -> &'static [String] {
     })
 }
 
+// hygiene.14 design-checked -- a library name that two packages take, grobx-python's and the core's grobx, ties a path to the enums of both, not to the one the file's package depends on by its manifest (not measured)
+/// The packages of the workspace by the name of their library, its `[lib]
+/// name` or its package name with `_` for `-`, each by its directory, `""`
+/// for the root package's. grobx-python's lib takes the core's name.
+fn libs() -> &'static BTreeMap<String, Vec<String>> {
+    static LIBS: OnceLock<BTreeMap<String, Vec<String>>> = OnceLock::new();
+    LIBS.get_or_init(|| {
+        let mut libs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for package in std::iter::once("").chain(members().iter().map(String::as_str)) {
+            let text = manifest(package);
+            let name = table_value(&text, "lib", "name")
+                .or_else(|| table_value(&text, "package", "name"))
+                .expect("every manifest names its package");
+            libs.entry(name.replace('-', "_"))
+                .or_default()
+                .push(package.to_string());
+        }
+        libs
+    })
+}
+
 /// The crates a package's code names as external in its `use`s: its
 /// dependencies of every kind, a target's included, and its own package
 /// and library for its tests, each with `_` for `-`.
@@ -974,15 +995,28 @@ pub fn misplaced_uses(sources: &[Source]) -> Vec<String> {
 
 // --- choices between variants (rule-breaches.3 to .5) ---
 
-// rule-breaches.3 design -- a choice on Ordering takes its methods is_lt, is_le, is_gt, is_ge, is_eq, and is_ne, and every other choice between an enum's variants is a match that names every variant, not a match with three arms for each comparison of an Ordering (not measured)
-// rule-breaches.4 design -- a comparison of an Option with Some of a number or of a reference to data compares values and stays, and one with Some(true), Some(false), or Some of a variant chooses a variant and becomes a match, not every comparison with Some a match (not measured)
-// rule-breaches.5 design -- an assertion that expects one variant stays, not the assertions written as matches (not measured)
+// rule-breaches.3 design-checked -- a choice on Ordering takes its methods is_lt, is_le, is_gt, is_ge, is_eq, and is_ne, and every other choice between an enum's variants is a match that names every variant, not a match with three arms for each comparison of an Ordering (not measured)
+// rule-breaches.4 design-checked -- a comparison of an Option with Some of a number or of a reference to data compares values and stays, and one with Some(true), Some(false), or Some of a variant chooses a variant and becomes a match, not every comparison with Some a match (not measured)
+// rule-breaches.5 design-checked -- an assertion that expects one variant stays, not the assertions written as matches (not measured)
 
 /// An enum the sources define.
 struct Enum {
     variants: BTreeSet<String>,
     non_exhaustive: bool,
     krate: String,
+}
+
+/// Every enum `code` defines with a body: where its `enum` stands, its
+/// name, and the brace that opens its body.
+fn enum_items(code: &[u8]) -> Vec<(usize, &str, usize)> {
+    words(code, "enum")
+        .into_iter()
+        .filter_map(|at| {
+            let name = ident_at(code, skip_space(code, at + "enum".len()));
+            let open = at + code[at..].iter().position(|&c| c == b'{' || c == b';')?;
+            (!name.is_empty() && code[open] == b'{').then_some((at, name, open))
+        })
+        .collect()
 }
 
 /// The enums of the sources by name, with std's and num-bigint's that the
@@ -1003,15 +1037,7 @@ impl Enums {
         for source in sources {
             let lexed = lex(&source.text);
             let code = lexed.code.as_bytes();
-            for at in words(code, "enum") {
-                let name = ident_at(code, skip_space(code, at + "enum".len()));
-                let Some(k) = code[at..].iter().position(|&c| c == b'{' || c == b';') else {
-                    continue;
-                };
-                let open = at + k;
-                if name.is_empty() || code[open] != b'{' {
-                    continue;
-                }
+            for (at, name, open) in enum_items(code) {
                 let variants = arguments(code, open, close(code, open))
                     .into_iter()
                     .filter_map(|(from, _)| {
@@ -1050,27 +1076,212 @@ impl Enums {
         known.then_some(*name)
     }
 
-    /// Whether `named` holds every variant of an enum named `name`, or of
-    /// `Option` or `Result`.
-    fn covered(&self, name: &str, named: &BTreeSet<String>) -> bool {
-        let all = |variants: &[&str]| variants.iter().all(|v| named.contains(*v));
-        match name {
-            "Option" => all(&["Some", "None"]),
-            "Result" => all(&["Ok", "Err"]),
-            _ => self.0.get(name).is_some_and(|defs| {
-                defs.iter()
-                    .any(|d| d.variants.iter().all(|v| named.contains(v)))
-            }),
+    // hygiene.6 design-checked -- a choice's enum is resolved among the enums of its name by the crates that its patterns' paths, the file's uses, and the file's own enums tie the name to, then by the variants its patterns name, and a finding says where those left disagree, not the file's own package's enum taken alone, nor the module paths followed through re-exports (log 0147-3)
+    /// The enums named `name` that a choice whose patterns open with the
+    /// paths `paths` may be between, seen from `scope`: those of the crates
+    /// the first parts of the paths to the variants of `name` tie them to,
+    /// and of these those that hold every variant the paths name. A step
+    /// that would keep none keeps every enum it was given.
+    fn resolved(&self, name: &str, scope: &Scope, paths: &[Vec<&str>]) -> Vec<&Enum> {
+        let to_name: Vec<&[&str]> = paths
+            .iter()
+            .map(Vec::as_slice)
+            .filter(|path| path.len() >= 2 && path[path.len() - 2] == name)
+            .collect();
+        let crates: BTreeSet<String> = to_name
+            .iter()
+            .flat_map(|path| scope.tied(path[0]))
+            .collect();
+        let variants: BTreeSet<&str> = to_name.iter().map(|path| path[path.len() - 1]).collect();
+        let all = self
+            .0
+            .get(name)
+            .map(|defs| defs.iter().collect())
+            .unwrap_or_default();
+        let tied = narrowed(all, |d| crates.contains(&d.krate));
+        narrowed(tied, |d| variants.iter().all(|v| d.variants.contains(*v)))
+    }
+
+    /// What the enums that `resolved` leaves allow the choice, seen from
+    /// `scope`.
+    fn allows(&self, name: &str, scope: &Scope, paths: &[Vec<&str>]) -> Allows {
+        Allows::of(&self.resolved(name, scope, paths), &scope.krate)
+    }
+}
+
+// hygiene.11 design-checked -- a step of the resolution that would keep no enum keeps every enum it was given, so that a path the scan cannot follow, a glob or a re-export, leaves the choice to the next step and the doubt to the finding, not a finding of its own, nor the match left out as one on an enum no source defines (log 0147-3)
+/// The enums of `candidates` that `keep` keeps, or every one of them where
+/// it keeps none.
+fn narrowed(candidates: Vec<&Enum>, keep: impl Fn(&Enum) -> bool) -> Vec<&Enum> {
+    let kept: Vec<&Enum> = candidates.iter().copied().filter(|d| keep(d)).collect();
+    if kept.is_empty() { candidates } else { kept }
+}
+
+// hygiene.13 design-checked -- a guarded catch-all stays where the unguarded arms name every variant of every enum the resolution leaves, not of any one of them (not measured)
+/// Whether `named` holds every variant of each of `candidates`, the enums
+/// named `name`, or of `Option` or `Result`.
+fn covers(name: &str, candidates: &[&Enum], named: &BTreeSet<String>) -> bool {
+    let all = |variants: &[&str]| variants.iter().all(|v| named.contains(*v));
+    match name {
+        "Option" => all(&["Some", "None"]),
+        "Result" => all(&["Ok", "Err"]),
+        _ => {
+            !candidates.is_empty()
+                && candidates
+                    .iter()
+                    .all(|d| d.variants.iter().all(|v| named.contains(v)))
+        }
+    }
+}
+
+/// What a file's code names: its crate, and each name its `use`s and its
+/// enums bring into scope, with the first parts of the paths the name
+/// stands for, `self` for an enum of the file.
+struct Scope {
+    krate: String,
+    names: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Scope {
+    /// The scope of `source`, whose lexed code is `code`.
+    fn of(source: &Source, code: &[u8]) -> Scope {
+        let mut names = BTreeMap::new();
+        for at in words(code, "use") {
+            use_tree(code, at + "use".len(), None, None, &mut names);
+        }
+        // hygiene.12 design-checked -- an enum the file defines ties its name to the file's crate, as a use through self does, not the variants alone left to tell it from another package's enum of that name (log 0147-3)
+        for (_, name, _) in enum_items(code) {
+            names
+                .entry(name.to_string())
+                .or_default()
+                .insert("self".to_string());
+        }
+        Scope {
+            krate: source.krate(),
+            names,
         }
     }
 
-    /// Whether every enum named `name` is another crate's
-    /// `#[non_exhaustive]` enum, seen from the crate `from`, whose `_` arm
-    /// `CLAUDE.md` allows.
-    fn open_to(&self, name: &str, from: &str) -> bool {
-        self.0
-            .get(name)
-            .is_some_and(|defs| defs.iter().all(|d| d.non_exhaustive && d.krate != from))
+    /// The crates the first part `head` of a path names by itself: the
+    /// file's own for `crate`, `self`, and `super`, and a package's for the
+    /// name of its library.
+    fn crates(&self, head: &str) -> BTreeSet<String> {
+        if LOCAL.contains(&head) {
+            return BTreeSet::from([self.krate.clone()]);
+        }
+        libs().get(head).into_iter().flatten().cloned().collect()
+    }
+
+    /// The crates `head` names by itself, or else those that the paths it
+    /// stands for in the scope name by their first parts.
+    fn tied(&self, head: &str) -> BTreeSet<String> {
+        let named = self.crates(head);
+        if !named.is_empty() {
+            return named;
+        }
+        self.names
+            .get(head)
+            .into_iter()
+            .flatten()
+            .flat_map(|first| self.crates(first))
+            .collect()
+    }
+}
+
+/// Adds to `names` each name the use tree at `at` brings into scope, with
+/// the first part of the path it stands for: `crate::{matrix::Mode,
+/// order}` brings `Mode` and `order`, each for `crate`; `self` in a list
+/// the part before the list; `x as y` the name `y`; and a glob none. `head`
+/// and `last` are the first and the last part of the path before the tree.
+fn use_tree<'a>(
+    code: &'a [u8],
+    at: usize,
+    head: Option<&'a str>,
+    last: Option<&'a str>,
+    names: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    let (mut head, mut last) = (head, last);
+    let mut i = skip_space(code, at);
+    if starts(code, i, b"::") {
+        i = skip_space(code, i + 2);
+    }
+    loop {
+        if code.get(i) == Some(&b'{') {
+            for (from, _) in split_outside(code, i + 1, close(code, i), b',') {
+                use_tree(code, from, head, last, names);
+            }
+            return;
+        }
+        let part = ident_at(code, i);
+        if part.is_empty() {
+            return;
+        }
+        i = skip_space(code, i + part.len());
+        if starts(code, i, b"::") {
+            head = head.or(Some(part));
+            last = Some(part);
+            i = skip_space(code, i + 2);
+            continue;
+        }
+        let name = if word_at(code, i, "as") {
+            ident_at(code, skip_space(code, i + "as".len()))
+        } else if part == "self" {
+            last.unwrap_or(part)
+        } else {
+            part
+        };
+        names
+            .entry(name.to_string())
+            .or_default()
+            .insert(head.unwrap_or(part).to_string());
+        return;
+    }
+}
+
+/// What `CLAUDE.md` allows a choice between the variants of the enums
+/// `Enums::resolved` leaves, seen from one crate.
+enum Allows {
+    /// Each is another crate's `#[non_exhaustive]` enum: the choice may
+    /// leave variants unnamed.
+    Open,
+    /// None is: the choice names every variant. So it is for `Option` and
+    /// `Result`, which no source defines.
+    Closed,
+    /// Some are and others are not, of the crates it holds.
+    Unsure(BTreeSet<String>),
+}
+
+impl Allows {
+    /// What the enums `candidates` allow a choice in the crate `from`.
+    fn of(candidates: &[&Enum], from: &str) -> Allows {
+        let open = candidates
+            .iter()
+            .filter(|d| d.non_exhaustive && d.krate != from)
+            .count();
+        if open == 0 {
+            Allows::Closed
+        } else if open == candidates.len() {
+            Allows::Open
+        } else {
+            Allows::Unsure(candidates.iter().map(|d| d.krate.clone()).collect())
+        }
+    }
+
+    /// The finding `what` where the choice breaks the rule, with the crates
+    /// between which the scan cannot tell where it cannot.
+    fn finding(&self, what: String) -> Option<String> {
+        match self {
+            Allows::Open => None,
+            Allows::Closed => Some(what),
+            Allows::Unsure(crates) => {
+                let crates: Vec<&str> = crates
+                    .iter()
+                    .map(|k| if k.is_empty() { "the root package" } else { k })
+                    .collect();
+                let crates = crates.join(" or of ");
+                Some(format!("{what} of {crates}: the scan cannot tell which"))
+            }
+        }
     }
 }
 
@@ -1138,24 +1349,33 @@ fn let_pattern(code: &[u8], at: usize) -> (usize, usize) {
     (from, k)
 }
 
-/// Whether `code[from..to]` names a variant of an enum that `CLAUDE.md`
-/// asks a `match` to name in full, seen from the crate `krate`.
-fn names_variant(code: &[u8], from: usize, to: usize, enums: &Enums, krate: &str) -> bool {
+/// The finding `what` where `code[from..to]` names a variant of an enum
+/// that `CLAUDE.md` asks a `match` to name in full, seen from `scope`.
+fn names_variant(
+    code: &[u8],
+    from: usize,
+    to: usize,
+    enums: &Enums,
+    scope: &Scope,
+    what: &str,
+) -> Option<String> {
     let mut i = from;
     while i < to {
         if is_ident(code[i]) && (i == 0 || !is_ident(code[i - 1])) {
             let path = path_at(code, i);
             if let Some(name) = enums.variant(&path)
-                && !enums.open_to(name, krate)
+                && let Some(found) = enums
+                    .allows(name, scope, std::slice::from_ref(&path))
+                    .finding(what.to_string())
             {
-                return true;
+                return Some(found);
             }
             i += path.iter().map(|p| p.len() + 2).sum::<usize>();
             continue;
         }
         i += 1;
     }
-    false
+    None
 }
 
 /// The places of `source` where a choice between an enum's variants is
@@ -1165,6 +1385,7 @@ pub fn variant_choices_in(source: &Source, enums: &Enums) -> Vec<(usize, String)
     let lexed = lex(&source.text);
     let code = lexed.code.as_bytes();
     let text = &source.text;
+    let scope = Scope::of(source, code);
     let mut out = Vec::new();
     for k in 1..code.len().saturating_sub(2) {
         let operator = (code[k] == b'=' || code[k] == b'!') && code[k + 1] == b'=';
@@ -1188,19 +1409,22 @@ pub fn variant_choices_in(source: &Source, enums: &Enums) -> Vec<(usize, String)
             continue;
         };
         let (from, to) = bare_pattern(code, from, to);
-        let named = pattern_enum(code, from, to, enums);
-        if named.is_some_and(|name| !enums.open_to(&name, &source.krate())) {
-            out.push((
-                line_of(text, call.at),
-                "matches! outside an assertion".to_string(),
-            ));
+        let Some(name) = pattern_enum(code, from, to, enums) else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        pattern_paths(code, from, to, &mut paths);
+        let what = "matches! outside an assertion".to_string();
+        if let Some(found) = enums.allows(&name, &scope, &paths).finding(what) {
+            out.push((line_of(text, call.at), found));
         }
     }
     for at in words(code, "let") {
         let (from, to) = let_pattern(code, at);
-        if !names_variant(code, from, to, enums, &source.krate()) {
+        let what = "a let that chooses a variant";
+        let Some(found) = names_variant(code, from, to, enums, &scope, what) else {
             continue;
-        }
+        };
         let before = trim_back(code, at);
         let conditional = path_before(code, before)
             .last()
@@ -1209,10 +1433,7 @@ pub fn variant_choices_in(source: &Source, enums: &Enums) -> Vec<(usize, String)
         let end = item_end(code, to, code.len());
         let otherwise = !words(&code[to..end], "else").is_empty();
         if conditional || otherwise {
-            out.push((
-                line_of(text, at),
-                "a let that chooses a variant".to_string(),
-            ));
+            out.push((line_of(text, at), found));
         }
     }
     out.sort();
@@ -1346,9 +1567,10 @@ fn named_variants(code: &[u8], patterns: &[(usize, usize, bool)]) -> BTreeSet<St
     named
 }
 
-/// The enum a pattern names a variant of: `Option` or `Result` for their
-/// variants, the enum's name for another, None for none.
-fn pattern_enum(code: &[u8], from: usize, to: usize, enums: &Enums) -> Option<String> {
+/// Adds to `out` the paths that open the alternatives of the pattern
+/// `code[from..to]`, past `&`, `ref`, and `mut`, each element of a tuple
+/// read as a pattern of its own.
+fn pattern_paths<'a>(code: &'a [u8], from: usize, to: usize, out: &mut Vec<Vec<&'a str>>) {
     for (a, b) in split_outside(code, from, to, b'|') {
         let mut a = a;
         while code.get(a).is_some_and(|&c| c == b'&')
@@ -1361,30 +1583,32 @@ fn pattern_enum(code: &[u8], from: usize, to: usize, enums: &Enums) -> Option<St
             continue;
         }
         if code[a] == b'(' {
-            let inner = close(code, a);
-            for (c, d) in split_outside(code, a + 1, inner, b',') {
-                if let Some(name) = pattern_enum(code, c, d, enums) {
-                    return Some(name);
-                }
+            for (c, d) in split_outside(code, a + 1, close(code, a), b',') {
+                pattern_paths(code, c, d, out);
             }
             continue;
         }
-        let head = ident_at(code, a);
+        out.push(path_at(code, a));
+    }
+}
+
+/// The enum a pattern names a variant of: `Option` or `Result` for their
+/// variants, the enum's name for another, None for none.
+fn pattern_enum(code: &[u8], from: usize, to: usize, enums: &Enums) -> Option<String> {
+    let mut paths = Vec::new();
+    pattern_paths(code, from, to, &mut paths);
+    paths.iter().find_map(|path| {
+        let head = path.first().copied().unwrap_or_default();
         if OPTION_RESULT.contains(&head) {
-            return Some(
-                if head == "Ok" || head == "Err" {
-                    "Result"
-                } else {
-                    "Option"
-                }
-                .to_string(),
-            );
-        }
-        if let Some(name) = enums.variant(&path_at(code, a)) {
+            let name = if head == "Ok" || head == "Err" {
+                "Result"
+            } else {
+                "Option"
+            };
             return Some(name.to_string());
         }
-    }
-    None
+        enums.variant(path).map(str::to_string)
+    })
 }
 
 /// Whether the pattern `code[from..to]` takes every value: `_`, or a bare
@@ -1402,12 +1626,13 @@ fn catch_all(code: &[u8], from: usize, to: usize) -> bool {
 
 /// The places of `source` where a `match` on an enum takes a `_` arm or a
 /// bare binding for the variants it does not name, or a `_` in a tuple
-/// where another arm names a variant; another package's
-/// `#[non_exhaustive]` enum left out.
+/// where another arm names a variant; a match on another crate's
+/// `#[non_exhaustive]` enum, as `Enums::resolved` tells the enum, left out.
 pub fn wildcard_arms_in(source: &Source, enums: &Enums) -> Vec<(usize, String)> {
     let lexed = lex(&source.text);
     let code = lexed.code.as_bytes();
     let text = &source.text;
+    let scope = Scope::of(source, code);
     let mut out = Vec::new();
     for at in words(code, "match") {
         let mut open = at + "match".len();
@@ -1433,13 +1658,19 @@ pub fn wildcard_arms_in(source: &Source, enums: &Enums) -> Vec<(usize, String)> 
         let Some(name) = named else {
             continue;
         };
-        if enums.open_to(&name, &source.krate()) {
-            continue;
+        let mut paths = Vec::new();
+        for &(a, b, _) in &patterns {
+            pattern_paths(code, a, b, &mut paths);
         }
-        let covered = enums.covered(&name, &named_variants(code, &patterns));
+        let candidates = enums.resolved(&name, &scope, &paths);
+        let allows = Allows::of(&candidates, &scope.krate);
+        let covered = covers(&name, &candidates, &named_variants(code, &patterns));
         for &(a, b, guarded) in &patterns {
-            if catch_all(code, a, b) && !(guarded && covered) {
-                out.push((line_of(text, a), format!("a catch-all arm on {name}")));
+            if catch_all(code, a, b)
+                && !(guarded && covered)
+                && let Some(found) = allows.finding(format!("a catch-all arm on {name}"))
+            {
+                out.push((line_of(text, a), found));
             }
         }
         let tuples: Vec<Vec<(usize, usize)>> = patterns
@@ -1454,8 +1685,11 @@ pub fn wildcard_arms_in(source: &Source, enums: &Enums) -> Vec<(usize, String)> 
                         .get(k)
                         .is_some_and(|&(e, f)| pattern_enum(code, e, f, enums).is_some())
                 });
-                if code[c..d] == *b"_" && opposite {
-                    out.push((line_of(text, c), format!("a _ in a tuple on {name}")));
+                if code[c..d] == *b"_"
+                    && opposite
+                    && let Some(found) = allows.finding(format!("a _ in a tuple on {name}"))
+                {
+                    out.push((line_of(text, c), found));
                 }
             }
         }
@@ -1594,4 +1828,265 @@ pub fn lines_where(sources: &[Source], holds: impl Fn(&str) -> bool) -> Vec<Stri
             .map(|(k, _)| (k + 1, String::new()))
             .collect()
     })
+}
+
+// --- the test code's notes and copies (hygiene.3, .7) ---
+
+/// The first line of a skipped test file (`OBJECTIVES.md`, _Language and
+/// build_).
+const SKIP_MARK: &str = "#![cfg(any())]";
+
+// hygiene.3 design-checked -- a file says it is skipped where its module doc comment, its `//!` lines joined by spaces, holds "skipped until", case aside, not where any of its comments says "skip" (not measured)
+/// What a module doc comment says of a skipped file (hygiene.3).
+const SKIP_NOTE: &str = "skipped until";
+
+/// The files of `sources` whose module doc comment, its `//!` lines joined
+/// by spaces, says the file is skipped, case aside, and whose first line is
+/// not the skip mark, each as `<path>:<line>` of its first `//!` line.
+pub fn stale_skip_notes(sources: &[Source]) -> Vec<String> {
+    let mut out = Vec::new();
+    for source in sources {
+        let notes: Vec<(usize, &str)> = source
+            .text
+            .lines()
+            .enumerate()
+            .filter_map(|(k, line)| {
+                line.trim_start()
+                    .strip_prefix("//!")
+                    .map(|rest| (k + 1, rest.trim()))
+            })
+            .collect();
+        let joined = notes
+            .iter()
+            .map(|&(_, rest)| rest)
+            .collect::<Vec<&str>>()
+            .join(" ")
+            .to_lowercase();
+        let marked = source.text.lines().next() == Some(SKIP_MARK);
+        if let Some(&(line, _)) = notes.first()
+            && joined.contains(SKIP_NOTE)
+            && !marked
+        {
+            let path = &source.path;
+            out.push(format!("{path}:{line}"));
+        }
+    }
+    out
+}
+
+/// The kinds of item a test helper is.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum HelperKind {
+    Fn,
+    Const,
+    Static,
+    Struct,
+    Enum,
+    Type,
+}
+
+impl HelperKind {
+    /// Every kind.
+    pub const ALL: [HelperKind; 6] = [
+        HelperKind::Fn,
+        HelperKind::Const,
+        HelperKind::Static,
+        HelperKind::Struct,
+        HelperKind::Enum,
+        HelperKind::Type,
+    ];
+
+    /// The kind of the item that the keyword `word` opens, None for an
+    /// item of another kind.
+    fn of(word: &str) -> Option<HelperKind> {
+        HelperKind::ALL.into_iter().find(|kind| kind.word() == word)
+    }
+
+    /// Whether a copy agrees in its number literals: every kind's but a
+    /// `fn`'s, whose copies may differ in one that a parameter carries
+    /// (hygiene.7, .10).
+    fn reads_numbers(self) -> bool {
+        match self {
+            HelperKind::Fn => false,
+            HelperKind::Const
+            | HelperKind::Static
+            | HelperKind::Struct
+            | HelperKind::Enum
+            | HelperKind::Type => true,
+        }
+    }
+
+    /// The keyword, as a finding names the kind.
+    fn word(self) -> &'static str {
+        match self {
+            HelperKind::Fn => "fn",
+            HelperKind::Const => "const",
+            HelperKind::Static => "static",
+            HelperKind::Struct => "struct",
+            HelperKind::Enum => "enum",
+            HelperKind::Type => "type",
+        }
+    }
+}
+
+/// A top-level item of a test file that no `#[test]` marks (hygiene.7).
+pub struct Helper {
+    pub kind: HelperKind,
+    pub name: String,
+    /// The line, from 1, of its first token past its visibility.
+    pub line: usize,
+    /// What a copy agrees in: its tokens, comments, attributes, and its
+    /// visibility left out, each number literal of a `fn` as `0`; then the
+    /// text of each string literal; then the bytes of its character
+    /// literals.
+    pub tokens: Vec<String>,
+}
+
+/// The tokens of `code[from..to]`: identifiers, numbers, and single marks,
+/// white space left out; each number as `0` where `numbers` is false.
+fn code_tokens(code: &[u8], from: usize, to: usize, numbers: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = skip_space(code, from);
+    while i < to {
+        let c = code[i];
+        let mut len = ident_at(code, i).len().max(1);
+        if c.is_ascii_digit() {
+            while code.get(i + len) == Some(&b'.')
+                && code.get(i + len + 1).is_some_and(u8::is_ascii_digit)
+            {
+                len += 1 + ident_at(code, i + len + 1).len();
+            }
+        }
+        out.push(if c.is_ascii_digit() && !numbers {
+            "0".to_string()
+        } else {
+            String::from_utf8_lossy(&code[i..i + len]).into_owned()
+        });
+        i = skip_space(code, i + len);
+    }
+    out
+}
+
+/// The quote that closes the blanked string literal whose quote stands at
+/// `open` in `code`.
+fn close_quote(code: &[u8], open: usize) -> usize {
+    code[open + 1..]
+        .iter()
+        .position(|&c| c == b'"')
+        .map_or(code.len(), |k| open + 1 + k)
+}
+
+/// The helpers of `source`, a test file: its top-level items of the kinds
+/// of `HelperKind` that no `#[test]` marks, in order.
+pub fn helpers(source: &Source) -> Vec<Helper> {
+    let lexed = lex(&source.text);
+    let code = lexed.code.as_bytes();
+    let uncommented = lexed.uncommented.as_bytes();
+    let mut out = Vec::new();
+    let mut tested = false;
+    let mut i = skip_space(code, 0);
+    while i < code.len() {
+        if starts(code, i, b"#!") || starts(code, i, b"#[") {
+            let inner = code[i + 1] == b'!';
+            let open = i + if inner { 2 } else { 1 };
+            let end = close(code, open);
+            let attribute = String::from_utf8_lossy(&code[open + 1..end]);
+            tested |= !inner && attribute.trim() == "test";
+            i = skip_space(code, end + 1);
+            continue;
+        }
+        let start = past_visibility(code, i);
+        let mut at = start;
+        let mut word = ident_at(code, at);
+        while ["async", "unsafe", "extern"].contains(&word)
+            || (word == "const"
+                && ["fn", "async", "unsafe"]
+                    .contains(&ident_at(code, skip_space(code, at + word.len()))))
+        {
+            at = skip_space(code, at + word.len());
+            if code.get(at) == Some(&b'"') {
+                at = skip_space(code, close_quote(code, at) + 1);
+            }
+            word = ident_at(code, at);
+        }
+        if word.is_empty() {
+            i = skip_space(code, i + 1);
+            tested = false;
+            continue;
+        }
+        let end = item_end(code, at, code.len()).max(at + 1) - 1;
+        if let Some(kind) = HelperKind::of(word)
+            && !tested
+        {
+            let mut name = skip_space(code, at + word.len());
+            if word_at(code, name, "mut") {
+                name = skip_space(code, name + "mut".len());
+            }
+            let mut tokens = code_tokens(code, start, end + 1, kind.reads_numbers());
+            let mut strings = Vec::new();
+            for literal in &lexed.literals {
+                if (start..=end).contains(&literal.start) {
+                    tokens.push(literal.text.clone());
+                    let quote = code[literal.start..]
+                        .iter()
+                        .position(|&c| c == b'"')
+                        .map_or(code.len(), |k| literal.start + k + 1);
+                    strings.push(quote..quote + literal.text.len());
+                }
+            }
+            let chars: Vec<u8> = (start..=end)
+                .filter(|&j| code[j] != uncommented[j] && !strings.iter().any(|s| s.contains(&j)))
+                .map(|j| uncommented[j])
+                .collect();
+            if !chars.is_empty() {
+                tokens.push(String::from_utf8_lossy(&chars).into_owned());
+            }
+            out.push(Helper {
+                kind,
+                name: ident_at(code, name).to_string(),
+                line: line_of(&source.text, start),
+                tokens,
+            });
+        }
+        tested = false;
+        i = skip_space(code, end + 1);
+    }
+    out
+}
+
+// hygiene.7 practice-checked: token-based clone detection -- two helpers of one test crate are copies where they are of one kind, take one name, and agree token by token, comments, attributes, and visibility left out, a `fn`'s number literals read as one token, not where they take one name alone or agree in their text alone (log 0147-1)
+// hygiene.8 design-checked -- copies between two test crates stay, not one file shared by both by `#[path]` (not measured)
+/// Every group of copies among the test files of `sources`, helpers of the
+/// kinds `kinds` (hygiene.7): per test crate, `Source::krate`, the helpers
+/// of one kind, name, and tokens that two or more files define, each group
+/// as `<kind> <name>: <path>:<line>, <path>:<line>, …`.
+pub fn copies(sources: &[Source], kinds: &[HelperKind]) -> Vec<String> {
+    type Places = Vec<(String, usize, String)>;
+    let mut groups: BTreeMap<(String, HelperKind, Vec<String>), Places> = BTreeMap::new();
+    for source in sources.iter().filter(|source| source.is_test()) {
+        for helper in helpers(source) {
+            if kinds.contains(&helper.kind) {
+                groups
+                    .entry((source.krate(), helper.kind, helper.tokens))
+                    .or_default()
+                    .push((source.path.clone(), helper.line, helper.name));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for ((_, kind, _), places) in groups {
+        let paths: BTreeSet<&str> = places.iter().map(|(path, _, _)| path.as_str()).collect();
+        if paths.len() < 2 {
+            continue;
+        }
+        let name = &places[0].2;
+        let kind = kind.word();
+        let at = places
+            .iter()
+            .map(|(path, line, _)| format!("{path}:{line}"))
+            .collect::<Vec<String>>()
+            .join(", ");
+        out.push(format!("{kind} {name}: {at}"));
+    }
+    out
 }

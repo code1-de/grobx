@@ -4,11 +4,12 @@
 //! Unlucky primes forced first make each record drop.
 
 use std::num::NonZeroUsize;
-use std::time::Duration;
 
 use num_bigint::BigUint;
 
+use crate::call::built;
 use crate::lift::{Learns, Reconstruct, Replays, Report, lift_text, lift_text_as};
+use crate::shared_tests::LIFT_DEADLINE;
 use crate::trace::NoTrace;
 use crate::{Error, MonomialOrder, Outcome, Params, Threads};
 
@@ -46,17 +47,13 @@ const BOUND: u32 = 4;
 /// `BOUND` as a count of rounds.
 const ROUNDS: usize = BOUND as usize;
 
-/// Every lift's deadline, far past what each takes: a lift that learns
-/// afresh without end stops there, and the test fails.
-const DEADLINE: Duration = Duration::from_secs(60);
-
 fn params(cofactors: bool) -> Params {
     let mut p = Params::new(
         MonomialOrder::Grevlex,
         Threads::Count(NonZeroUsize::new(1).unwrap()),
         1,
     );
-    p.deadline = Some(DEADLINE);
+    p.deadline = Some(LIFT_DEADLINE);
     p.cofactors = cofactors;
     p
 }
@@ -189,6 +186,10 @@ fn drops_at_misfits() {
 /// learned at unlucky primes drop at misfits as without cofactors, and the
 /// drop at `BOUND` returns `Error::Drops`.
 #[test]
+#[cfg_attr(
+    not(feature = "cofactors"),
+    ignore = "the build leaves out the cofactors"
+)]
 fn drops_at_misfits_with_cofactors() {
     let text = lead(&product(&U[..ROUNDS]));
     for rounds in [ROUNDS - 1, ROUNDS] {
@@ -293,6 +294,9 @@ fn the_edge_cases_drop_nothing() {
     for (case, generators) in cases {
         let text = format!("x,y,z\n0\n{generators}\n");
         for cofactors in [false, true] {
+            if built(&params(cofactors)).is_err() {
+                continue;
+            }
             for learns in [Learns::Alone, Learns::Pairs] {
                 let name = format!("{case}, cofactors {cofactors}, {learns:?}");
                 let mut report = Report::default();

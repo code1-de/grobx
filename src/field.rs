@@ -1,8 +1,8 @@
 //! The field contract: coefficients, their arithmetic, and the row format of
-//! the reduction matrix with its row operations. GF(p) has two
-//! implementations here: `Gf31` for the primes below 2^31, and `Gf64` for
-//! those from 2^31 to 2^64. `Gf31Pair` and `Gf64Pair` compute over two
-//! primes at once, one lane each.
+//! the reduction matrix with its row operations. GF(p) has three
+//! implementations here: `Gf2` for GF(2), `Gf31` for the primes below
+//! 2^31, and `Gf64` for those from 2^31 to 2^64. `Gf31Pair` and `Gf64Pair`
+//! compute over two primes at once, one lane each.
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
@@ -12,11 +12,11 @@ use std::arch::x86_64::{
 };
 use std::fmt::Debug;
 
-use crate::id::MonoId;
+use crate::id::Column;
 use crate::narrow::Narrow;
 
-/// A coefficient field. A sparse row is its column indices, increasing, and
-/// its coefficients in the same order. A dense row is a slice of `Acc`, one
+/// A coefficient field. A sparse row is its column indices, increasing, as
+/// any `Column`, and its coefficients in the same order. A dense row is a slice of `Acc`, one
 /// entry per column, zero where nothing is loaded.
 pub trait Field: Copy + Debug + Send + Sync + 'static {
     type Coef: Copy + Eq + Ord + Default + Debug + Send + Sync + 'static;
@@ -34,7 +34,8 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
     /// The inverse, or None for 0.
     fn inv(&self, a: Self::Coef) -> Option<Self::Coef>;
 
-    // reduction-time.3 design -- the two row operations are unsafe fns of the trait, whose callers guarantee the columns, not a second, unchecked method beside each checked one (not measured)
+    // reduction-time.3 design-checked -- the two row operations are unsafe fns of the trait, whose callers guarantee the columns, not a second, unchecked method beside each checked one (not measured)
+    // column-index-peak.11 practice-checked: generic programming (monomorphization) -- every row operation takes its columns as any `Column`, one body compiled per column type, not a second method for 2-byte columns beside each (not measured)
     /// Sets the dense row's entries at `cols` to `coefs`. The entries must be
     /// zero before.
     ///
@@ -42,23 +43,23 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
     ///
     /// Every column of `cols` lies below `dense.len()`, and `cols` and
     /// `coefs` have one length.
-    unsafe fn load(&self, dense: &mut [Self::Acc], cols: &[MonoId], coefs: &[Self::Coef]);
+    unsafe fn load<I: Column>(&self, dense: &mut [Self::Acc], cols: &[I], coefs: &[Self::Coef]);
     /// dense −= c · row, for the sparse row `cols`, `coefs`.
     ///
     /// # Safety
     ///
     /// As `load`.
-    unsafe fn sub_mul(
+    unsafe fn sub_mul<I: Column>(
         &self,
         dense: &mut [Self::Acc],
-        cols: &[MonoId],
+        cols: &[I],
         coefs: &[Self::Coef],
         c: Self::Coef,
     );
     /// The entry's value in [0, p), and the entry set to zero.
     fn take(&self, entry: &mut Self::Acc) -> Self::Coef;
 
-    // q-later-runs-time.1 cited: graebe-1993 §4, via demin-2026 §4.2 -- a multimodular coefficient arithmetic over the base ring of the product of Z/p_i Z, the computations at the primes carried out in common; dekleine-2001 §1 and §3, via demin-2026 §4.2 -- Buchberger's algorithm over Z_p1 × … × Z_pb, the polynomial operations done simultaneously on b primes to amortize the monomial cost; demin-2024 §4.4, independently -- the apply stage glues the polynomial coefficients together and computes over N-tuples of primes
+    // q-later-runs-time.1 cited-checked: graebe-1993 §4, via demin-2026 §4.2 -- a multimodular coefficient arithmetic over the base ring of the product of Z/p_i Z, the computations at the primes carried out in common; dekleine-2001 §1 and §3, via demin-2026 §4.2 -- Buchberger's algorithm over Z_p1 × … × Z_pb, the polynomial operations done simultaneously on b primes to amortize the monomial cost; demin-2024 §4.4, independently -- the apply stage glues the polynomial coefficients together and computes over N-tuples of primes
     /// How many primes the field computes over at once: a coefficient
     /// holds a residue at each, its lane.
     const LANES: usize = 1;
@@ -79,13 +80,38 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
         self.coef(decimal_residue(digits, self.characteristic()))
     }
 
-    // row-traffic-time.8 design -- `Gf31` alone reduces bands, not `Gf64` and `Gf64Pair` too, whose row operation multiplies 64-bit residues by Shoup's product and which run the replays over ℚ (log 0044-1)
-    // row-traffic-time.13 design -- `Gf31Pair`, the field of a pair learn over ℚ, takes no band, not bands of two `i64` lanes an entry, 64 bytes a column (log 0046-2)
+    // row-traffic-time.8 design-checked -- `Gf31` reduces bands, not `Gf64` and `Gf64Pair` too, whose row operation multiplies 64-bit residues by Shoup's product and which run the replays over ℚ (log 0044-1)
+    // row-traffic-time.13 design-checked -- `Gf31Pair`, the field of a pair learn over ℚ, takes no band, not bands of two `i64` lanes an entry, 64 bytes a column (log 0046-2)
     /// Whether the field reduces bands, and has `load_band`,
-    /// `sub_mul_band`, and `sub_mul_band_row`: `Gf31` alone. A field
-    /// without bands keeps the three methods' default bodies, which are
-    /// never called.
+    /// `sub_mul_band`, and `sub_mul_band_row`: `Gf31` and `Gf2`, fields of
+    /// one lane. A field without bands keeps the three methods' default
+    /// bodies, which are never called.
     const BANDS: bool = false;
+
+    /// Whether a round over the field may reduce in packed rows, a bit per
+    /// column (gf2-reduction-time.5): `Gf2` alone. The packed reduction
+    /// takes every entry's coefficient as 1, which holds over GF(2) at one
+    /// lane alone (the assertion beside `Gf2`).
+    const PACKS: bool = false;
+
+    // gf2-update-time.4 design-checked -- the plain run's entering order is a constant of the field trait, which chooses the field's code at compile time as `BANDS` and `PACKS` do, not the characteristic read at run time, nor `PACKS`, which names the packed reduction (not measured)
+    /// Whether the plain run enters the elements of each `enter` by
+    /// increasing leading monomial, not by decreasing (`pairs::entering`):
+    /// `Gf2` alone.
+    const ENTERS_ASCENDING: bool = false;
+
+    /// Whether a run over the field starts in `Dense4`, lanes of 4 bits,
+    /// where its input fits: `Gf2` alone. A run over every other field
+    /// starts in `Dense8` (`entry::narrowest`).
+    const STARTS_NARROW: bool = false;
+
+    // gf2-wide-round-time.3 design-checked -- the repeated split is a constant of the field trait, `Gf2`'s alone, not the split sugar split again over every field, which took the calls over ℚ and GF(65521) more time, nor `PACKS`, which names the packed reduction (log 0154-1, 0154-2)
+    /// Whether the plain run notes each piece of a split sugar, so that the
+    /// selection splits the sugar again where its last piece made few
+    /// elements or one that fell (`PairSet::note_piece`,
+    /// gf2-wide-round-time.1, gf2-build-time.1): `Gf2` alone. Over every
+    /// other field a sugar splits once (split-piece-time.2).
+    const SPLITS_AGAIN: bool = false;
 
     /// Sets band row k's entries at `cols` to `coefs`. The entries must be
     /// zero before.
@@ -98,11 +124,11 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
         clippy::unreachable,
         reason = "a band is reduced only where `matrix::takes_bands` holds, which needs `BANDS`, and every method of `Reducer` that calls a band operation debug-asserts it"
     )]
-    unsafe fn load_band(
+    unsafe fn load_band<I: Column>(
         &self,
         _: &mut [[Self::Acc; BAND]],
         _: usize,
-        _: &[MonoId],
+        _: &[I],
         _: &[Self::Coef],
     ) {
         unreachable!(
@@ -111,7 +137,7 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
         )
     }
 
-    /// band[col][k] −= c[k] · v for every entry (col, v) of the sparse row
+    /// `band[col][k] −= c[k] · v` for every entry (col, v) of the sparse row
     /// `cols`, `coefs` and every band row k.
     ///
     /// # Safety
@@ -122,10 +148,10 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
         clippy::unreachable,
         reason = "a band is reduced only where `matrix::takes_bands` holds, which needs `BANDS`, and every method of `Reducer` that calls a band operation debug-asserts it"
     )]
-    unsafe fn sub_mul_band(
+    unsafe fn sub_mul_band<I: Column>(
         &self,
         _: &mut [[Self::Acc; BAND]],
-        _: &[MonoId],
+        _: &[I],
         _: &[Self::Coef],
         _: &[Self::Coef; BAND],
     ) {
@@ -135,7 +161,7 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
         )
     }
 
-    /// band[col][k] −= c · v for every entry (col, v) of the sparse row,
+    /// `band[col][k] −= c · v` for every entry (col, v) of the sparse row,
     /// band row k alone.
     ///
     /// # Safety
@@ -145,11 +171,11 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
         clippy::unreachable,
         reason = "a band is reduced only where `matrix::takes_bands` holds, which needs `BANDS`, and every method of `Reducer` that calls a band operation debug-asserts it"
     )]
-    unsafe fn sub_mul_band_row(
+    unsafe fn sub_mul_band_row<I: Column>(
         &self,
         _: &mut [[Self::Acc; BAND]],
         _: usize,
-        _: &[MonoId],
+        _: &[I],
         _: &[Self::Coef],
         _: Self::Coef,
     ) {
@@ -160,7 +186,7 @@ pub trait Field: Copy + Debug + Send + Sync + 'static {
     }
 }
 
-// row-traffic-time.3 tuned -- a band holds four rows, not two or eight (log 0044-1)
+// row-traffic-time.3 tuned-checked -- a band holds four rows, not two or eight (log 0044-1)
 /// The rows of a band, reduced in one sweep over a matrix's columns
 /// (`matrix::Reducer::reduce_band`).
 pub const BAND: usize = 4;
@@ -194,8 +220,8 @@ pub(crate) fn decimal_residue(digits: &str, p: u64) -> u64 {
         })
 }
 
-// reduction-time.1 design -- `load` and `sub_mul` write the dense row with no bounds check per entry, the callers' guarantee in its place, not a check per entry (log 0030-1)
-// reduction-time.2 design -- the write goes through `get_unchecked_mut`, not the dense row padded to a power of two and indexed by the column masked with its length less one (log 0030-1)
+// reduction-time.1 practice-checked: bounds-check elimination -- `load` and `sub_mul` write the dense row with no bounds check per entry, the callers' guarantee in its place, not a check per entry (log 0030-1)
+// reduction-time.2 design-checked -- the write goes through `get_unchecked_mut`, not the dense row padded to a power of two and indexed by the column masked with its length less one (log 0030-1)
 /// The dense row's entry at column `col`, with no bounds check outside the
 /// test profile, whose debug assertions check it.
 ///
@@ -203,14 +229,15 @@ pub(crate) fn decimal_residue(digits: &str, p: u64) -> u64 {
 ///
 /// `col` lies below `dense.len()`.
 #[inline(always)]
-unsafe fn entry<A>(dense: &mut [A], col: MonoId) -> &mut A {
+unsafe fn entry<A>(dense: &mut [A], col: impl Column) -> &mut A {
+    let col = col.column();
     debug_assert!(
-        col.index() < dense.len(),
+        col < dense.len(),
         "column {col} past the dense row's {len} entries",
         len = dense.len()
     );
     // SAFETY: the caller's guarantee.
-    unsafe { dense.get_unchecked_mut(col.index()) }
+    unsafe { dense.get_unchecked_mut(col) }
 }
 
 /// Shoup's factor ψ = ⌊c·2^64/p⌋ of a fixed multiplicand c < p, below
@@ -252,7 +279,7 @@ fn delays(p: u32) -> bool {
     p < DELAY_BOUND
 }
 
-// f4-gfp.9 cited: berthomieu-2021 §4 -- msolve's F4, its linear algebra, and fglm run over prime fields with characteristic below 2^31
+// f4-gfp.9 design-checked -- `Gf31` is GF(p) for primes 2 ≤ p < 2^31 with `u32` coefficients, not `u64` coefficients for every p < 2^64 as the checker has (checker-gfp.4) (the primes from 2^31: gfp-large-primes.1) (not measured)
 /// GF(p) for a prime p < 2^31, coefficients in [0, p) as `u32`.
 #[derive(Clone, Copy, Debug)]
 pub struct Gf31 {
@@ -274,7 +301,7 @@ impl Gf31 {
         })
     }
 
-    // q-lift.8 design -- the lift tests a candidate prime by gfp-large-primes.10's strong probable-prime test and builds its field without testing it again, not Gf31::new's trial division at each candidate and each run (log 0016-2)
+    // q-lift.8 design-checked -- the lift tests a candidate prime by gfp-large-primes.10's strong probable-prime test and builds its field without testing it again, not Gf31::new's trial division at each candidate and each run (log 0016-2)
     /// GF(p) for a prime p < 2^31 the caller has tested; p is not tested
     /// again.
     pub(crate) fn prime(p: u64) -> Gf31 {
@@ -286,7 +313,7 @@ impl Gf31 {
     }
 }
 
-// f4-gfp.10 practice: trial division -- the characteristic is tested for primality by trial division by every integer from 2 up to √p
+// f4-gfp.10 practice-checked: trial division -- the characteristic is tested for primality by trial division by every integer from 2 up to √p
 fn is_prime(p: u64) -> bool {
     if p < 2 {
         return false;
@@ -353,7 +380,7 @@ impl Field for Gf31 {
         Some(t0.rem_euclid(i64::from(self.p)).narrow())
     }
 
-    unsafe fn load(&self, dense: &mut [i64], cols: &[MonoId], coefs: &[u32]) {
+    unsafe fn load<I: Column>(&self, dense: &mut [i64], cols: &[I], coefs: &[u32]) {
         debug_assert_eq!(cols.len(), coefs.len());
         for (&c, &v) in cols.iter().zip(coefs) {
             // SAFETY: `load`'s condition, c < dense.len().
@@ -361,15 +388,15 @@ impl Field for Gf31 {
         }
     }
 
-    unsafe fn sub_mul(&self, dense: &mut [i64], cols: &[MonoId], coefs: &[u32], c: u32) {
+    unsafe fn sub_mul<I: Column>(&self, dense: &mut [i64], cols: &[I], coefs: &[u32], c: u32) {
         debug_assert_eq!(cols.len(), coefs.len());
         let c = i64::from(c);
-        // reduction-time.5 cited: monagan-2015 §2.2 -- unrolling the innermost loop below saved up to 34%; vanderhoeven-2016 §4.2, independently -- four by four loop unrolling as a variant of a vector operation
+        // reduction-time.5 tuned-checked -- the row operation takes four entries per turn and the rest one by one, not two entries per turn as the compiler unrolls the loop (log 0030-1)
         // Whole chunks of four entries, then a tail of up to three; `cols`
         // and `coefs` split alike, as they have one length.
         let (cc, ct) = cols.as_chunks::<4>();
         let (vc, vt) = coefs.as_chunks::<4>();
-        // gfp-unsolved.10 cited: demin-2024 §4.2 -- the delayed modular arithmetic exploits the spare leading zero bits and delays the modulo operation to just until the overflow is about to happen; dumas-2008 §2.1.2, independently -- λ(p−1)² < 2^γ products are accumulated before a reduction
+        // gfp-unsolved.10 cited-checked: martani-2012 §1.2 -- over a field of 16-bit elements a dense array of 64-bit elements accumulates the products, up to 2^31 additions, and delays the modulo operation until the array is copied back to the row, so each row is reduced once; dumas-2008 §2.1.2, independently -- λ accumulations need no division where λ(p−1)² < 2^γ
         if delays(self.p) {
             // c·v < 2^32, and an entry takes fewer than 2^31 subtractions
             // between two `take`s, so it stays above −2^63.
@@ -388,7 +415,7 @@ impl Field for Gf31 {
             }
             return;
         }
-        // f4-gfp.8 cited: monagan-2015 §2.2 -- 64-bit buffer, rows of 32-bit words, a 31-bit prime, and p² added when the value becomes negative
+        // f4-gfp.8 practice-checked: lazy modular reduction -- the dense row holds `i64` entries in [0, p²), p² added where subtracting c·a took an entry below 0, each entry reduced mod p once, when the loop reaches its column, not a reduction mod p after every product
         // The entry is in [0, p²) and c·v ≤ (p − 1)², so the difference is
         // above −p², and one addition of p² brings it back.
         let p2 = self.p2;
@@ -425,7 +452,13 @@ impl Field for Gf31 {
 
     const BANDS: bool = true;
 
-    unsafe fn load_band(&self, band: &mut [[i64; BAND]], k: usize, cols: &[MonoId], coefs: &[u32]) {
+    unsafe fn load_band<I: Column>(
+        &self,
+        band: &mut [[i64; BAND]],
+        k: usize,
+        cols: &[I],
+        coefs: &[u32],
+    ) {
         debug_assert_eq!(cols.len(), coefs.len());
         debug_assert!(k < BAND, "band row {k} of {BAND}");
         for (&c, &v) in cols.iter().zip(coefs) {
@@ -434,11 +467,11 @@ impl Field for Gf31 {
         }
     }
 
-    // row-traffic-time.6 cited: berthomieu-2021 §4.1 (5) -- CPU intrinsics make the basic operations on 32-bit coefficients more efficient: four multiplications and subtractions at a time into 64-bit integers, and p² added where a value is negative
-    unsafe fn sub_mul_band(
+    // row-traffic-time.6 cited-checked: berthomieu-2021 §4.1 (5) -- CPU intrinsics make the basic operations on 32-bit coefficients more efficient: four multiplications and subtractions at a time into 64-bit integers, and p² added where a value is negative
+    unsafe fn sub_mul_band<I: Column>(
         &self,
         band: &mut [[i64; BAND]],
-        cols: &[MonoId],
+        cols: &[I],
         coefs: &[u32],
         c: &[u32; BAND],
     ) {
@@ -455,12 +488,12 @@ impl Field for Gf31 {
         }
     }
 
-    // row-traffic-time.5 cited: boyer-2016 §4.2 -- where only one of a multiline's rows has an entry, a specialized AXPY reduces one row, and lightweight tests before the loop run it only on nonzero multipliers
-    unsafe fn sub_mul_band_row(
+    // row-traffic-time.5 cited-checked: boyer-2016 §4.2 -- where only one of a multiline's rows has an entry, a specialized AXPY reduces one row, and lightweight tests before the loop run it only on nonzero multipliers
+    unsafe fn sub_mul_band_row<I: Column>(
         &self,
         band: &mut [[i64; BAND]],
         k: usize,
-        cols: &[MonoId],
+        cols: &[I],
         coefs: &[u32],
         c: u32,
     ) {
@@ -503,9 +536,9 @@ impl Field for Gf31 {
     clippy::cast_ptr_alignment,
     reason = "the entry pointer is read and written by _mm_loadu_si128 and _mm_storeu_si128 alone, which take any alignment"
 )]
-unsafe fn sub_mul_band_sse2(
+unsafe fn sub_mul_band_sse2<I: Column>(
     band: &mut [[i64; BAND]],
-    cols: &[MonoId],
+    cols: &[I],
     coefs: &[u32],
     c: &[u32; BAND],
     p: u32,
@@ -570,9 +603,9 @@ unsafe fn sub_mul_band_sse2(
 /// As `Field::sub_mul_band`.
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
-unsafe fn sub_mul_band_scalar(
+unsafe fn sub_mul_band_scalar<I: Column>(
     band: &mut [[i64; BAND]],
-    cols: &[MonoId],
+    cols: &[I],
     coefs: &[u32],
     c: &[u32; BAND],
     p: u32,
@@ -590,7 +623,183 @@ unsafe fn sub_mul_band_scalar(
     }
 }
 
-// gfp-large-primes.1 design -- the primes from 2^31 to 2^64 take one field of u64 coefficients, not a field of u32 coefficients below 2^32 beside one of u64 coefficients from 2^32 (log 0015-1)
+// gf2-reduction-time.1 design-checked -- GF(2) computes in a field of its own, not in `Gf31` at p = 2, whose dense row holds an i64 a column and whose take divides by p at every nonzero entry (log 0125-1, 0125-2)
+/// GF(2): a coefficient and a dense entry are a byte each, 0 or 1, and
+/// every row operation is an exclusive or.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Gf2;
+
+impl Gf2 {
+    pub(crate) const P: u64 = 2;
+
+    #[must_use]
+    pub fn new() -> Gf2 {
+        Gf2
+    }
+}
+
+// A field that packs takes every entry's coefficient as 1 (`Field::PACKS`).
+const _: () = assert!(
+    !<Gf2 as Field>::PACKS || (<Gf2 as Field>::LANES == 1 && Gf2::P == 2),
+    "a field that packs computes over GF(2) at one lane"
+);
+
+/// Whether every coefficient of a stored row is 1. A stored row over GF(2)
+/// holds nonzero coefficients alone: an element's terms, and the entries
+/// `take` returned that are not 0.
+fn ones(coefs: &[u8]) -> bool {
+    coefs.iter().all(|&v| v == 1)
+}
+
+impl Field for Gf2 {
+    // gf2-reduction-time.2 design-checked -- a coefficient and a dense entry are a byte each, not a bit each with the dense row 64 columns to a word, where a row operation writes a column's word for every entry and two entries in one word wait on each other's write (not measured)
+    type Coef = u8;
+    type Acc = u8;
+
+    fn characteristic(&self) -> u64 {
+        Gf2::P
+    }
+
+    fn coef(&self, v: u64) -> u8 {
+        u8::from(v % 2 == 1)
+    }
+
+    fn value(&self, c: u8) -> u64 {
+        debug_assert!(c <= 1, "{c} past GF(2)");
+        u64::from(c)
+    }
+
+    fn add(&self, a: u8, b: u8) -> u8 {
+        debug_assert!(a <= 1 && b <= 1, "{a} or {b} past GF(2)");
+        a ^ b
+    }
+
+    fn sub(&self, a: u8, b: u8) -> u8 {
+        debug_assert!(a <= 1 && b <= 1, "{a} or {b} past GF(2)");
+        a ^ b
+    }
+
+    fn neg(&self, a: u8) -> u8 {
+        debug_assert!(a <= 1, "{a} past GF(2)");
+        a
+    }
+
+    fn mul(&self, a: u8, b: u8) -> u8 {
+        debug_assert!(a <= 1 && b <= 1, "{a} or {b} past GF(2)");
+        a & b
+    }
+
+    fn inv(&self, a: u8) -> Option<u8> {
+        debug_assert!(a <= 1, "{a} past GF(2)");
+        (a == 1).then_some(1)
+    }
+
+    unsafe fn load<I: Column>(&self, dense: &mut [u8], cols: &[I], coefs: &[u8]) {
+        debug_assert_eq!(cols.len(), coefs.len());
+        for (&c, &v) in cols.iter().zip(coefs) {
+            // SAFETY: `load`'s condition, c < dense.len().
+            unsafe { *entry(dense, c) = v };
+        }
+    }
+
+    // gf2-reduction-time.3 design-checked -- the row operation XORs c into each column of the row and reads no coefficient, each a 1, not each coefficient read and ANDed with c (not measured)
+    unsafe fn sub_mul<I: Column>(&self, dense: &mut [u8], cols: &[I], coefs: &[u8], c: u8) {
+        debug_assert_eq!(cols.len(), coefs.len());
+        debug_assert!(c <= 1, "a multiplier {c} past GF(2)");
+        debug_assert!(ones(coefs), "a stored row's coefficient other than 1");
+        // reduction-time.5 tuned-checked -- the row operation takes four entries per turn and the rest one by one, not two entries per turn as the compiler unrolls the loop (log 0030-1)
+        let (cc, ct) = cols.as_chunks::<4>();
+        // SAFETY: `sub_mul`'s condition, every column below dense.len().
+        unsafe {
+            for k in cc {
+                *entry(dense, k[0]) ^= c;
+                *entry(dense, k[1]) ^= c;
+                *entry(dense, k[2]) ^= c;
+                *entry(dense, k[3]) ^= c;
+            }
+            for &col in ct {
+                *entry(dense, col) ^= c;
+            }
+        }
+    }
+
+    fn take(&self, entry: &mut u8) -> u8 {
+        debug_assert!(*entry <= 1, "an entry {entry} past GF(2)");
+        std::mem::take(entry)
+    }
+
+    // gf2-reduction-time.4 design-checked -- `Gf2` reduces bands, a column's four band bytes XORed as one u32, not every row over GF(2) reduced on its own (log 0125-2)
+    const BANDS: bool = true;
+
+    const PACKS: bool = true;
+
+    // gf2-update-time.1 design-checked -- over GF(2) each `enter`'s elements go by increasing leading monomial, so that one whose leading monomial a smaller element of the same `enter` divides enters divided and joins no G_min, not by decreasing, where it joins G_min, forms its pairs with G_min, and leaves G_min at the smaller element (log 0130-1, 0130-2)
+    const ENTERS_ASCENDING: bool = true;
+
+    // gf2-monomial-time.2 design-checked -- a call over GF(2) starts in `Dense4`, and a call over every other field in `Dense8`, not every call in `Dense4`, where most calls over ℚ and GF(65521) take a round past degree 7, some after half their time, and would start over (log 0136-1, 0136-2)
+    const STARTS_NARROW: bool = true;
+
+    const SPLITS_AGAIN: bool = true;
+
+    unsafe fn load_band<I: Column>(
+        &self,
+        band: &mut [[u8; BAND]],
+        k: usize,
+        cols: &[I],
+        coefs: &[u8],
+    ) {
+        debug_assert_eq!(cols.len(), coefs.len());
+        debug_assert!(k < BAND, "band row {k} of {BAND}");
+        for (&c, &v) in cols.iter().zip(coefs) {
+            // SAFETY: `load_band`'s condition, c < band.len() and k < BAND.
+            unsafe { *entry(band, c).get_unchecked_mut(k) = v };
+        }
+    }
+
+    unsafe fn sub_mul_band<I: Column>(
+        &self,
+        band: &mut [[u8; BAND]],
+        cols: &[I],
+        coefs: &[u8],
+        c: &[u8; BAND],
+    ) {
+        debug_assert_eq!(cols.len(), coefs.len());
+        debug_assert!(
+            c.iter().all(|&m| m <= 1),
+            "a multiplier of {c:?} past GF(2)"
+        );
+        debug_assert!(ones(coefs), "a stored row's coefficient other than 1");
+        // Band row k's multiplier at byte k, where a column's element holds
+        // band row k's entry.
+        let c = u32::from_ne_bytes(*c);
+        for &col in cols {
+            // SAFETY: `sub_mul_band`'s condition, col < band.len().
+            let e = unsafe { entry(band, col) };
+            *e = (u32::from_ne_bytes(*e) ^ c).to_ne_bytes();
+        }
+    }
+
+    unsafe fn sub_mul_band_row<I: Column>(
+        &self,
+        band: &mut [[u8; BAND]],
+        k: usize,
+        cols: &[I],
+        coefs: &[u8],
+        c: u8,
+    ) {
+        debug_assert_eq!(cols.len(), coefs.len());
+        debug_assert!(k < BAND, "band row {k} of {BAND}");
+        debug_assert!(c <= 1, "a multiplier {c} past GF(2)");
+        debug_assert!(ones(coefs), "a stored row's coefficient other than 1");
+        for &col in cols {
+            // SAFETY: `sub_mul_band_row`'s condition, col < band.len() and
+            // k < BAND.
+            unsafe { *entry(band, col).get_unchecked_mut(k) ^= c };
+        }
+    }
+}
+
+// gfp-large-primes.1 design-checked -- the primes from 2^31 to 2^64 take one field of u64 coefficients, not a field of u32 coefficients below 2^32 beside one of u64 coefficients from 2^32 (log 0015-1)
 /// GF(p) for a prime p with 2^31 ≤ p < 2^64, coefficients in [0, p) as
 /// `u64`.
 #[derive(Clone, Copy, Debug)]
@@ -605,7 +814,7 @@ impl Gf64 {
         (p >= 1 << 31 && is_prime_64(p)).then_some(Gf64 { p })
     }
 
-    // q-modulus-time.8 design -- a replay's field is built for the prime the lift's draw tested, without testing it again, not Gf64::new's strong probable-prime test at each replay (log 0036-1)
+    // q-modulus-time.8 design-checked -- a replay's field is built for the prime the lift's draw tested, without testing it again, not Gf64::new's strong probable-prime test at each replay (log 0036-1)
     /// GF(p) for a prime p with 2^31 ≤ p < 2^64 the caller has tested; p
     /// is not tested again.
     pub(crate) fn prime(p: u64) -> Gf64 {
@@ -621,8 +830,8 @@ pub(crate) fn mul_mod(a: u64, b: u64, p: u64) -> u64 {
     (u128::from(a) * u128::from(b) % u128::from(p)).narrow()
 }
 
-// gfp-large-primes.9 cited: dumas-2008 §2.1.1 -- multiplication is followed by machine remaindering while division is performed via the extended gcd algorithm
-// q-lift.41 cited: dumas-2008 §2.1.1 -- multiplication is followed by machine remaindering while division is performed via the extended gcd algorithm
+// gfp-large-primes.9 practice-checked: modular inverse by the extended Euclidean algorithm -- an inverse comes from the extended Euclidean algorithm on p and a in `i128`, not Fermat's little theorem, a^(p−2) by square and multiply
+// q-lift.41 practice-checked: modular inverse by the extended Euclidean algorithm -- M⁻¹ mod p in a Chinese remainder step and d⁻¹ mod p in `Rational::residue` come from the extended Euclidean algorithm in `i128`, not Fermat's little theorem, M^(p−2) mod p by square and multiply
 /// a⁻¹ mod p for a prime p and a in [1, p).
 pub(crate) fn inverse_mod(a: u64, p: u64) -> u64 {
     debug_assert!(a != 0 && a < p, "{a} is no unit below {p}");
@@ -642,7 +851,7 @@ pub(crate) fn inverse_mod(a: u64, p: u64) -> u64 {
 /// The twelve prime bases from 2 to 37.
 const BASES: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
 
-// gfp-large-primes.10 cited: miller-1976 _Tests for primality_, via rabin-1980 §1 -- a base b with ((b^((n−1)/2^k) mod n) − 1, n) ≠ 1, n shows n composite; rabin-1980 §1, Theorem 1 -- at least 3(n−1)/4 of the bases are witnesses of a composite n; sorenson-2017 §1, Theorem 1.1 -- ψ₁₂, the least strong pseudoprime to the first twelve prime bases, is 318665857834031151167461, past 2^64
+// gfp-large-primes.10 practice-checked: deterministic Miller–Rabin test -- `Gf64::new` tests the characteristic by the strong probable-prime test to the twelve prime bases from 2 to 37, after trial division by them, not trial division up to √p (f4-gfp.10) nor no test, a composite found where an inverse fails (checker-gfp.5)
 /// Whether n is prime, for every n < 2^64 (gfp-large-primes.10).
 #[allow(
     clippy::many_single_char_names,
@@ -686,7 +895,7 @@ pub(crate) fn is_prime_64(n: u64) -> bool {
 
 impl Field for Gf64 {
     type Coef = u64;
-    // gfp-large-primes.4 cited: demin-2024 §4.2 -- the generic arithmetic takes remainder modulo a prime after each multiplication; if the prime fits in 27 bits, we opt to use delayed arithmetic; otherwise, we use the generic arithmetic; dumas-2008 §2.1.2 -- λ accumulations without any division where λ(p−1)² < 2^γ
+    // gfp-large-primes.4 design-checked -- a dense entry of `Gf64` is a `u64` in [0, p), each subtraction reduced at once, not the products accumulated in `u128` and reduced before an overflow (not measured)
     /// A dense entry lies in [0, 2p) between two operations where p < 2^62,
     /// and in [0, p) otherwise.
     type Acc = u64;
@@ -718,7 +927,7 @@ impl Field for Gf64 {
         if a == 0 { 0 } else { self.p - a }
     }
 
-    // gfp-large-primes.8 design -- every product outside a row operation takes the u128 remainder, not Barrett's product with a pre-inverse of p (log 0015-1)
+    // gfp-large-primes.8 design-checked -- every product outside a row operation takes the u128 remainder, not Barrett's product with a pre-inverse of p (log 0015-1)
     fn mul(&self, a: u64, b: u64) -> u64 {
         mul_mod(a, b, self.p)
     }
@@ -727,7 +936,7 @@ impl Field for Gf64 {
         (a != 0).then(|| inverse_mod(a, self.p))
     }
 
-    unsafe fn load(&self, dense: &mut [u64], cols: &[MonoId], coefs: &[u64]) {
+    unsafe fn load<I: Column>(&self, dense: &mut [u64], cols: &[I], coefs: &[u64]) {
         debug_assert_eq!(cols.len(), coefs.len());
         for (&c, &v) in cols.iter().zip(coefs) {
             // SAFETY: `load`'s condition, c < dense.len().
@@ -739,21 +948,21 @@ impl Field for Gf64 {
         clippy::many_single_char_names,
         reason = "c, d, e, p, q are the notation of vanderhoeven-2016 and harvey-2014 the comments write"
     )]
-    unsafe fn sub_mul(&self, dense: &mut [u64], cols: &[MonoId], coefs: &[u64], c: u64) {
+    unsafe fn sub_mul<I: Column>(&self, dense: &mut [u64], cols: &[I], coefs: &[u64], c: u64) {
         debug_assert_eq!(cols.len(), coefs.len());
         let p = self.p;
-        // gfp-large-primes.7 cited: vanderhoeven-2016 §2.2.3 -- in order to remove the branching involved in line 4 of Function 6, we replace it by d = min(d, d − p); harvey-2014 §2 -- the modular subtraction works for any p < β by using the borrow generated by the subtraction T = X − Y, from Niels Möller by personal communication
+        // gfp-large-primes.7 cited-checked: vanderhoeven-2016 §2.2.3 -- in order to remove the branching involved in line 4 of Function 6, we replace it by d = min(d, d − p); harvey-2014 §2 -- the modular subtraction works for any p < β by using the borrow generated by the subtraction T = X − Y, from Niels Möller by personal communication
         // e − d, plus p where it borrowed: in [0, p) for e and d in [0, p).
         let subtract = |e: &mut u64, d: u64| {
             let (difference, borrow) = e.overflowing_sub(d);
             *e = difference.wrapping_add(p & 0u64.wrapping_sub(u64::from(borrow)));
         };
-        // q-modulus-time.3 cited: harvey-2014 §3 -- Shoup's product works for any 0 ≤ T < β, and a redundant representation in [0, 2p) removes the adjustment of its result, for p < β/4; gokavarapu-2026 §8.2, independently -- redundant representatives in [0, kp), the invariant a ≡ a_true mod p
-        // q-modulus-time.4 cited: harvey-2014 §3 -- the redundant representation requires the stronger condition p < β/4
+        // q-modulus-time.3 cited-checked: harvey-2014 §3 -- Shoup's product works for any 0 ≤ T < β, and a redundant representation in [0, 2p) removes the adjustment of its result, for p < β/4; gokavarapu-2026 §8.2, independently -- redundant representatives in [0, kp), the invariant a ≡ a_true mod p
+        // q-modulus-time.4 tuned-checked -- the replays' primes lie below 2^62, a quarter of the word, not primes from [2^62, 2^63) with the correction per product (log 0036-1)
         if p < 1 << 62 {
             let psi = shoup_factor(c, p);
             let twice = 2 * p;
-            // q-modulus-time.5 tuned -- the redundant row operation takes one entry per turn, not four entries per turn as Gf31::sub_mul (log 0036-1)
+            // q-modulus-time.5 tuned-checked -- the redundant row operation takes one entry per turn, not four entries per turn as Gf31::sub_mul (log 0036-1)
             for (&col, &v) in cols.iter().zip(coefs) {
                 // v·c − q·p lies in [0, 2p), and 2p < 2^63.
                 let d = shoup_redundant(v, c, psi, p);
@@ -766,7 +975,7 @@ impl Field for Gf64 {
             }
             return;
         }
-        // gfp-large-primes.5 cited: vanderhoeven-2016 §2.2.2, Function 8 and Proposition 4 -- for a fixed multiplicand y precompute ψ := ⌊2^n y/p⌋, c = (xψ) >> n, d = xy − cp, one correction; if m ≤ n − 1 line 2 is computed in one word; §2.3.1, Remark 8 -- Barrett's approach is expected to be always faster for this task; farnqvist-2005 §4.2, independently, via harvey-2014 §2, attributes it to Victor Shoup by e-mail [13] -- y_pinv = 2⌊2^(W−1)·y/p⌋ precomputed, q = ⌊x·y_pinv/2^W⌋, and r = xy − qp is the answer or p too big
+        // gfp-large-primes.5 cited-checked: vanderhoeven-2016 §2.2.2, Function 8 and Proposition 4 -- for a fixed multiplicand y precompute ψ := ⌊2^n y/p⌋, c = (xψ) >> n, d = xy − cp, one correction; if m ≤ n − 1 line 2 is computed in one word; §2.3.1, Remark 8 -- Barrett's approach is expected to be always faster for this task; farnqvist-2005 §4.2, independently, via harvey-2014 §2, attributes it to Victor Shoup by e-mail [13] -- y_pinv = 2⌊2^(W−1)·y/p⌋ precomputed, q = ⌊x·y_pinv/2^W⌋, and r = xy − qp is the answer or p too big
         if p < 1 << 63 {
             let psi = shoup_factor(c, p);
             for (&col, &v) in cols.iter().zip(coefs) {
@@ -776,7 +985,7 @@ impl Field for Gf64 {
             }
             return;
         }
-        // gfp-large-primes.6 design -- where p ≥ 2^63 each product is the u128 remainder, not the pre-inverse with v·c − q·p in two words (log 0015-1)
+        // gfp-large-primes.6 design-checked -- where p ≥ 2^63 each product is the u128 remainder, not the pre-inverse with v·c − q·p in two words (log 0015-1)
         for (&col, &v) in cols.iter().zip(coefs) {
             let d = mul_mod(v, c, p);
             // SAFETY: as above.
@@ -792,8 +1001,8 @@ impl Field for Gf64 {
     }
 }
 
-// q-learn-time.2 design -- the pair learn's field is Gf31Pair, two primes of [2^30, 2^31) with u32 residues and an i64 dense entry per lane, not Gf64Pair at two primes of [2^61, 2^62) whose first lane's image the lift could combine as a replay's (log 0036-1, 0052-1)
-// q-learn-time.3 design -- each lane's row operation adds p_k² where the entry goes below 0, whatever its prime, and take reduces the entry by rem_euclid, not Gf31's two loops with the delayed form below 2^16 (not measured)
+// q-learn-time.2 design-checked -- the pair learn's field is Gf31Pair, two primes of [2^30, 2^31) with u32 residues and an i64 dense entry per lane, not Gf64Pair at two primes of [2^61, 2^62) whose first lane's image the lift could combine as a replay's (log 0036-1, 0052-1)
+// q-learn-time.3 design-checked -- each lane's row operation adds p_k² where the entry goes below 0, whatever its prime, and take reduces the entry by rem_euclid, not Gf31's two loops with the delayed form below 2^16 (not measured)
 /// GF(p) × GF(q) for two distinct primes below 2^31: a coefficient is a
 /// pair of residues, one per lane, and every operation runs lane by lane
 /// as `Gf31` runs it for a prime past 2^16.
@@ -803,7 +1012,7 @@ pub(crate) struct Gf31Pair {
 }
 
 impl Gf31Pair {
-    // q-lift.8 design -- the lift tests a candidate prime by gfp-large-primes.10's strong probable-prime test and builds its field without testing it again, not Gf31::new's trial division at each candidate and each run (log 0016-2)
+    // q-lift.8 design-checked -- the lift tests a candidate prime by gfp-large-primes.10's strong probable-prime test and builds its field without testing it again, not Gf31::new's trial division at each candidate and each run (log 0016-2)
     /// For two distinct primes below 2^31 the caller has tested.
     pub(crate) fn primes(p: u64, q: u64) -> Gf31Pair {
         debug_assert!(p != q, "two distinct primes");
@@ -855,7 +1064,7 @@ impl Field for Gf31Pair {
         Some([self.lanes[0].inv(a[0])?, self.lanes[1].inv(a[1])?])
     }
 
-    unsafe fn load(&self, dense: &mut [[i64; 2]], cols: &[MonoId], coefs: &[[u32; 2]]) {
+    unsafe fn load<I: Column>(&self, dense: &mut [[i64; 2]], cols: &[I], coefs: &[[u32; 2]]) {
         debug_assert_eq!(cols.len(), coefs.len());
         for (&c, v) in cols.iter().zip(coefs) {
             // SAFETY: `load`'s condition, c < dense.len().
@@ -863,21 +1072,21 @@ impl Field for Gf31Pair {
         }
     }
 
-    unsafe fn sub_mul(
+    unsafe fn sub_mul<I: Column>(
         &self,
         dense: &mut [[i64; 2]],
-        cols: &[MonoId],
+        cols: &[I],
         coefs: &[[u32; 2]],
         c: [u32; 2],
     ) {
         debug_assert_eq!(cols.len(), coefs.len());
-        // f4-gfp.8 cited: monagan-2015 §2.2 -- 64-bit buffer, rows of 32-bit words, a 31-bit prime, and p² added when the value becomes negative
+        // f4-gfp.8 practice-checked: lazy modular reduction -- the dense row holds `i64` entries in [0, p²), p² added where subtracting c·a took an entry below 0, each entry reduced mod p once, when the loop reaches its column, not a reduction mod p after every product
         // At each lane the entry is in [0, p_k²) and c_k·v_k ≤ (p_k − 1)²,
         // so the difference is above −p_k², and one addition of p_k² brings
         // it back.
         let p2 = [self.lanes[0].p2, self.lanes[1].p2];
         let c = [i64::from(c[0]), i64::from(c[1])];
-        // q-learn-time.15 design -- each lane's correction is Gf31's branch, p² added where the entry went below 0, not monagan-2015 §2.2's branch-free form, p² & (e >> 63) added (log 0052-2)
+        // q-learn-time.15 design-checked -- each lane's correction is Gf31's branch, p² added where the entry went below 0, not monagan-2015 §2.2's branch-free form, p² & (e >> 63) added (log 0052-2)
         let step = |e: &mut [i64; 2], v: &[u32; 2]| {
             for k in 0..2 {
                 e[k] -= c[k] * i64::from(v[k]);
@@ -886,7 +1095,7 @@ impl Field for Gf31Pair {
                 }
             }
         };
-        // q-learn-time.14 cited: monagan-2015 §2.2 -- unrolling the innermost loop below saved up to 34%; vanderhoeven-2016 §4.2, independently -- four by four loop unrolling as a variant of a vector operation
+        // q-learn-time.14 cited-checked: monagan-2015 §2.2 -- unrolling the innermost loop below saved up to 34%; vanderhoeven-2016 §4.2, independently -- four by four loop unrolling as a variant of a vector operation
         // Whole chunks of four entries, then a tail of up to three; `cols`
         // and `coefs` split alike, as they have one length.
         let (cc, ct) = cols.as_chunks::<4>();
@@ -933,9 +1142,9 @@ impl Field for Gf31Pair {
     }
 }
 
-// q-later-runs-time.1 cited: graebe-1993 §4, via demin-2026 §4.2 -- a multimodular coefficient arithmetic over the base ring of the product of Z/p_i Z, the computations at the primes carried out in common; dekleine-2001 §1 and §3, via demin-2026 §4.2 -- Buchberger's algorithm over Z_p1 × … × Z_pb, the polynomial operations done simultaneously on b primes to amortize the monomial cost; demin-2024 §4.4, independently -- the apply stage glues the polynomial coefficients together and computes over N-tuples of primes
-// q-later-runs-time.2 tuned -- two primes per replay, not four as demin-2024 §4.4's multi-modular computation takes, nor more (log 0039-1)
-// q-later-runs-time.3 design -- the pair's primes both lie in [2^61, 2^62), each lane computing as Gf64 below 2^62, not pairs of any two primes with each lane in the row operation of its range or in Gf31 (not measured)
+// q-later-runs-time.1 cited-checked: graebe-1993 §4, via demin-2026 §4.2 -- a multimodular coefficient arithmetic over the base ring of the product of Z/p_i Z, the computations at the primes carried out in common; dekleine-2001 §1 and §3, via demin-2026 §4.2 -- Buchberger's algorithm over Z_p1 × … × Z_pb, the polynomial operations done simultaneously on b primes to amortize the monomial cost; demin-2024 §4.4, independently -- the apply stage glues the polynomial coefficients together and computes over N-tuples of primes
+// q-later-runs-time.2 tuned-checked -- two primes per replay, not four as demin-2024 §4.4's multi-modular computation takes, nor more (log 0039-1)
+// q-later-runs-time.3 design-checked -- the pair's primes both lie in [2^61, 2^62), each lane computing as Gf64 below 2^62, not pairs of any two primes with each lane in the row operation of its range or in Gf31 (not measured)
 /// GF(p) × GF(q) for two distinct primes of [2^61, 2^62): a coefficient
 /// is a pair of residues, one per lane, and every operation runs lane by
 /// lane as `Gf64` runs it below 2^62.
@@ -945,7 +1154,7 @@ pub(crate) struct Gf64Pair {
 }
 
 impl Gf64Pair {
-    // q-modulus-time.8 design -- a replay's field is built for the prime the lift's draw tested, without testing it again, not Gf64::new's strong probable-prime test at each replay (log 0036-1)
+    // q-modulus-time.8 design-checked -- a replay's field is built for the prime the lift's draw tested, without testing it again, not Gf64::new's strong probable-prime test at each replay (log 0036-1)
     /// For two distinct primes of [2^61, 2^62) the caller has tested.
     pub(crate) fn primes(p: u64, q: u64) -> Gf64Pair {
         debug_assert!(p != q, "two distinct primes");
@@ -967,8 +1176,10 @@ impl Field for Gf64Pair {
 
     const LANES: usize = 2;
 
-    /// The first lane's prime. A replay reads it only for its line in the
-    /// call report (`entry::Run::report_run`).
+    /// The first lane's prime. A replay reads it for its line in the call
+    /// report (`entry::Run::report_run`) and for the test of GF(2) before
+    /// the squares' rule (`entry::Run::echelon`), which a prime of
+    /// [2^61, 2^62) fails.
     fn characteristic(&self) -> u64 {
         self.lanes[0].p
     }
@@ -1003,7 +1214,7 @@ impl Field for Gf64Pair {
         Some([self.lanes[0].inv(a[0])?, self.lanes[1].inv(a[1])?])
     }
 
-    unsafe fn load(&self, dense: &mut [[u64; 2]], cols: &[MonoId], coefs: &[[u64; 2]]) {
+    unsafe fn load<I: Column>(&self, dense: &mut [[u64; 2]], cols: &[I], coefs: &[[u64; 2]]) {
         debug_assert_eq!(cols.len(), coefs.len());
         for (&c, &v) in cols.iter().zip(coefs) {
             // SAFETY: `load`'s condition, c < dense.len().
@@ -1015,16 +1226,16 @@ impl Field for Gf64Pair {
         clippy::many_single_char_names,
         reason = "c, d, e, p, q are the notation of harvey-2014 the comments write, k their lane"
     )]
-    unsafe fn sub_mul(
+    unsafe fn sub_mul<I: Column>(
         &self,
         dense: &mut [[u64; 2]],
-        cols: &[MonoId],
+        cols: &[I],
         coefs: &[[u64; 2]],
         c: [u64; 2],
     ) {
         debug_assert_eq!(cols.len(), coefs.len());
         let p = [self.lanes[0].p, self.lanes[1].p];
-        // q-modulus-time.3 cited: harvey-2014 §3 -- Shoup's product works for any 0 ≤ T < β, and a redundant representation in [0, 2p) removes the adjustment of its result, for p < β/4; gokavarapu-2026 §8.2, independently -- redundant representatives in [0, kp), the invariant a ≡ a_true mod p
+        // q-modulus-time.3 cited-checked: harvey-2014 §3 -- Shoup's product works for any 0 ≤ T < β, and a redundant representation in [0, 2p) removes the adjustment of its result, for p < β/4; gokavarapu-2026 §8.2, independently -- redundant representatives in [0, kp), the invariant a ≡ a_true mod p
         let psi = [shoup_factor(c[0], p[0]), shoup_factor(c[1], p[1])];
         let twice = [2 * p[0], 2 * p[1]];
         for (&col, v) in cols.iter().zip(coefs) {

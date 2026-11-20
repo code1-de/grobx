@@ -23,7 +23,7 @@
 //! most 2^31 − 1 in the instance and at most `u32::MAX` in the basis and the
 //! cofactor matrix.
 
-// checker-gfp.3 design -- the grammar is tolerant: whitespace anywhere, a term any product of numbers, fractions, and powers, like terms combined, terms and elements in any order, comment lines before the bracket (not measured)
+// checker-gfp.3 design-checked -- the grammar is tolerant: whitespace anywhere, a term any product of numbers, fractions, and powers, like terms combined, terms and elements in any order, comment lines before the bracket (not measured)
 
 use std::collections::HashMap;
 
@@ -33,7 +33,7 @@ use crate::order::Cmp;
 use crate::poll::Poll;
 use crate::{Error, Order, Part};
 
-// checker-stop-latency.8 design -- the reading counts 1 + b/16 units a term after it, b its bytes, and ends where the poll stops, the polynomial it reads unfinished and a reading error past the term the stop falls in not reached, not the texts read without a poll (log 0059-1)
+// checker-stop-latency.8 design-checked -- the reading counts 1 + b/16 units a term after it, b its bytes, and ends where the poll stops, the polynomial it reads unfinished and a reading error past the term the stop falls in not reached, not the texts read without a poll (log 0059-1)
 /// Bytes of a term's text that count as one unit of work beside the term's
 /// own (`Poll`).
 const BYTES: usize = 16;
@@ -48,7 +48,12 @@ const EXPONENT_CAP: u64 = 1 << 33;
 /// stays within a u128.
 const CHARACTERISTIC_CAP: u128 = 1 << 65;
 
-// checker-stop-latency.9 design -- the `Numbers` functions take the poll as a parameter, not a poll held in `Eval` behind a `RefCell` or a `Numbers` wrapper that holds the poll for the exact reading (not measured)
+/// An instance term's largest degree, 2^31 − 1, half of `u32::MAX`: the
+/// bound of the engine's widest format, in which a sum of two degrees fits
+/// a u32 (instance-grammar-agreement.5).
+const INSTANCE_DEGREE: u64 = (u32::MAX / 2) as u64;
+
+// checker-stop-latency.9 design-checked -- the `Numbers` functions take the poll as a parameter, not a poll held in `Eval` behind a `RefCell` or a `Numbers` wrapper that holds the poll for the exact reading (not measured)
 /// The arithmetic a side of the checker reads its numbers with: GF(p)'s
 /// residues, Q's fractions, or in the cheap mode a row's values at the
 /// points (`cheap::Eval`). Each function counts the work of its arithmetic
@@ -124,6 +129,22 @@ struct Cursor<'a> {
     part: Part,
 }
 
+/// What a reading keeps from term to term: a term's exponents and a
+/// polynomial's terms.
+struct Scratch<N: Numbers> {
+    exps: Vec<u32>,
+    terms: N::Terms,
+}
+
+impl<N: Numbers> Default for Scratch<N> {
+    fn default() -> Scratch<N> {
+        Scratch {
+            exps: Vec::new(),
+            terms: N::Terms::default(),
+        }
+    }
+}
+
 impl<'a> Cursor<'a> {
     fn new(text: &'a [u8], part: Part, line: usize) -> Cursor<'a> {
         Cursor {
@@ -134,8 +155,8 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    // instance-grammar-agreement.1 design -- the checker takes the engine's reading of the instance text, and the engine's reader stays as it is (not measured)
-    // instance-grammar-agreement.2 design -- whitespace is ASCII space, tab, line feed, form feed, and carriage return in the instance, the basis, and the cofactor text alike, not the form feed in the instance alone (not measured)
+    // instance-grammar-agreement.1 design-checked -- the checker takes the engine's reading of the instance text, and the engine's reader stays as it is (not measured)
+    // instance-grammar-agreement.2 design-checked -- whitespace is ASCII space, tab, line feed, form feed, and carriage return in the instance, the basis, and the cofactor text alike, not the form feed in the instance alone (not measured)
     fn skip_space(&mut self) {
         while let Some(&b) = self.text.get(self.pos) {
             match b {
@@ -243,6 +264,25 @@ impl<'a> Cursor<'a> {
             .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
     }
 
+    /// Divides `c` by the denominator after a `/`: a syntax error where no
+    /// digit stands here, and `Error::NoInverse` where the numbers have no
+    /// inverse of it.
+    fn divide<N: Numbers>(
+        &mut self,
+        numbers: &N,
+        c: &mut N::Term,
+        poll: &mut Poll,
+    ) -> Result<(), Error> {
+        if !self.at_digit() {
+            return Err(self.syntax("a denominator"));
+        }
+        let d = self.digits();
+        numbers.over(c, d, poll).ok_or(Error::NoInverse {
+            part: self.part,
+            line: self.line,
+        })
+    }
+
     /// One term, appended to `terms` unless its coefficient is zero. A
     /// degree past 2^31 − 1 in the instance, or past `u32` in the basis and
     /// the cofactors, is `Error::Overflow` once the term is read.
@@ -251,28 +291,28 @@ impl<'a> Cursor<'a> {
         ring: &Ring,
         numbers: &N,
         negative: bool,
-        exps: &mut Vec<u32>,
-        terms: &mut N::Terms,
+        scratch: &mut Scratch<N>,
         poll: &mut Poll,
     ) -> Result<(), Error> {
+        let Scratch { exps, terms } = scratch;
         let start = self.pos;
         exps.clear();
         exps.resize(ring.w, 0);
         let mut c = numbers.one();
-        // instance-grammar-agreement.6 design -- the exponents and the degree are summed without a bound while the factors are read, and the bound is tested once the term is read, not at the first exponent or partial degree past `u32` (not measured)
+        // instance-grammar-agreement.6 design-checked -- the exponents and the degree are summed without a bound while the factors are read, and the bound is tested once the term is read, not at the first exponent or partial degree past `u32` (not measured)
         let mut degree = 0u64;
+        // The basis and the cofactor texts, which grobx writes, give a
+        // denominator only after its numerator; an instance, which a person
+        // writes, after any factor: `y/3`, `y^2/3*x`, `1/2/3`.
+        let denominators = match self.part {
+            Part::Instance => true,
+            Part::Basis | Part::Cofactors => false,
+        };
         loop {
             if self.at_digit() {
                 numbers.times(&mut c, self.digits(), poll);
                 if self.eat(b'/') {
-                    if !self.at_digit() {
-                        return Err(self.syntax("a denominator"));
-                    }
-                    let d = self.digits();
-                    numbers.over(&mut c, d, poll).ok_or(Error::NoInverse {
-                        part: self.part,
-                        line: self.line,
-                    })?;
+                    self.divide(numbers, &mut c, poll)?;
                 }
             } else if self.at_name() {
                 let name = self.name();
@@ -296,13 +336,16 @@ impl<'a> Cursor<'a> {
             } else {
                 return Err(self.syntax("a number or a variable"));
             }
+            while denominators && self.eat(b'/') {
+                self.divide(numbers, &mut c, poll)?;
+            }
             if !self.eat(b'*') {
                 break;
             }
         }
-        // instance-grammar-agreement.5 design -- an instance term's degree is at most 2^31 − 1, the engine's widest format's bound, and the basis and the cofactor text keep `u32`'s, not `u32`'s in the instance as well or 2^31 − 1 in every text (not measured)
+        // instance-grammar-agreement.5 design-checked -- an instance term's degree is at most 2^31 − 1, the engine's widest format's bound, and the basis and the cofactor text keep `u32`'s, not `u32`'s in the instance as well or 2^31 − 1 in every text (not measured)
         let bound = match self.part {
-            Part::Instance => (1 << 31) - 1,
+            Part::Instance => INSTANCE_DEGREE,
             Part::Basis | Part::Cofactors => u64::from(u32::MAX),
         };
         if degree > bound {
@@ -311,19 +354,18 @@ impl<'a> Cursor<'a> {
         // Every exponent is at most the degree, so none saturated.
         exps[0] = degree.narrow();
         numbers.push(terms, exps, c, negative, poll);
-        poll.work(1 + (self.pos - start) / BYTES);
+        poll.count(1 + (self.pos - start) / BYTES);
         Ok(())
     }
 
-    // checker-stop-latency.8 design -- the reading counts 1 + b/16 units a term after it, b its bytes, and ends where the poll stops, the polynomial it reads unfinished and a reading error past the term the stop falls in not reached, not the texts read without a poll (log 0059-1)
+    // checker-stop-latency.8 design-checked -- the reading counts 1 + b/16 units a term after it, b its bytes, and ends where the poll stops, the polynomial it reads unfinished and a reading error past the term the stop falls in not reached, not the texts read without a poll (log 0059-1)
     /// One polynomial into `out`. Where `poll` stops, the reading ends
     /// there, and `out` means nothing.
     fn poly<N: Numbers>(
         &mut self,
         ring: &Ring,
         numbers: &N,
-        exps: &mut Vec<u32>,
-        terms: &mut N::Terms,
+        scratch: &mut Scratch<N>,
         out: &mut N::Poly,
         poll: &mut Poll,
     ) -> Result<(), Error> {
@@ -336,7 +378,7 @@ impl<'a> Cursor<'a> {
             }
             Some(_) | None => {}
         }
-        self.term(ring, numbers, negative, exps, terms, poll)?;
+        self.term(ring, numbers, negative, scratch, poll)?;
         loop {
             if poll.stopped() {
                 return Ok(());
@@ -347,9 +389,9 @@ impl<'a> Cursor<'a> {
                 Some(_) | None => break,
             }
             self.pos += 1;
-            self.term(ring, numbers, negative, exps, terms, poll)?;
+            self.term(ring, numbers, negative, scratch, poll)?;
         }
-        numbers.finish(terms, ring, out, poll);
+        numbers.finish(&mut scratch.terms, ring, out, poll);
         Ok(())
     }
 
@@ -363,13 +405,12 @@ impl<'a> Cursor<'a> {
         lines: &mut Vec<usize>,
         poll: &mut Poll,
     ) -> Result<(), Error> {
-        let mut exps = Vec::new();
-        let mut terms = N::Terms::default();
+        let mut scratch = Scratch::default();
         loop {
             self.skip_space();
             lines.push(self.line);
             let mut p = N::Poly::default();
-            self.poly(ring, numbers, &mut exps, &mut terms, &mut p, poll)?;
+            self.poly(ring, numbers, &mut scratch, &mut p, poll)?;
             if poll.stopped() {
                 return Ok(());
             }
@@ -383,25 +424,40 @@ impl<'a> Cursor<'a> {
 
 impl Cursor<'_> {
     /// One row, `"[" polys? "]"`, into the front of `entries`: how many
-    /// entries it has. Where `poll` stops, the reading ends there, and the
+    /// entries it has. Where `past` is given, the entries past its count are
+    /// read as it says. Where `poll` stops, the reading ends there, and the
     /// row means nothing.
     fn row<N: Numbers>(
         &mut self,
         ring: &Ring,
         numbers: &N,
-        exps: &mut Vec<u32>,
-        terms: &mut N::Terms,
+        scratch: &mut Scratch<N>,
         entries: &mut Vec<N::Poly>,
+        mut past: Option<&mut Past<'_, N>>,
         poll: &mut Poll,
     ) -> Result<usize, Error> {
         self.expect(b'[', "`[`")?;
         let mut k = 0;
         if !self.eat(b']') {
             loop {
-                if entries.len() == k {
-                    entries.push(N::Poly::default());
+                match past.as_deref_mut() {
+                    // checker-long-row-memory.2 design-checked -- the entries past the count are read to the row's end, so that a reading error in any of them is returned as the exact mode returns it, not the reading stopped at the first of them
+                    Some(past) if k >= past.most => {
+                        let Past {
+                            numbers,
+                            scratch,
+                            spare,
+                            ..
+                        } = past;
+                        self.poly(ring, *numbers, scratch, spare, poll)?;
+                    }
+                    Some(_) | None => {
+                        if entries.len() == k {
+                            entries.push(N::Poly::default());
+                        }
+                        self.poly(ring, numbers, scratch, &mut entries[k], poll)?;
+                    }
                 }
-                self.poly(ring, numbers, exps, terms, &mut entries[k], poll)?;
                 k += 1;
                 if poll.stopped() {
                     return Ok(k);
@@ -465,7 +521,7 @@ pub fn header<'a>(text: &'a str, order: &Order) -> Result<Header<'a>, Error> {
     if cur.peek().is_some() {
         return Err(cur.syntax("the end of the line after the characteristic"));
     }
-    // instance-grammar-agreement.3 design -- a characteristic that is neither 0 nor a prime below 2^64 is refused as the instance is read, not left untested with a missing inverse an error where it is needed (checker-gfp.5, withdrawn) (not measured)
+    // instance-grammar-agreement.3 design-checked -- a characteristic that is neither 0 nor a prime below 2^64 is refused as the instance is read, not left untested with a missing inverse an error where it is needed (checker-gfp.5, withdrawn) (not measured)
     if p != 0 && !(p < 1 << 64 && field::is_prime(p.narrow())) {
         return Err(Error::Characteristic { line: 2 });
     }
@@ -530,15 +586,34 @@ pub fn basis<N: Numbers>(
     Ok((elements, lines))
 }
 
-// checker-gfp.17 design -- the cofactor matrix is parsed and checked one row at a time and never held whole (log 0001-1)
+/// How a row's entries past its first `most` are read: each with `numbers`
+/// into `spare`, which the next overwrites.
+pub struct Past<'n, N: Numbers> {
+    most: usize,
+    numbers: &'n N,
+    scratch: Scratch<N>,
+    spare: N::Poly,
+}
+
+impl<'n, N: Numbers> Past<'n, N> {
+    pub fn new(most: usize, numbers: &'n N) -> Past<'n, N> {
+        Past {
+            most,
+            numbers,
+            scratch: Scratch::default(),
+            spare: N::Poly::default(),
+        }
+    }
+}
+
+// checker-gfp.17 design-checked -- the cofactor matrix is parsed and checked one row at a time and never held whole (log 0001-1)
 /// The rows of the cofactor matrix, read one at a time.
 pub struct Rows<'a, N: Numbers> {
     cur: Cursor<'a>,
     first: bool,
     done: bool,
     start: Start,
-    exps: Vec<u32>,
-    terms: N::Terms,
+    scratch: Scratch<N>,
 }
 
 /// Where a row of the cofactor matrix starts: its `[` and the line of it.
@@ -563,8 +638,7 @@ impl<'a, N: Numbers> Rows<'a, N> {
             first: true,
             done,
             start: Start { pos: 0, line: 1 },
-            exps: Vec::new(),
-            terms: N::Terms::default(),
+            scratch: Scratch::default(),
         })
     }
 
@@ -574,13 +648,16 @@ impl<'a, N: Numbers> Rows<'a, N> {
     }
 
     /// Reads the next row into the front of `entries`, and returns the line it
-    /// starts on and how many entries it has; None after the last row.
+    /// starts on and how many entries it has, every entry counted; None
+    /// after the last row. Where `past` is given, the entries past its
+    /// count are read as it says, and `entries` takes at most its count.
     /// Where `poll` stops, the reading ends there, and the row means
     /// nothing.
     pub fn next(
         &mut self,
         ring: &Ring,
         numbers: &N,
+        past: Option<&mut Past<'_, N>>,
         entries: &mut Vec<N::Poly>,
         poll: &mut Poll,
     ) -> Result<Option<(usize, usize)>, Error> {
@@ -601,14 +678,9 @@ impl<'a, N: Numbers> Rows<'a, N> {
             pos: self.cur.pos,
             line,
         };
-        let k = self.cur.row(
-            ring,
-            numbers,
-            &mut self.exps,
-            &mut self.terms,
-            entries,
-            poll,
-        )?;
+        let k = self
+            .cur
+            .row(ring, numbers, &mut self.scratch, entries, past, poll)?;
         Ok(Some((line, k)))
     }
 }
@@ -626,12 +698,5 @@ pub fn row<N: Numbers>(
 ) -> Result<usize, Error> {
     let mut cur = Cursor::new(text.as_bytes(), Part::Cofactors, start.line);
     cur.pos = start.pos;
-    cur.row(
-        ring,
-        numbers,
-        &mut Vec::new(),
-        &mut N::Terms::default(),
-        entries,
-        poll,
-    )
+    cur.row(ring, numbers, &mut Scratch::default(), entries, None, poll)
 }

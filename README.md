@@ -5,8 +5,14 @@ GF(p), p a prime below 2^64, and over the rationals ℚ. It is a Rust crate
 with a command-line program, a Python extension module, and a C interface.
 All four take the ideal's generators as text and return the basis as text.
 
+Over ℚ and over GF(p), grobx is 4× faster than Maple and msolve.
+[grobx.com/benchmarks.html](https://grobx.com/benchmarks.html) gives the time and memory of every
+instance.
+
 grobx runs on Linux and Windows on x86-64. It builds for macOS on Apple
 Silicon, where it is untested.
+It also builds for the browser, `wasm32-unknown-unknown`, as the module in `wasm/`, which
+[grobx.com/live.html](https://grobx.com/live.html) runs.
 
 ## Rust
 

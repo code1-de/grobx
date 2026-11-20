@@ -70,7 +70,7 @@ pub type Stage = Option<Result<(), Flaw>>;
 /// A polynomial as a side reads it.
 pub type Read<S> = <<S as Side>::Numbers as Numbers>::Poly;
 
-// checker-q.14 design -- the checks are one driver generic over the field's arithmetic (not measured)
+// checker-q.14 design-checked -- the checks are one driver generic over the field's arithmetic (not measured)
 /// The arithmetic of the checks over one field. The driver keeps the rest:
 /// the order of the checks, the shape of the cofactor matrix, zero elements,
 /// the pairs and their criteria, and divisibility.
@@ -105,7 +105,7 @@ pub trait Side: Sized {
     /// none where generator j is zero.
     fn generator_monos(&self, j: usize) -> &[u32];
 
-    // checker-stop-latency.12 design -- the values of F and G at a point count a polynomial's units before it, over GF(p) a unit a term, over Q a unit a term, one per 8 of each coefficient's limbs, and its fraction's limbs, computed once per polynomial, not a point's values counted as one step or the units summed at every point (log 0059-1)
+    // checker-stop-latency.12 design-checked -- the values of F and G at a point count a polynomial's units before it, over GF(p) a unit a term, over Q a unit a term, one per 8 of each coefficient's limbs, and its fraction's limbs, computed once per polynomial, not a point's values counted as one step or the units summed at every point (log 0059-1)
     /// The value at `point` of every generator into `generators` and of
     /// every element of G, as read, into `elements`; false where a
     /// denominator of one of them has no inverse modulo the point's modulus.
@@ -204,7 +204,7 @@ fn run<S: Side>(
     Ok(Some(Verdict { groebner, reduced }))
 }
 
-// checker-cheap.15 design -- the rows stage runs alone, in either mode, beside the full check, not the full check as the only entry point (log 0001-2)
+// checker-cheap.15 design-checked -- the rows stage runs alone, in either mode, beside the full check, not the full check as the only entry point (log 0001-2)
 #[allow(
     clippy::expect_used,
     reason = "the reading and the rows stop only where the poll stops, and this poll never answers true"
@@ -253,12 +253,12 @@ fn reduced<S: Side>(side: &S, index: &mut Divisors, w: usize, poll: &mut Poll) -
         if poll.step() {
             return None;
         }
-        // checker-gfp.18 design -- a zero element of G is left out of the Gröbner checks and fails the reduced verdict (not measured)
+        // checker-gfp.18 design-checked -- a zero element of G is left out of the Gröbner checks and fails the reduced verdict (not measured)
         if !side.scaled(i) {
             return Some(Err(Flaw::Scale(i)));
         }
         let monos = side.monos(i);
-        // checker-stop-latency.7 design -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
+        // checker-stop-latency.7 design-checked -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
         if poll.work(1 + index.masks.len() / MASKS) {
             return None;
         }
@@ -277,7 +277,7 @@ fn reduced<S: Side>(side: &S, index: &mut Divisors, w: usize, poll: &mut Poll) -
     Some(Ok(()))
 }
 
-// checker-gfp.16 design -- the Gröbner checks run generators, cofactor rows, S-pairs, and the first flaw ends the check (not measured)
+// checker-gfp.16 design-checked -- the Gröbner checks run generators, cofactor rows, S-pairs, and the first flaw ends the check (not measured)
 fn groebner<S: Side>(
     side: &mut S,
     index: &mut Divisors,
@@ -341,7 +341,7 @@ fn exact_rows<S: Side>(
     let mut rows = Rows::<S::Numbers>::new(cofactors)?;
     let mut entries = Vec::new();
     let mut count = 0;
-    while let Some((line, k)) = rows.next(ring, side.numbers(), &mut entries, poll)? {
+    while let Some((line, k)) = rows.next(ring, side.numbers(), None, &mut entries, poll)? {
         if poll.step() {
             return Ok(None);
         }
@@ -387,7 +387,7 @@ pub fn exact_row<S: Side>(
     Ok((!expressed).then_some(Flaw::Cofactors(i)))
 }
 
-// checker-gfp.9 cited: buchberger-2006 Lemma 5.13, via buchberger-1985 Theorem 6.2 -- a basis is a Gröbner basis exactly when the S-polynomials of all pairs reduce to zero
+// checker-gfp.9 cited-checked: buchberger-2006 Lemma 5.13, via buchberger-1985 Theorem 6.2 -- a basis is a Gröbner basis exactly when the S-polynomials of all pairs reduce to zero
 /// G is a Gröbner basis: every S-polynomial the criteria do not excuse
 /// reduces to zero.
 fn pairs<S: Side>(
@@ -398,7 +398,7 @@ fn pairs<S: Side>(
 ) -> Result<Stage, Error> {
     let live = index.elements.clone();
     let mut lcm = Vec::new();
-    // checker-gfp.24 design -- the pairs are visited in the order of their positions in G, i then j (not measured)
+    // checker-gfp.24 design-checked -- the pairs are visited in the order of their positions in G, i then j (not measured)
     for a in 0..live.len() {
         for b in a + 1..live.len() {
             if poll.step() {
@@ -406,7 +406,7 @@ fn pairs<S: Side>(
             }
             let (i, j) = (live[a], live[b]);
             let (lt_i, lt_j) = (index.lt(a), index.lt(b));
-            // checker-gfp.10 cited: buchberger-2006 Lemma 5.11, via buchberger-1985 Lemma 6.4 -- when the lcm of the leading power products is their product, the S-polynomial reduces to zero
+            // checker-gfp.10 cited-checked: buchberger-2006 Lemma 5.11, via buchberger-1985 Lemma 6.4 -- when the lcm of the leading power products is their product, the S-polynomial reduces to zero
             if index.masks[a] & index.masks[b] == 0 && poly::coprime(lt_i, lt_j) {
                 continue;
             }
@@ -415,7 +415,7 @@ fn pairs<S: Side>(
                 part: Part::Basis,
                 line: lines[j],
             })?;
-            // checker-stop-latency.7 design -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
+            // checker-stop-latency.7 design-checked -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
             if poll.work(1 + live.len() / MASKS) {
                 return Ok(None);
             }
@@ -436,7 +436,7 @@ fn pairs<S: Side>(
     Ok(Some(Ok(())))
 }
 
-// checker-orders.12 cited: bigatti-2025 §1.1, Remark 5 -- xy >_Lex z^1000: Lex is not degree compatible
+// checker-orders.12 cited-checked: bigatti-2025 §1.1, Remark 1.5 -- term orders that are not degree compatible behave unorthodoxly: under Lex xy >_Lex z^n for every n, so infinitely many terms of higher degree lie below xy
 /// A multiple of element u of G past `u32`, in a reduction step or an
 /// S-polynomial. In an order that is not degree compatible a tail term can
 /// have a larger degree than its leading term.

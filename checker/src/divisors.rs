@@ -5,7 +5,7 @@ use crate::narrow::Narrow;
 use crate::poll::Poll;
 use crate::poly;
 
-// checker-stop-latency.7 design -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
+// checker-stop-latency.7 design-checked -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
 /// Divmasks of a scan that count as one unit of work (`Poll`).
 pub const MASKS: usize = 32;
 
@@ -18,7 +18,15 @@ const SLOTS: usize = 1 << 10;
 /// The multiplier of the memo's hash: ⌊2^64/φ⌋, φ the golden ratio.
 const MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
 
-// checker-gfp.12 cited: roune-2012, divisor queries -- divmasks eliminate around 98% of all divisibility checks in a monomial list
+/// The shift that folds the high half of the memo's hash into its low
+/// half after each multiply.
+const FOLD: u32 = u64::BITS / 2;
+
+/// The memo's slots stay at least this many times its values: an entry
+/// past that share doubles them.
+const LOAD: usize = 2;
+
+// checker-gfp.12 practice-checked: divmask -- a divisor query scans the leading monomials and tests a divmask, one bit per variable, before the exponents, not a kd-tree of the leading monomials
 /// The leading monomials of the nonzero elements of G, each with its
 /// divmask, in the order of G.
 pub struct Divisors {
@@ -56,7 +64,7 @@ impl Divisors {
         &self.lts[a * self.w..(a + 1) * self.w]
     }
 
-    // checker-gfp.23 design -- a divisor query answers with the first element in the order of G whose leading monomial divides m (log 0001-2)
+    // checker-gfp.23 design-checked -- a divisor query answers with the first element in the order of G whose leading monomial divides m (log 0001-2)
     /// The first entry, of an element other than `skip`, whose leading
     /// monomial divides m.
     fn scan(&self, m: &[u32], skip: Option<usize>) -> Option<usize> {
@@ -74,8 +82,8 @@ impl Divisors {
     /// the memo's growth one per monomial it
     /// moves; where it stops, the answer is None and means nothing.
     pub fn query(&mut self, m: &[u32], poll: &mut Poll) -> Option<usize> {
-        // checker-gfp.13 practice: memoization -- the answer to a divisor query is kept per monomial for the rest of the check
-        // checker-stop-latency.7 design -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
+        // checker-gfp.13 practice-checked: memoization -- the answer to a divisor query is kept per monomial for the rest of the check
+        // checker-stop-latency.7 design-checked -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
         let h = Memo::hash(m);
         let a = match self.memo.get(m, h) {
             Ok(a) => a,
@@ -105,8 +113,8 @@ impl Divisors {
         self.scan(m, Some(i)).map(|a| self.elements[a])
     }
 
-    // checker-gfp.11 cited: buchberger-1979 §5 Criterion 3, with the selection of least lcm of §4; gebauer-1988 §4.3 -- the criterion is sound when the pairs are ordered by when they leave B
-    // checker-orders.13 cited: buchberger-1985 §6.2 -- an arbitrary admissible ordering $<_T$ is fixed before Theorem 6.2, Lemma 6.4, and Theorem 6.5; gebauer-1988 §2.1 -- T is totally ordered by any admissible $<_T$
+    // checker-gfp.11 design-checked -- a pair {i, j} is not reduced where some u has lt(u) dividing lcm(i, j) and both {i, u} and {u, j} precede {i, j} in the order of pairs, lcm in grevlex, then smaller index, then larger, not Gebauer–Möller's update of a pair set nor no chain criterion (log 0001-2)
+    // checker-orders.13 cited-checked:buchberger-1985 §6.2 -- an arbitrary admissible ordering $<_T$ is fixed before Theorem 6.2, Lemma 6.4, and Theorem 6.5; gebauer-1988 §2.1 -- T is totally ordered by any admissible $<_T$
     // The pairs that excuse {a, b} have lcms that divide L, and a proper
     // divisor of L precedes L in every monomial order.
     /// Whether the pair {a, b}, a < b, with lcm L is excused: some third
@@ -170,7 +178,7 @@ impl Memo {
         let mut h = 0u64;
         for &x in m {
             h = (h ^ u64::from(x)).wrapping_mul(MULTIPLIER);
-            h ^= h >> 32;
+            h ^= h >> FOLD;
         }
         h
     }
@@ -196,7 +204,7 @@ impl Memo {
         }
     }
 
-    // checker-stop-latency.7 design -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
+    // checker-stop-latency.7 design-checked -- a divisor query the memo does not answer counts 1 + n/32 units before its scan, n the divmasks of the index, the chain criterion 1 + n/32 a pair, the memo's growth a unit per monomial it moves, a block of 4096 at a time, and an answer from the memo nothing, not a unit per query or the growth counted at once (log 0059-1)
     /// Keeps `value` for m in the empty slot `slot`. Where the table grows,
     /// a monomial it moves is a unit of work for `poll`, asked a block of
     /// at most `STRIDE` at a time; false where it stops, and the table
@@ -213,7 +221,7 @@ impl Memo {
         self.keys.extend_from_slice(m);
         self.values.push(value);
         self.slots[slot] = entry;
-        if 2 * self.values.len() > self.slots.len() {
+        if LOAD * self.values.len() > self.slots.len() {
             let mut slots = vec![0u32; 2 * self.slots.len()];
             let mask = slots.len() - 1;
             for e in 0..self.values.len() {

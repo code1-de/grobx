@@ -64,6 +64,8 @@ Grobx := module()
         local blocks, B;
         if type(T, 'specfunc(name, tdeg)') then
             return "grevlex", [op(T)];
+        elif type(T, 'specfunc(name, grlex)') then
+            return "deglex", [op(T)];
         elif type(T, 'specfunc(name, plex)') then
             return "lex", [op(T)];
         elif type(T, 'specfunc(list(name), lexdeg)') then
@@ -71,7 +73,7 @@ Grobx := module()
         elif type(T, 'specfunc(specfunc(name, tdeg), prod)') then
             blocks := map(B -> [op(B)], [op(T)]);
         else
-            error "Grobx:-Basis takes the orders tdeg, plex, lexdeg, and prod of tdeg orders, not %1", T;
+            error "Grobx:-Basis takes the orders tdeg, grlex, plex, lexdeg, and prod of tdeg orders, not %1", T;
         end if;
         if blocks = [] or member([], blocks) then
             error "Grobx:-Basis takes no empty block: %1", T;

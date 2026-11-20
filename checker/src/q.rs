@@ -26,7 +26,7 @@ pub struct Q {
     generators: Vec<QPoly>,
     /// G likewise. The primitive parts are the reducers.
     elements: Vec<QPoly>,
-    // checker-stop-latency.12 design -- the values of F and G at a point count a polynomial's units before it, over GF(p) a unit a term, over Q a unit a term, one per 8 of each coefficient's limbs, and its fraction's limbs, computed once per polynomial, not a point's values counted as one step or the units summed at every point (log 0059-1)
+    // checker-stop-latency.12 design-checked -- the values of F and G at a point count a polynomial's units before it, over GF(p) a unit a term, over Q a unit a term, one per 8 of each coefficient's limbs, and its fraction's limbs, computed once per polynomial, not a point's values counted as one step or the units summed at every point (log 0059-1)
     /// The units of work of each generator's value at a point, then of each
     /// element's: a unit a term, one per `LIMBS` of its coefficient's
     /// limbs, and its fraction's limbs.
@@ -147,7 +147,7 @@ impl Side for Q {
         reduces_to_zero(elements, self.w, &mut heap, index, monomial, quotient, poll)
     }
 
-    // checker-q.12 cited: monagan-2007 §1 -- the heap algorithms are as fast as geobuckets but use far less memory
+    // checker-q.12 cited-checked: monagan-2007 §1 -- the heap algorithms are as fast as geobuckets but use far less memory
     fn row(
         &mut self,
         element: usize,
@@ -156,7 +156,7 @@ impl Side for Q {
     ) -> Result<bool, Overflow> {
         let w = self.w;
         let mut heap = Heap::new(w, &self.order);
-        // checker-q.13 cited: johnson-1974 §3, §6 -- the heap holds one element per term of the smaller polynomial, which multiplication is free to choose
+        // checker-q.13 cited-checked: johnson-1974 §3, §6 -- the heap holds one element per term of the smaller polynomial, which multiplication is free to choose
         // The streams are the generator's terms, whichever factor is
         // shorter: a generator is taken as the shorter factor of a row.
         for (c, f) in entries.iter().zip(&self.generators) {
@@ -203,7 +203,7 @@ impl Side for Q {
         Ok(next.is_none())
     }
 
-    // checker-q.10 cited: parisse-2013 §2 -- the s-poly is reduced in Z, multiplied by appropriate leading coefficients
+    // checker-q.10 practice-checked: fraction-free arithmetic -- the S-polynomial is formed with the integer quotients c_b/γ and −c_a/γ, γ = gcd(c_a, c_b), not the monic S-polynomial with the quotients 1/c_a and −1/c_b
     fn spair(
         &mut self,
         i: usize,
@@ -255,9 +255,9 @@ fn residue(field: Field, n: &BigInt) -> u64 {
     }
 }
 
-// checker-q.4 cited: parisse-2013 §2 _Checking a reconstructed Groebner basis_ -- the deterministic check reduces the s-polys to 0 over Q; the probabilistic one reduces them modulo primes, with an error probability
-// checker-q.5 cited: parisse-2013 §4 -- integer certification is significantly faster than modular certification for Cyclic examples, and almost as fast for Katsura
-// checker-gfp.14 cited: buchberger-1979 §2 -- the definition of reduction, and of a Gröbner basis as one modulo which every element of the ideal reduces to zero
+// checker-q.4 cited-checked: parisse-2013 §2 _Checking a reconstructed Groebner basis_ -- the deterministic check reduces the s-polys to 0 over Q; the probabilistic one reduces them modulo primes, with an error probability
+// checker-q.5 cited-checked: parisse-2013 §4 -- integer certification is significantly faster than modular certification for Cyclic examples, and almost as fast for Katsura
+// checker-gfp.14 practice-checked: top-reduction -- reduction to zero reduces only leading terms, and a leading term with no divisor ends it, not full reduction of every term
 /// Top-reduces the heap's sum modulo G, exactly over Q: whether it reaches
 /// zero, or the element of G whose multiple passed `u32`. Its work is
 /// counted for `poll` as it is done; where it stops, the answer means
@@ -292,7 +292,7 @@ fn reduces_to_zero<'a>(
         // The term is C/s. The quotient −C/(s·a) cancels it with the
         // reducer's leading product, which is left out.
         let s = heap.s();
-        // checker-q.9 design -- a quotient whose numerator lc(g) does not divide is brought to lowest terms, and s becomes the lcm of the denominators (log 0002-1)
+        // checker-q.9 design-checked -- a quotient whose numerator lc(g) does not divide is brought to lowest terms, and s becomes the lcm of the denominators (log 0002-1)
         let (num, den) = if a.is_one() {
             (-c, s.clone())
         } else {
@@ -314,7 +314,7 @@ fn reduces_to_zero<'a>(
                 (-(c / &common), sa / common)
             }
         };
-        // checker-orders.12 cited: bigatti-2025 §1.1, Remark 5 -- xy >_Lex z^1000: Lex is not degree compatible
+        // checker-orders.12 cited-checked: bigatti-2025 §1.1, Remark 1.5 -- Lex is not degree compatible: xy >_Lex z^n for every n, so a smaller term can have a far larger degree
         // A tail term may have a larger degree than the leading term, so a
         // key may pass the degree of `monomial` and `u32`.
         heap.add(reducer_poly, quotient, 1, num, den, Some(reducer), poll)

@@ -190,7 +190,7 @@ fn small() -> Vec<(&'static str, String, &'static str)> {
     let positive = "x,y,z,w\n65521\nx*y-z,\ny*z-w,\nx^2-w\n";
     vec![
         ("cubic-3", dense(3, 3, 65521, 1), "lex"),
-        // test-mq-systems.12 design -- a call that F4 runs in block:2 takes the random square system of degrees 2, 3, and 2, where the map's dense cubic one on three variables runs for seconds (log 0084-3)
+        // test-mq-systems.12 design-checked -- a call that F4 runs in block:2 takes the random square system of degrees 2, 3, and 2, where the map's dense cubic one on three variables runs for seconds (log 0084-3)
         ("square-27", random_square(65521, 27), "block:2"),
         ("positive", positive.to_string(), "lex"),
         ("positive", positive.to_string(), "block:2"),

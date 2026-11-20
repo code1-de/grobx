@@ -11,15 +11,10 @@ use grobx::{Outcome, Params};
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, Rng, assert_accepted, dense, params, random_square, random_system, run, with_cofactors,
+    GF31_PRIMES, GFP_UNSOLVED_EDGE, P, P31, Rng, assert_accepted, dense, params, plain,
+    random_square, random_system, run, with_cofactors,
 };
-
-/// The parameters of a call with signatures off.
-fn plain(seed: u64) -> Params {
-    let mut p = params(seed);
-    p.signatures = false;
-    p
-}
+use crate::large::over;
 
 /// `plain` with cofactors.
 fn plain_with_cofactors(seed: u64) -> Params {
@@ -28,37 +23,10 @@ fn plain_with_cofactors(seed: u64) -> Params {
     p
 }
 
-/// The instance `text` with its characteristic replaced by p.
-fn over(text: &str, p: u64) -> String {
-    let mut lines = text.splitn(3, '\n');
-    let names = lines.next().unwrap();
-    let _ = lines.next();
-    let rest = lines.next().unwrap_or("");
-    format!("{names}\n{p}\n{rest}")
-}
-
-/// The edge cases of `OBJECTIVES.md`, _Domain specifics the workflow points at_, over 65521.
-const EDGE: &[(&str, &str)] = &[
-    ("zero-ideal", "x,y\n65521\n0,\n0\n"),
-    ("f-is-zero", "x,y\n65521\n0\n"),
-    ("unit", "x,y\n65521\nx*y-1,\nx\n"),
-    (
-        "unit-from-a-round",
-        "x,y,z\n65521\nx*y-1,\nx*z,\ny*z-1,\nz^2\n",
-    ),
-    ("already-a-basis", "x,y\n65521\nx+y,\ny^2+1\n"),
-    ("zero-generator", "x,y,z\n65521\nx*y-z,\n0,\ny^2-x\n"),
-    ("eliminable", "x,y,z\n65521\nx-y^2-z,\ny*z-1,\nz^2-y\n"),
-];
-
-/// The primes of the edge cases: 7 reduces each row on its own, 65521 and
-/// 2147483647 combine (gfp-unsolved.5).
-const PRIMES: [u64; 3] = [7, P, P31];
-
 #[test]
 fn the_edge_cases_without_signatures() {
-    for &(name, text) in EDGE {
-        for p in PRIMES {
+    for &(name, text) in GFP_UNSOLVED_EDGE {
+        for p in GF31_PRIMES {
             let text = over(text, p);
             let outcome = run(&text, &plain_with_cofactors(1));
             assert_eq!(

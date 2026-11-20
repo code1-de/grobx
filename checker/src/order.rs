@@ -9,7 +9,7 @@ use num_traits::{One, Zero};
 
 use crate::{Error, Order};
 
-// checker-orders.3 cited: bachmann-1998 §2.1 -- matrix-based descriptions of monomial orderings are very general, but their realization in an actual implementation is usually rather time-consuming
+// checker-orders.3 cited-checked:bachmann-1998 §2.1 -- matrix-based descriptions of monomial orderings are very general, but their realization in an actual implementation is usually rather time-consuming
 /// An order resolved against the instance's n variables. Grevlex and lex
 /// keep comparisons of their own, and the matrix comparison serves every
 /// other order.
@@ -24,10 +24,10 @@ pub enum Cmp {
 /// A row of an order's matrix.
 #[derive(Clone, Debug)]
 pub enum Row {
-    // checker-orders.9 cited: bachmann-1998 §2.2 -- an additional degree field in the monomial pays off, as experience shows
+    // checker-orders.9 cited-checked:bachmann-1998 §2.2 -- an additional degree field in the monomial pays off, as experience shows
     /// Every entry 1: the monomial's degree word.
     Degree,
-    // checker-orders.8 design -- a matrix row is held as its nonzero entries, each a variable and its weight, not as n weights (not measured)
+    // checker-orders.8 design-checked -- a matrix row is held as its nonzero entries, each a variable and its weight, not as n weights (not measured)
     /// The nonzero entries, each a variable and its weight.
     Sparse(Vec<(usize, i64)>),
 }
@@ -42,11 +42,11 @@ impl Cmp {
             Order::Lex => return Ok(Cmp::Lex),
             Order::Matrix(rows) => rows,
         };
-        // checker-orders.5 cited: robbiano-1985 Theorem 4, via bachmann-1998 §2.1 -- s ≤ n orthogonal vectors u_1, …, u_s decide every comparison: v ↦ (v·u_1, …, v·u_s) into lex is an injective ordered homomorphism
+        // checker-orders.5 cited-checked:robbiano-1985 Theorem 4, via bachmann-1998 §2.1 -- s ≤ n orthogonal vectors u_1, …, u_s decide every comparison: v ↦ (v·u_1, …, v·u_s) into lex is an injective ordered homomorphism
         if rows.len() != n || rows.iter().any(|row| row.len() != n) {
             return Err(Error::Order);
         }
-        // checker-orders.4 cited: caboara-2004 §2, Definition 1 b) and Proposition 3 -- for W with linearly independent rows and nonzero columns, the first nonzero entry of each column positive is equivalent to Lex on the degrees of the terms being a term ordering
+        // checker-orders.4 cited-checked:caboara-2004 §2, Definition 1 b) and Proposition 3 -- for W with linearly independent rows and nonzero columns, the first nonzero entry of each column positive is equivalent to Lex on the degrees of the terms being a term ordering
         for j in 0..n {
             match rows.iter().map(|row| row[j]).find(|&x| x != 0) {
                 Some(x) if x > 0 => {}
@@ -71,8 +71,8 @@ impl Cmp {
     }
 }
 
-// checker-orders.18 practice: monomorphization -- the resolved order is matched once per loop that compares monomials, and the loop is compiled once per order, not matched at each comparison
-// checker-orders.17 cited: bachmann-1998 §3, the fourth remark on Table 1 -- realizing the comparisons for the different orderings by function pointers, so that each comparison requires a function call, was considerably slower than one inlined routine
+// checker-orders.18 practice-checked:monomorphization -- the resolved order is matched once per loop that compares monomials, and the loop is compiled once per order, not matched at each comparison
+// checker-orders.17 cited-checked:bachmann-1998 §3, the fourth remark on Table 1 -- realizing the comparisons for the different orderings by function pointers, so that each comparison requires a function call, was considerably slower than one inlined routine
 /// `$body` with `$cmp` bound to the comparison of the resolved order
 /// `$order`, a `&Cmp`: one copy of the body per order, each with its
 /// comparison inlined, so that a loop in the body compares without asking
@@ -101,7 +101,7 @@ pub(crate) use by_order;
 /// last nonzero entry of a − b is negative.
 #[inline]
 pub fn grevlex(a: &[u32], b: &[u32]) -> Ordering {
-    // checker-gfp.6 cited: bachmann-1998 §2 -- an additional degree field in the monomial pays off, as experience shows
+    // checker-gfp.6 cited-checked: bachmann-1998 §2.2 -- the degree of a monomial is so often needed that, as experience has shown, an additional degree field in the monomial data structure is advantageous
     if a[0] != b[0] {
         return a[0].cmp(&b[0]);
     }
@@ -124,7 +124,7 @@ pub fn lex(a: &[u32], b: &[u32]) -> Ordering {
     Ordering::Equal
 }
 
-// checker-orders.10 design -- a monomial keeps its degree and exponents alone, and a matrix order sums its rows at each comparison, not a vector Aα kept beside every monomial (not measured)
+// checker-orders.10 design-checked -- a monomial keeps its degree and exponents alone, and a matrix order sums its rows at each comparison, not a vector Aα kept beside every monomial (not measured)
 /// The matrix order: a > b when the first nonzero entry of M·(a − b) is
 /// positive. Each entry fits `i128`: a weight is at most 2^63 in size, a
 /// difference of exponents below 2^32, and n below 2^32.
@@ -145,8 +145,8 @@ pub fn matrix(rows: &[Row], a: &[u32], b: &[u32]) -> Ordering {
     Ordering::Equal
 }
 
-// checker-orders.6 design -- whether the matrix is singular is decided exactly over the integers, not by its rank modulo a prime (not measured)
-// checker-orders.7 cited: bareiss-1968 §I, (3) and (8), via faugere-1993 §6, the proof of Proposition 6.2, attributes the one-step method to Jordan -- every element the one-step integer-preserving elimination makes is a determinant, an integer, and each division by the previous pivot is exact; faugere-1999 §3.3 -- the Bareiss algorithm is better than the classical Gauss algorithm
+// checker-orders.6 design-checked -- whether the matrix is singular is decided exactly over the integers, not by its rank modulo a prime (not measured)
+// checker-orders.7 cited-checked:bareiss-1968 §I, (3) and (8), via faugere-1993 §6, the proof of Proposition 6.2, attributes the one-step method to Jordan -- every element the one-step integer-preserving elimination makes is a determinant, an integer, and each division by the previous pivot is exact; faugere-1999 §3.3 -- the Bareiss algorithm is better than the classical Gauss algorithm
 /// Whether the square matrix `rows` is nonsingular, by fraction-free
 /// elimination: every entry it makes is a minor of the matrix, and each
 /// division is exact.

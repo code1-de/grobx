@@ -68,7 +68,7 @@ pub fn coprime(a: &[u32], b: &[u32]) -> bool {
     a[1..].iter().zip(&b[1..]).all(|(x, y)| *x == 0 || *y == 0)
 }
 
-// checker-gfp.7 design -- a polynomial is two flat arrays, the monomials back to back and the coefficients (not measured)
+// checker-gfp.7 design-checked -- a polynomial is two flat arrays, the monomials back to back and the coefficients (not measured)
 /// A polynomial: its terms, no coefficient zero, in strictly decreasing
 /// order, except inside the geobucket, which keeps them increasing, and
 /// while it is read, before `normalize`.
@@ -113,7 +113,7 @@ impl<C> Poly<C> {
         self.coefs.push(c);
     }
 
-    // checker-stop-latency.10 design -- the order of the terms read is tested a block of 4096 comparisons at a time, each block counted before it, and terms out of order are sorted in one count, not the whole test counted in one count before it (log 0059-1)
+    // checker-stop-latency.10 design-checked -- the order of the terms read is tested a block of 4096 comparisons at a time, each block counted before it, and terms out of order are sorted in one count, not the whole test counted in one count before it (log 0059-1)
     /// Sorts terms given in any order into decreasing order and combines
     /// like terms with `add`, dropping those that cancel. A comparison is a
     /// unit of work for `poll`, counted before it is made, the test of the
@@ -179,7 +179,7 @@ impl<C> Poly<C> {
     }
 }
 
-// checker-gfp.8 cited: yan-1998 §4, §5 _Choice of d_ -- buckets of capacity d^i, summands added only to buckets of comparable size; d = 4 worked best
+// checker-gfp.8 cited-checked: yan-1998 §3, §4, §5 _Choice of d_ -- a sum added summand by summand into one sorted list takes O(N²) comparisons in the worst case; buckets of capacity d^i, summands added only to buckets of comparable size; d = 4 worked best
 /// A sum of polynomials kept in buckets of capacity 4^(i+1), each a
 /// polynomial in increasing order, so that its leading term is its last.
 pub struct Geobucket {
@@ -214,7 +214,7 @@ impl Geobucket {
         }
     }
 
-    // checker-stop-latency.3 design -- the geobucket builds a summand and merges a block of at most 4096 terms of each operand at a time, each block counted before it, the merge's loop over the block's terms cut as slices of their own, not a merge counted at once or a count per term (log 0059-1)
+    // checker-stop-latency.3 design-checked -- the geobucket builds a summand and merges a block of at most 4096 terms of each operand at a time, each block counted before it, the merge's loop over the block's terms cut as slices of their own, not a merge counted at once or a count per term (log 0059-1)
     /// Adds c·m·f, where c is nonzero and f is decreasing, leaving out f's
     /// first `skip` terms. Each term written into the summand, and each
     /// term a merge passes, is a unit of work for `poll`; where it stops, the sum is left
@@ -294,7 +294,7 @@ impl Geobucket {
         }
     }
 
-    // checker-stop-latency.4 design -- an extraction counts a unit per bucket each turn, before it, not one step whatever it cancels (not measured)
+    // checker-stop-latency.4 design-checked -- an extraction counts a unit per bucket each turn, before it, not one step whatever it cancels (not measured)
     /// Removes the leading term and returns its coefficient, with its
     /// monomial in `m`; None where the sum is zero. Each turn, which takes
     /// out a term of a bucket at least, is a unit of work for `poll` per
@@ -353,7 +353,7 @@ fn top_by(
     best
 }
 
-// checker-stop-latency.3 design -- the geobucket builds a summand and merges a block of at most 4096 terms of each operand at a time, each block counted before it, the merge's loop over the block's terms cut as slices of their own, not a merge counted at once or a count per term (log 0059-1)
+// checker-stop-latency.3 design-checked -- the geobucket builds a summand and merges a block of at most 4096 terms of each operand at a time, each block counted before it, the merge's loop over the block's terms cut as slices of their own, not a merge counted at once or a count per term (log 0059-1)
 /// Terms of a geobucket's work, or order tests of `normalize`, between two
 /// questions to the poll.
 const STRIDE: usize = 4096;
@@ -374,7 +374,7 @@ fn merge(
     by_order!(order, cmp => merge_by(field, w, cmp, a, b, out, poll));
 }
 
-// checker-stop-latency.3 design -- the geobucket builds a summand and merges a block of at most 4096 terms of each operand at a time, each block counted before it, the merge's loop over the block's terms cut as slices of their own, not a merge counted at once or a count per term (log 0059-1)
+// checker-stop-latency.3 design-checked -- the geobucket builds a summand and merges a block of at most 4096 terms of each operand at a time, each block counted before it, the merge's loop over the block's terms cut as slices of their own, not a merge counted at once or a count per term (log 0059-1)
 /// `merge`, the monomials compared by `cmp`.
 #[inline(always)]
 fn merge_by(
@@ -386,7 +386,7 @@ fn merge_by(
     out: &mut Poly<u64>,
     poll: &mut Poll,
 ) {
-    // checker-stop-latency.11 design -- an output whose monomials lack room has its two vectors allocated afresh, not grown by `reserve`, which copies the contents they held before they were cleared (log 0059-1)
+    // checker-stop-latency.11 design-checked -- an output whose monomials lack room has its two vectors allocated afresh, not grown by `reserve`, which copies the contents they held before they were cleared (log 0059-1)
     out.clear();
     if out.monos.capacity() < a.monos.len() + b.monos.len() {
         out.monos = Vec::with_capacity(a.monos.len() + b.monos.len());

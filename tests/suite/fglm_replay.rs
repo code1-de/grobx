@@ -9,18 +9,10 @@ use grobx::trace::{NoTrace, Record};
 use grobx_checker::Mode;
 
 use crate::common::{
-    P31, assert_accepted_in, dense, params_in, random_square, run, with_cofactors_in,
+    P31, TINY, assert_accepted_in, dense, params_in, random_square, run, with_cofactors_in,
 };
+use crate::large::over;
 use crate::orders::{Family, names};
-
-/// The instance with its characteristic, the second line, replaced by p.
-fn over(text: &str, p: u64) -> String {
-    let mut lines = text.splitn(3, '\n');
-    let variables = lines.next().unwrap();
-    lines.next();
-    let rest = lines.next().unwrap_or("");
-    format!("{variables}\n{p}\n{rest}")
-}
 
 /// The record of a learn run in `order` that returns a basis, the
 /// generators in reduced row echelon form where `echelon`.
@@ -32,8 +24,6 @@ fn learn(name: &str, text: &str, order: &str, echelon: bool) -> Record {
     assert!(outcome.basis.is_some(), "{name}: the learn run stopped");
     record.unwrap_or_else(|| panic!("{name}: no record"))
 }
-
-const TINY: &str = "x,y\n65521\nx^2+y,\nx*y+1\n";
 
 /// Zero-dimensional ideals over GF(65521), each with its name.
 fn zero_dimensional_cases() -> Vec<(String, String)> {

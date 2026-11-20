@@ -6,11 +6,14 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__cpuid;
 use std::fmt::{self, Write};
+#[cfg(target_arch = "x86_64")]
+use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
 use crate::ReportSink;
+use crate::os::{Resident, peak};
 
-// call-report.5 cited: pearce-2026 §2.2, Table 1 -- the share of F4's time spent in select, symbolic, encode, reduce, backsub, decode, and update differs by instance, symbolic 15.4% to 58.9% and reduce 0.8% to 62.0%; §2.1 outlines a round in those stages
+// call-report.5 cited-checked: pearce-2026 §2.2, Table 1 -- the share of F4's time spent in select, symbolic, encode, reduce, backsub, decode, and update differs by instance, symbolic 15.4% to 58.9% and reduce 0.8% to 62.0%; §2.1 outlines a round in those stages
 /// A stage of a step of the call whose time the report gives. A round's
 /// are `Select` to `Update`, in the order a round runs them, and `Record`
 /// before `Reduce` as well (call-report.22).
@@ -27,7 +30,7 @@ pub(crate) enum Stage {
     /// The reduction but its back-substitution.
     Reduce,
     Backsub,
-    // call-report.6 design -- the trace's and the learner's hooks of a round are a stage of their own, not folded into decode (not measured)
+    // call-report.6 design-checked -- the trace's and the learner's hooks of a round are a stage of their own, not folded into decode (not measured)
     /// The trace's and the learner's hooks of the round's matrix, and the
     /// rows that counted listed and sorted for the trace (f4-gfp.52).
     Record,
@@ -53,8 +56,15 @@ pub(crate) enum Stage {
     /// beside the basis text (`Text`).
     Cofactors,
     /// The checker.
+    #[cfg_attr(
+        not(feature = "checker"),
+        allow(
+            dead_code,
+            reason = "a build without the checker has no check; the stage stays so that every build numbers the stages alike"
+        )
+    )]
     Check,
-    // call-report.15 cited: monagan-2015 §2.6, Table 4 -- the time over ℚ broken into the Gröbner bases modulo p, the Chinese remaindering, and the rational reconstruction; parisse-2019 §2 -- the lift is a loop of three steps, a basis modulo a prime, Chinese remaindering, and reconstruction attempts
+    // call-report.15 cited-checked: monagan-2015 §2.6, Table 4 -- the time over ℚ broken into the Gröbner bases modulo p, the Chinese remaindering, and the rational reconstruction; parisse-2019 §2 -- the lift is a loop of three steps, a basis modulo a prime, Chinese remaindering, and reconstruction attempts
     /// A prime's image merged into the terms of the lift's open elements.
     Merge,
     /// The lift's attempts at the rationals of its open elements.
@@ -66,12 +76,22 @@ pub(crate) enum Stage {
     /// The lifted basis checked against the image at the verification's
     /// prime.
     Verify,
+    /// The plain run's compaction of its monomial table (`f4::compact`).
+    Compact,
+    /// The generators of degree 2 or more with the linear generators'
+    /// pivots substituted (`substitute::substitute`).
+    Substitute,
+    // carried-entry-stage.4 design-checked -- a run's start before its first round is a stage of its own, not `Update`, a round's, taken for it (not measured)
+    /// A run's start before its first round: its elements made monic, given
+    /// their sugars, and entered with their pairs (`f4::run`,
+    /// `f4::run_carried`, `f4::run_sig`).
+    Enter,
 }
 
 /// The stages.
-const STAGES: usize = Stage::Verify as usize + 1;
+const STAGES: usize = Stage::Enter as usize + 1;
 
-// call-report.8 design -- a time is seconds with six decimals, not integer nanoseconds (not measured)
+// call-report.8 design-checked -- a time is seconds with six decimals, not integer nanoseconds (not measured)
 /// A duration as the report writes it: seconds, a point, and six decimals,
 /// truncated to the microsecond.
 pub(crate) struct Secs(pub(crate) Duration);
@@ -85,6 +105,18 @@ impl fmt::Display for Secs {
             secs = us / 1_000_000,
             micros = us % 1_000_000
         )
+    }
+}
+
+/// A value of the call report, or, where it is absent, the word `.1`.
+pub(crate) struct Or<'a, T>(pub(crate) Option<T>, pub(crate) &'a str);
+
+impl<T: fmt::Display> fmt::Display for Or<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            Some(v) => write!(f, "{v}"),
+            None => f.write_str(self.1),
+        }
     }
 }
 
@@ -115,25 +147,74 @@ pub(crate) fn field_value(text: &str) -> String {
         .replace('=', "_")
 }
 
-/// The processor's brand string from CPUID as a field's value
-/// (`field_value`); None off x86-64 or where CPUID has no brand.
+/// The leaf of CPUID whose `eax` is the highest extended leaf.
+#[cfg(target_arch = "x86_64")]
+const EXTENDED_LEAVES: u32 = 0x8000_0000;
+
+/// The leaves of CPUID that hold the processor's brand string, in order,
+/// each in `eax`, `ebx`, `ecx`, and `edx`.
+#[cfg(target_arch = "x86_64")]
+const BRAND_LEAVES: RangeInclusive<u32> = 0x8000_0002..=0x8000_0004;
+
+/// The bytes of `BRAND_LEAVES`: three leaves of four registers of four
+/// bytes.
+#[cfg(any(target_arch = "x86_64", test))]
+pub(crate) const BRAND_BYTES: usize = 48;
+
+/// The processor's brand string from CPUID as a field's value (`brand`);
+/// None off x86-64, where CPUID has no brand leaves, or where the brand
+/// holds no word.
 pub(crate) fn cpu() -> Option<String> {
     #[cfg(target_arch = "x86_64")]
     {
-        if __cpuid(0x8000_0000).eax < 0x8000_0004 {
+        if __cpuid(EXTENDED_LEAVES).eax < *BRAND_LEAVES.end() {
             return None;
         }
-        let bytes: Vec<u8> = (0x8000_0002..=0x8000_0004)
+        let mut bytes = [0; BRAND_BYTES];
+        let read = BRAND_LEAVES
             .map(__cpuid)
             .flat_map(|r| [r.eax, r.ebx, r.ecx, r.edx])
-            .flat_map(u32::to_le_bytes)
-            .collect();
-        let brand = field_value(String::from_utf8_lossy(&bytes).trim_matches('\0'));
-        if brand.is_empty() { None } else { Some(brand) }
+            .flat_map(u32::to_le_bytes);
+        for (byte, b) in bytes.iter_mut().zip(read) {
+            *byte = b;
+        }
+        brand(&bytes)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
         None
+    }
+}
+
+// cpu-brand-nul.1 practice-checked: the NUL-terminated string -- the brand is the bytes before the first NUL byte of CPUID's 48, all 48 where none is NUL, not the bytes with NUL bytes trimmed at their two ends alone, with every NUL removed, or with a NUL taken as a space, each of which keeps bytes past the brand's terminator
+// cpu-brand-nul.2 practice-checked: U+FFFD substitution (lossy UTF-8 decoding) -- a byte before the NUL that is no UTF-8 stands in the field as U+FFFD, the field kept, not the call failed nor the field `none`, as no result of the call depends on the field (not measured)
+// cpu-brand-nul.3 design-checked -- `brand` makes the field from the bytes, apart from the reads of CPUID in `cpu`, not the bytes reached through `cpu` alone, so that the test code gives it bytes no processor here returns (not measured)
+/// The brand string of `bytes`, the bytes of `BRAND_LEAVES` in order, as a
+/// field's value (`field_value`): the bytes before the first NUL byte, all
+/// of them where none is NUL, each sequence of them that is no UTF-8 as
+/// U+FFFD; None where they hold no word.
+#[cfg(any(target_arch = "x86_64", test))]
+pub(crate) fn brand(bytes: &[u8; BRAND_BYTES]) -> Option<String> {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(BRAND_BYTES);
+    let brand = field_value(&String::from_utf8_lossy(&bytes[..end]));
+    if brand.is_empty() { None } else { Some(brand) }
+}
+
+/// How a plain round that combines rows reduces the rows to reduce after
+/// its first block (`matrix::reduce`): as random combinations of blocks, or
+/// each on its own with the tests of rows that reduce to zero.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RoundMode {
+    Blocks,
+    Rows,
+}
+
+impl fmt::Display for RoundMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            RoundMode::Blocks => "blocks",
+            RoundMode::Rows => "rows",
+        })
     }
 }
 
@@ -145,32 +226,55 @@ pub(crate) struct Round {
     pub(crate) pairs: usize,
     pub(crate) rows: usize,
     pub(crate) given: usize,
+    // rebuilt-reducer-time.9 design-checked -- the round line names the reducer rows taken from the matrix before, kept=<n>, not no figure nor the entries taken
+    /// The reducer rows the round took from the matrix before.
+    pub(crate) kept: usize,
     pub(crate) columns: usize,
     pub(crate) entries: usize,
+    // column-index-peak.14 design-checked -- the round line and the inter line name the bytes of an entry of their matrix's column index, index=<2|4>, not no figure, so that the test code tells a narrow matrix from a wide one by the report and a reader which matrices took 2 bytes (not measured)
+    /// The bytes of an entry of the matrix's column index, 2 or 4.
+    pub(crate) index: usize,
     pub(crate) pivots: usize,
     pub(crate) zero: u64,
     /// None where the plain run combined rows, which names none.
     pub(crate) zero_rows: Option<usize>,
     pub(crate) reductions: u64,
     pub(crate) bands: bool,
+    // gf2-reduction-time.17 design-checked -- the round line names packed=<words> where the round reduced in packed rows and packed=no where not, after bands, and the read line and the run line name field=gf2, not no field for it nor a line of its own (not measured)
+    /// The K columns' words where the round reduced in packed rows.
+    pub(crate) packed: Option<u32>,
+    // short-row-reduce-time.6 design-checked -- the round line names the round's mode, mode=<blocks|rows>, after bands, and zero-rows stands in the rows' mode, not no field nor the mode on the run line
+    /// The mode the plain run's round reduced the rows after its first
+    /// block in, where the run combines rows; None elsewhere.
+    pub(crate) mode: Option<RoundMode>,
+    // gf2-forced-zeros-time.13 design-checked -- the round line names the sketches' draws, sketches=<k>, after mode, where the round took the sketches, and the run line reduce=sketches, not the rows a sketch ruled zero as a field of their own, which zero-rows less zero gives (not measured)
+    /// The sketches' draws where the plain round over GF(2) took the
+    /// sketches; None elsewhere.
+    pub(crate) sketches: Option<u32>,
     /// The signature run's pending signatures taken since its last round,
     /// and those of them that gave no reductant.
     pub(crate) pending: Option<(usize, usize)>,
+    // redundant-round-pairs.7 design-checked -- the plain run's round line names the pairs of its sugar its selection left, deferred=<n> before left, 0 where it took them all, not a round line without them nor a line of its own
+    /// The plain run's pairs of the round's sugar its selection left in the
+    /// pair set.
+    pub(crate) deferred: Option<usize>,
     /// The plain run's pairs left after the round: after its update, or
     /// after its selection where it made a constant.
     pub(crate) left: Option<usize>,
 }
 
-// call-report.1 design -- the report is text, a line per event in the order met: seconds since the call's start, a kind, and key=value fields, not JSON Lines nor a typed list of events in the outcome (not measured)
+// call-report.1 design-checked -- the report is text, a line per event in the order met: seconds since the call's start, a kind, and key=value fields, not JSON Lines nor a typed list of events in the outcome (not measured)
 /// The report of one call: its lines so far, and the stage times of the
 /// step in progress.
 pub(crate) struct Report {
-    /// The call's start, `entry::call`'s.
+    /// The call's start, `call::call`'s.
     start: Instant,
     /// The lines so far.
     text: String,
     /// Takes each line as it is written, until a write fails.
     sink: Option<ReportSink>,
+    /// The error of the write that failed, after which `sink` is None.
+    sink_error: Option<String>,
     /// Where the last stage ended.
     last: Instant,
     /// The stage times of the step in progress, by `Stage`.
@@ -184,11 +288,14 @@ pub(crate) struct Report {
     /// A round `Stats` has counted whose line is not written yet, with its
     /// counts' growth.
     round: Option<(Round, (u64, u64))>,
-    /// The resident set in bytes when the report began.
-    rss: usize,
+    /// The resident set in bytes when the report began; None where it
+    /// could not be read.
+    rss: Option<u64>,
 }
 
 impl Report {
+    // report-peak-inherited.2 design-checked -- the start figure is the resident set of /proc/self/statm through os's Resident, the one reader of the resident set, not VmRSS of /proc/self/status read beside the peak
+    // report-peak-inherited.3 design-checked -- the high-water mark is not reset before the call, the crate being a library whose host may measure its own peak across calls, not a write of 5 to /proc/self/clear_refs at the call's start
     /// The report of a call that started at `start`, with no line, each
     /// line also written to `sink` where there is one.
     pub(crate) fn new(start: Instant, sink: Option<ReportSink>) -> Report {
@@ -196,20 +303,22 @@ impl Report {
             start,
             text: String::new(),
             sink,
+            sink_error: None,
             last: start,
             times: [Duration::ZERO; STAGES],
             counts: (0, 0),
             run: start,
             runs: 0,
             round: None,
-            rss: crate::blocks::rss().0,
+            rss: Resident::open().and_then(|r| r.bytes()),
         }
     }
 
     /// The resident set in bytes when the report began, and the process's
-    /// peak resident set now.
-    pub(crate) fn rss(&self) -> (usize, usize) {
-        (self.rss, crate::blocks::rss().1)
+    /// peak resident set now (`os::peak`); None where either cannot be
+    /// read.
+    pub(crate) fn rss(&self) -> Option<(u64, u64)> {
+        Some((self.rss?, peak()?))
     }
 
     /// Writes the line of kind `kind`: the time since the call's start, the
@@ -229,8 +338,9 @@ impl Report {
         )]
         let _: fmt::Result = writeln!(self.text, "{time} {kind}{fields}");
         if let Some(sink) = &self.sink
-            && sink.put(&self.text[from..]).is_err()
+            && let Err(e) = sink.put(&self.text[from..])
         {
+            self.sink_error = Some(e.to_string());
             self.sink = None;
         }
     }
@@ -268,7 +378,7 @@ impl Report {
         self.last = Instant::now();
     }
 
-    // call-report.7 design -- a stage's time is the time between two marks, each a read of the monotonic clock, not the CPU's cycle counter nor sampling (not measured)
+    // call-report.7 design-checked -- a stage's time is the time between two marks, each a read of the monotonic clock, not the CPU's cycle counter nor sampling (not measured)
     /// Ends `stage`: the time since the last mark, or since `open`, is
     /// added to it.
     pub(crate) fn mark(&mut self, stage: Stage) {
@@ -287,7 +397,7 @@ impl Report {
         (counts.0 - self.counts.0, counts.1 - self.counts.1)
     }
 
-    // call-report.19 design -- every round Stats counts gets its line, a round a halt ends in its decode or its update before the next line, not no line for such a round (not measured)
+    // call-report.19 design-checked -- every round Stats counts gets its line, a round a halt ends in its decode or its update before the next line, not no line for such a round (not measured)
     /// Notes the round `Stats` has counted, with the budget's counts
     /// `counts`: its line is written by `end_round`, or before the next
     /// line where a halt ends the round first.
@@ -320,25 +430,32 @@ impl Report {
             "round",
             format_args!(
                 " number={number} degree={degree} pairs={pairs} rows={rows} given={given} \
-                 columns={columns} entries={entries} pivots={pivots} zero={zero}{zero_rows} \
+                 kept={kept} columns={columns} entries={entries} index={index} pivots={pivots} \
+                 zero={zero}{zero_rows} \
                  reductions={reductions} subtracted={subtracted} added={added} \
-                 bands={bands}{pending}{dropped}{left} select={select} symbolic={symbolic} \
-                 encode={encode} reduce={reduce} backsub={backsub} record={record} \
-                 decode={decode} update={update}",
+                 bands={bands} packed={packed}{mode}{sketches}{pending}{dropped}{deferred}{left} \
+                 select={select} symbolic={symbolic} encode={encode} reduce={reduce} \
+                 backsub={backsub} record={record} decode={decode} update={update}",
                 number = r.number,
                 degree = r.degree,
                 pairs = r.pairs,
                 rows = r.rows,
                 given = r.given,
+                kept = r.kept,
                 columns = r.columns,
                 entries = r.entries,
+                index = r.index,
                 pivots = r.pivots,
                 zero = r.zero,
                 zero_rows = Opt("zero-rows", r.zero_rows),
                 reductions = r.reductions,
                 bands = if r.bands { "yes" } else { "no" },
+                packed = Or(r.packed, "no"),
+                mode = Opt("mode", r.mode),
+                sketches = Opt("sketches", r.sketches),
                 pending = Opt("pending", pending),
                 dropped = Opt("dropped", dropped),
+                deferred = Opt("deferred", r.deferred),
                 left = Opt("left", r.left),
                 select = t[Stage::Select as usize],
                 symbolic = t[Stage::Symbolic as usize],
@@ -352,9 +469,10 @@ impl Report {
         );
     }
 
-    /// The lines, in the order written.
-    pub(crate) fn finish(mut self) -> String {
+    /// The lines, in the order written, and the error of the write to the
+    /// sink that failed.
+    pub(crate) fn finish(mut self) -> (String, Option<String>) {
         self.flush();
-        self.text
+        (self.text, self.sink_error)
     }
 }

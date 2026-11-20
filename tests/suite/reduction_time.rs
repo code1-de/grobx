@@ -11,8 +11,8 @@ use grobx::id::MonoId;
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, Rng, assert_accepted, degree_bound, dense, params, points, random_square, run,
-    with_cofactors,
+    EDGE_BASES, P, P31, Rng, assert_accepted, degree_bound, dense, params, points, random_square,
+    run, with_cofactors,
 };
 use crate::large::{LARGEST, LEAST, over};
 use crate::orders::{accepted_in, assert_canonical};
@@ -141,26 +141,6 @@ fn many_subtractions_from_one_entry() {
     }
 }
 
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name, generators, and the
-/// basis over GF(65521).
-const EDGE: [(&str, &str, &str); 7] = [
-    ("the zero ideal", "0", "[]:\n"),
-    ("F = (0, 0)", "0,\n0", "[]:\n"),
-    ("no generator", "", "[]:\n"),
-    ("the unit ideal", "x*z-1,\nx", "[1]:\n"),
-    ("already a Gröbner basis", "x+z,\nz^2+1", "[x+z,\nz^2+1]:\n"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-        "[y^2+65520*x,\nx*y+65520*z,\nx^2+65520*y*z]:\n",
-    ),
-    (
-        "an eliminable variable",
-        "x-y^2-z,\ny*z-1,\nz^2-y",
-        "[x+65519*z,\nz^2+65520*y,\ny*z+65520,\ny^2+65520*z]:\n",
-    ),
-];
-
 /// The edge cases over 65521 and 65537, the two loops of `Gf31`, over
 /// 2^31 − 1, and over `Gf64`'s least prime, signatures on and off: each
 /// basis canonical and accepted by the checker in the exact mode, and over
@@ -168,7 +148,7 @@ const EDGE: [(&str, &str, &str); 7] = [
 #[test]
 fn the_edge_cases_on_both_sides_of_2_to_the_16() {
     for p in [P, 65537, P31, LEAST] {
-        for (case, generators, want) in EDGE {
+        for (case, generators, want) in EDGE_BASES {
             let text = format!("x,y,z\n{p}\n{generators}\n");
             for signatures in [true, false] {
                 let mut params = with_cofactors(0x0de7);

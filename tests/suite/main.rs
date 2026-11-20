@@ -22,20 +22,17 @@
     reason = "test code, where these lints carry no weight"
 )]
 
-// test-build-time.1 design -- the package's integration tests are one test binary, each test file a module of it, not a test binary per file (log 0019-1)
-// test-build-time.2 design -- the test files lie in tests/suite/ and cargo discovers the test targets, not autotests = false with the suite named as the one [[test]] target (not measured)
-// test-build-time.4 design -- every test file is a module here, those that run calls with a deadline among them, not kept as test binaries of their own (log 0019-1)
+// test-build-time.1 design-checked -- the package's integration tests are one test binary, each test file a module of it, not a test binary per file (log 0019-1)
+// test-build-time.2 design-checked -- the test files lie in tests/suite/ and cargo discovers the test targets, not autotests = false with the suite named as the one [[test]] target (not measured)
+// test-build-time.4 design-checked -- every test file is a module here, those that run calls with a deadline among them, not kept as test binaries of their own (log 0019-1)
 
-// small-block-time.4 design -- the integration suite sets the crate's allocator as its global allocator, not the crate setting it for every program that links it (not measured)
+// small-block-time.4 design-checked -- the integration suite sets the crate's allocator as its global allocator, not the crate setting it for every program that links it (not measured)
 #[global_allocator]
 static GLOBAL: grobx::Allocator = grobx::Allocator;
 
-// test-build-time.3 design -- the shared modules stay where they were, declared here by #[path], not moved into tests/suite/ (not measured)
+// test-build-time.3 design-checked -- the shared modules stay where they were, declared here by #[path], not moved into tests/suite/ (not measured)
 #[path = "../common/mod.rs"]
 mod common;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-#[path = "../common/heap.rs"]
-mod heap;
 #[path = "../large/mod.rs"]
 mod large;
 #[path = "../orders/mod.rs"]
@@ -48,27 +45,42 @@ mod report;
 mod accept;
 mod accept_tuning;
 mod api;
+mod back_substitution_time;
+mod bivium_gap;
 mod budget;
 mod call_report;
 mod call_report_q;
 mod call_report_tuning;
+mod cancel_check_race;
 mod checker_points_abort;
 mod checker_stop_latency;
 mod cofactor_stop_latency;
 mod cofactors;
+mod column_index_peak;
+mod cooper_rest_gap;
 mod core_field;
 mod core_monomial;
 mod core_text;
+mod cyclic_9_unsolved;
 mod cyclic_gap;
+mod deglex_order;
 mod divisibility_time;
 mod early_handover_time;
 mod engine;
+mod fallen_pair_losses;
 mod fglm_edge;
 mod fglm_random;
 mod fglm_replay;
 mod fglm_tuning;
 mod formats;
+mod gf2_input_time;
+mod gf2_reduction_time;
+mod gf2_signature_losses;
+mod gf2_update_time;
 mod handover_time;
+mod helper_copies;
+mod hygiene_notes;
+mod hygiene_scans;
 mod input_redundancy;
 mod instance_grammar;
 mod large_field;
@@ -88,14 +100,13 @@ mod orders_random;
 mod orders_replay;
 mod orders_tuning;
 mod outgrown_round_size;
-// page-fault-time tests glibc's malloc.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-mod page_fault_time;
+mod pair_update_rest_time;
 mod pair_work_handover;
 mod pair_work_ratio;
 mod plain;
 mod plain_reduction_time;
 mod plain_update_time;
+mod plain_zero_pairs_time;
 mod plain_zero_time;
 mod product_lookup_time;
 mod q_api;
@@ -110,9 +121,12 @@ mod q_random;
 mod q_rational;
 mod q_reconstruct;
 mod q_replay;
+mod q_replay_reduction_time;
 mod q_tuning;
 mod q_zero_denominator;
+mod rebuilt_reducer;
 mod reduction_time;
+mod redundant_round_pairs;
 mod replay;
 mod result_time;
 mod round_memory;
@@ -124,9 +138,12 @@ mod rule_breaches_engine;
 mod rule_breaches_names;
 mod rule_breaches_suite;
 mod run_generators_time;
+mod same_name_enums;
 mod signature_pairs;
+mod signature_run_losses;
 mod signature_zero_time;
 mod signatures;
+mod silent_fallbacks;
 mod small_block_time;
 mod sources_scan;
 mod table_read_time;
@@ -136,5 +153,7 @@ mod test_mq_systems;
 mod text_stop_latency;
 mod text_time;
 mod trace;
+mod unit_test_copies;
+mod unit_test_fn_copies;
 mod unsolved;
 mod zero_rows_time;

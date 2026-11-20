@@ -6,12 +6,11 @@
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, assert_accepted_in, dense, params_in, random_square, random_system, run,
+    P, P31, agree, assert_accepted_in, dense, params_in, random_square, random_system, run,
     with_cofactors_in,
 };
 use crate::many_variables_time::{EDGE, P62};
 use crate::orders::{Family, names};
-use crate::row_scan_time::agree;
 
 /// The fields of tests 4 and 5: 65521, 7, whose plain run reduces each row
 /// alone, 2^31 − 1, 2^62 − 57, and ℚ, whose learn runs listen.

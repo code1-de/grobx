@@ -42,7 +42,7 @@ fn inventory() -> Vec<String> {
         .collect()
 }
 
-// test-build-time.7 design -- an inventory of the tests the integration test binaries listed before the move, checked against the suite's own --list, not the lists compared once by hand (not measured)
+// test-build-time.7 design-checked -- an inventory of the tests the integration test binaries listed before the move, checked against the suite's own --list, not the lists compared once by hand (not measured)
 #[test]
 fn every_test_of_the_inventory_is_listed() {
     let listed = listed();

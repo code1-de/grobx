@@ -13,30 +13,22 @@
 use std::fmt::Write;
 
 use crate::echelon::{Echelon, echelon, replay};
-use crate::f4::Halt;
 use crate::field::{Field, Gf31, Gf31Pair, Gf64, Gf64Pair};
-use crate::input_redundancy_tests::{budget, read, table};
+use crate::halt::Halt;
+use crate::input_redundancy_tests::{read, table};
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::{Grevlex, Lex, Order};
+use crate::shared_tests::{LEARN0, LEARN1, P, P31, P61, REPLAY0, REPLAY1, budget};
 use crate::systems::Rng;
 use crate::table::Table;
 
-const P: u64 = 65521;
-/// The largest prime below 2^31.
-const P31: u64 = 2_147_483_647;
-/// The Mersenne prime 2^61 − 1.
-const P61: u64 = (1 << 61) - 1;
-/// Two primes of [2^30, 2^31), a pair learn's.
-const L0: u64 = 1_945_203_761;
-const L1: u64 = 1_875_939_437;
-/// Two primes of [2^61, 2^62), a pair replay's.
-const R0: u64 = 2_536_775_269_993_504_451;
-const R1: u64 = 4_026_501_963_682_786_037;
-
 /// A record's leading monomials of `echelon`'s rows: per row the exponents
 /// of its first monomial, None for a zero row.
-fn leads<F: Field>(table: &Table<Dense16>, e: &Echelon<F, Rank1>) -> Vec<Option<Vec<u32>>> {
+pub(crate) fn leads<F: Field>(
+    table: &Table<Dense16>,
+    e: &Echelon<F, Rank1>,
+) -> Vec<Option<Vec<u32>>> {
     let n = table.format().variables();
     e.rows
         .iter()
@@ -357,10 +349,16 @@ fn replays_as_the_echelon() {
             pair!(Gf31::prime(P), Gf31::prime(P));
             pair!(Gf31::prime(P), Gf64::prime(P61));
             pair!(Gf31::prime(P31), Gf31::prime(P));
-            pair!(Gf31Pair::primes(L0, L1), Gf64Pair::primes(R0, R1));
-            pair!(Gf31Pair::primes(L0, L1), Gf31::prime(P31));
-            pair!(Gf64::prime(P61), Gf64Pair::primes(R0, R1));
-            pair!(Gf64Pair::primes(R0, R1), Gf31Pair::primes(L0, L1));
+            pair!(
+                Gf31Pair::primes(LEARN0, LEARN1),
+                Gf64Pair::primes(REPLAY0, REPLAY1)
+            );
+            pair!(Gf31Pair::primes(LEARN0, LEARN1), Gf31::prime(P31));
+            pair!(Gf64::prime(P61), Gf64Pair::primes(REPLAY0, REPLAY1));
+            pair!(
+                Gf64Pair::primes(REPLAY0, REPLAY1),
+                Gf31Pair::primes(LEARN0, LEARN1)
+            );
         }
     }
     assert!(ran * 10 >= cases * 9, "{ran} of {cases} cases agreed");
@@ -390,8 +388,8 @@ fn replays_over_many_columns() {
         ));
         ran += usize::from(agrees(
             &case,
-            &Gf31Pair::primes(L0, L1),
-            &Gf64Pair::primes(R0, R1),
+            &Gf31Pair::primes(LEARN0, LEARN1),
+            &Gf64Pair::primes(REPLAY0, REPLAY1),
             &Grevlex,
             &names,
             &text,
@@ -466,9 +464,9 @@ fn replays_that_misfit() {
     // A leading coefficient 0 at the first lane of a pair.
     misfits(
         "a lane's zero",
-        &Gf64Pair::primes(R0, R1),
+        &Gf64Pair::primes(REPLAY0, REPLAY1),
         "x,y,z",
-        &format!("{R0}*x+y,\ny+z"),
+        &format!("{REPLAY0}*x+y,\ny+z"),
         &[Some(x.clone()), Some(y.clone())],
     );
     // x + y and x + (c + 1)·y, c = 65521·3: over GF(65521) the second
@@ -532,8 +530,8 @@ fn replay_edge_cases() {
         assert!(
             agrees(
                 case,
-                &Gf31Pair::primes(L0, L1),
-                &Gf64Pair::primes(R0, R1),
+                &Gf31Pair::primes(LEARN0, LEARN1),
+                &Gf64Pair::primes(REPLAY0, REPLAY1),
                 &Grevlex,
                 names,
                 text

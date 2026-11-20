@@ -6,9 +6,9 @@
 //! Every mutant is a string operation on Groebner.jl's text (checker-gfp.22), so this code
 //! needs no arithmetic that could err.
 
-
 use std::fmt::Write;
 use std::fs;
+use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::process::Command;
@@ -62,7 +62,7 @@ fn write_atomic(path: &PathBuf, text: &str) {
 /// What `groebner-jl --cofactors` prints for `instance`, from the cache where
 /// the cache holds the same instance text under the same Groebner.jl version
 /// (checker-gfp.19).
-// checker-gfp.19 design -- the oracle's output is cached under the cargo target directory, not committed (log 0001-1)
+// checker-gfp.19 design-checked -- the oracle's output is cached under the cargo target directory, not committed (log 0001-1)
 pub fn oracle(name: &str, instance: &str) -> String {
     oracle_with(name, instance, &[])
 }
@@ -334,6 +334,37 @@ pub fn rule(name: &str, instance: &str, basis: &str, cofactors: &str) -> Verdict
         .unwrap_or_else(|e| panic!("{name}: the checker refused a well-formed result: {e:?}"))
 }
 
+/// The checker's verdict in exact mode in grevlex; a refusal fails the test.
+pub fn verdict(instance: &str, basis: &str, cofactors: &str) -> Verdict {
+    check(instance, basis, cofactors, &Order::Grevlex, Mode::Exact)
+        .unwrap_or_else(|e| panic!("refused {basis:?} with {cofactors:?}: {e:?}"))
+}
+
+/// The checker's verdict in exact mode in grevlex, or the error it refused
+/// the texts with.
+pub fn ruled(instance: &str, basis: &str, cofactors: &str) -> Result<Verdict, String> {
+    check(instance, basis, cofactors, &Order::Grevlex, Mode::Exact).map_err(|e| format!("{e:?}"))
+}
+
+/// The verdict on a result that holds: a Gröbner basis, and reduced.
+pub fn holds() -> Verdict {
+    Verdict {
+        groebner: Ok(()),
+        reduced: Ok(()),
+    }
+}
+
+/// The cheap mode with `k` points under `seed`.
+pub fn cheap(k: u32, seed: u64) -> Mode {
+    Mode::Cheap {
+        points: NonZeroU32::new(k).expect("k is at least 1"),
+        seed,
+    }
+}
+
+/// The batch sizes the batched check runs, from one point to a batch.
+pub const PER: [usize; 4] = [1, 2, 3, 5];
+
 // --- text surgery ---
 
 /// The terms of a polynomial's text, each as its sign (true for minus) and
@@ -452,7 +483,7 @@ impl Rng {
     }
 }
 
-// checker-q.16 design -- over Q, δ and ε are positive fractions a/b, 1 ≤ a ≤ 2^62, 1 ≤ b ≤ 2^20 (not measured)
+// checker-q.16 design-checked -- over Q, δ and ε are positive fractions a/b, 1 ≤ a ≤ 2^62, 1 ≤ b ≤ 2^20 (not measured)
 /// A nonzero number to scale by, as text: over GF(p) a residue in [1, p),
 /// over Q (p = 0) a positive fraction a/b with 1 ≤ a ≤ 2^62 and
 /// 1 ≤ b ≤ 2^20. Over GF(p) it draws what `Rng::unit` draws.
@@ -553,7 +584,7 @@ impl Mutation {
         }
     }
 
-    // checker-gfp.22 design -- mutants are built as text: factors put in front of every term, a term appended (not measured)
+    // checker-gfp.22 design-checked -- mutants are built as text: factors put in front of every term, a term appended (not measured)
     /// The mutant's basis text and cofactor text.
     pub fn apply(&self, case: &Case) -> (String, String) {
         let width = case.generators().len();
@@ -694,6 +725,14 @@ pub fn accept_and_reject(case: &Case, seed: u64) {
     );
 }
 
+/// The case `name` of `instance` solved by the oracle, on which Accept and
+/// Reject hold (`accept_and_reject`) under a seed drawn from the name.
+pub fn edge(name: &str, instance: &str) -> Case {
+    let case = Case::solved(name, instance);
+    accept_and_reject(&case, 0xed9e ^ name.len() as u64);
+    case
+}
+
 // --- random systems ---
 
 /// A random instance over GF(p): two to four of the variables x, y, z, w,
@@ -706,7 +745,7 @@ pub fn random_system(p: u64, seed: u64) -> String {
     random_instance(&mut rng, p, |rng| rng.unit(p).to_string())
 }
 
-// checker-q.17 design -- random systems over Q have integer coefficients of 1 to 3 digits, or of 20 to 25 (not measured)
+// checker-q.17 design-checked -- random systems over Q have integer coefficients of 1 to 3 digits, or of 20 to 25 (not measured)
 /// A random instance over Q, shaped as `random_system`'s, whose coefficients
 /// are integers with a number of digits in `digits`. Groebner.jl takes no
 /// fraction in an instance.
@@ -731,7 +770,10 @@ fn random_instance(
 ) -> String {
     let names = ["x", "y", "z", "w"];
     let n = 2 + rng.index(3);
-    let variables: Vec<String> = names[..n].iter().map(std::string::ToString::to_string).collect();
+    let variables: Vec<String> = names[..n]
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     let mut generators = Vec::new();
     for _ in 0..=rng.index(n) {
         let mut seen = Vec::new();
@@ -763,3 +805,11 @@ fn random_instance(
 pub fn quadrics(p: u64) -> String {
     format!("x,y,z\n{p}\nx^2+y*z-2*z,\ny^2-x*z+3*x,\nz^2+x*y-5*y\n")
 }
+
+/// F = {x + y, y^2 + 1} over Q, a reduced Gröbner basis in grevlex already.
+pub const INSTANCE_Q: &str = "x,y\n0\nx+y,\ny^2+1\n";
+/// The reduced basis of `INSTANCE_Q`, and of its generators over GF(7).
+pub const BASIS: &str = "[x+y,\ny^2+1]:\n";
+/// The cofactors of `BASIS` in those generators: each element is its own
+/// generator.
+pub const COFACTORS: &str = "[[1,0],\n[0,1]]:\n";

@@ -12,9 +12,8 @@ use num_bigint::BigUint;
 use num_integer::Integer;
 use num_traits::One;
 
-use crate::common::{params_in, run};
+use crate::common::{EDGE_GENERATORS, params_in, run};
 use crate::q::accepted_q;
-use crate::run_generators_time::EDGE;
 
 /// The edge cases again, with fractions among the coefficients.
 const FRACTIONS: [(&str, &str); 3] = [
@@ -43,7 +42,7 @@ fn agrees(case: &str, instance: &str, order: &str) {
 /// Test 6: the edge cases on x, y, z over ℚ, and with fractions.
 #[test]
 fn the_edge_cases() {
-    for (case, gens) in EDGE.into_iter().chain(FRACTIONS) {
+    for (case, gens) in EDGE_GENERATORS.into_iter().chain(FRACTIONS) {
         agrees(case, &format!("x,y,z\n0\n{gens}\n"), "grevlex");
     }
 }

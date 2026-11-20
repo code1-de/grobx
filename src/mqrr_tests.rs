@@ -15,7 +15,7 @@ use crate::field::is_prime_64;
 use crate::lehmer::{MARGIN, Mqrr, Scaled, threshold};
 use crate::mixed_radix_tests::{classify, crt_of};
 use crate::rational::Rational;
-use crate::shortcut_tests::{image, integer, product};
+use crate::shared_tests::{image, integer, limbs, product};
 
 /// The numbers of primes the moduli are products of: one, two, and four,
 /// past 64 and 128 bits, and 13 to 290, counts of primes a call over ℚ
@@ -40,10 +40,6 @@ pub(crate) fn primes(rng: &mut Xoshiro256PlusPlus, k: usize, low: u32) -> Vec<u6
 /// A random integer of exactly `bits` bits, `bits` at least 1.
 pub(crate) fn of_bits(rng: &mut Xoshiro256PlusPlus, bits: u64) -> BigUint {
     integer(rng, bits - 1) | BigUint::one() << (bits - 1)
-}
-
-pub(crate) fn limbs(x: &BigUint) -> Vec<u64> {
-    x.to_u64_digits()
 }
 
 /// The test code's oracle, monagan-2004 §3's algorithm MQRR as written, on

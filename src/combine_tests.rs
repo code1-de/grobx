@@ -8,36 +8,25 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use std::num::NonZeroUsize;
-use std::time::Instant;
-
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::Stats;
 use crate::budget::Budget;
 use crate::cofactors::{Cofactors, NoCofactors, Tracked};
-use crate::f4::{self, Elements};
+use crate::f4;
 use crate::field::{Field, Gf31};
-use crate::id::{MonoId, RowId};
-use crate::matrix::{self, Buffers, Combine, Matrix, Reduced, Reduction};
+use crate::id::{RowId, RowSource};
+use crate::matrix::{self, Buffers, Combine};
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::Grevlex;
-use crate::poly::{Basis, Poly};
+use crate::poly::{Basis, Elements, Poly};
+use crate::shared_tests::{Random, budget, rows};
 use crate::systems::{Rng, dense, random_system};
 use crate::table::Table;
-use crate::text::{Header, write_basis};
-use crate::trace::{NoLearner, NoTrace, RowSource, Trace};
-use crate::{MonomialOrder, Params, Stats, Threads};
-
-fn budget() -> Budget {
-    let p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    );
-    Budget::new(Instant::now(), &p).unwrap()
-}
+use crate::text::{Header, Unread, write_basis};
+use crate::trace::{NoLearner, NoTrace, Trace};
 
 /// A trace that listens and keeps nothing.
 struct Listening;
@@ -47,18 +36,11 @@ impl Trace for Listening {
     fn counted(&mut self, _: &[RowId]) {}
 }
 
-/// A random matrix over GF(p) on four variables: a basis of `elements`
-/// random monic polynomials, and given rows that are the halves of random
-/// S-pairs of the basis, with every `twice`-th draw's rows given twice.
-/// Symbolic preprocessing adds the reducers.
-struct Random {
-    field: Gf31,
-    basis: Basis<Gf31, Rank1>,
-    matrix: Matrix,
-}
-
 impl Random {
-    fn new(p: u64, seed: u64, elements: usize, pairs: usize, twice: usize) -> Random {
+    /// A random matrix over GF(p) on four variables: a basis of `elements` random monic
+    /// polynomials, and given rows that are the halves of random S-pairs of the basis, with every
+    /// `twice`-th draw's rows given twice. Symbolic preprocessing adds the reducers.
+    fn drawn(p: u64, seed: u64, elements: usize, pairs: usize, twice: usize) -> Random {
         let field = Gf31::new(p).unwrap();
         let mut table = Table::new(
             Dense16::new(4),
@@ -76,7 +58,7 @@ impl Random {
                     *x = k;
                     degree -= k;
                 }
-                let m = table.intern(&e).unwrap();
+                let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                 terms.push((m, field.coef(1 + rng.below(p - 1))));
             }
             let mut g = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
@@ -84,7 +66,7 @@ impl Random {
                 continue;
             }
             g.make_monic(&field);
-            basis.push_min(&table, g).unwrap();
+            basis.push_min(&table, g, &mut Budget::unbounded()).unwrap();
         }
         let min = basis.min().to_vec();
         let mut rows = Vec::new();
@@ -94,11 +76,15 @@ impl Random {
             if i == j {
                 continue;
             }
-            let lcm = table.lcm(basis.lead(i), basis.lead(j)).unwrap();
+            let lcm = table
+                .lcm(basis.lead(i), basis.lead(j), &mut Budget::unbounded())
+                .unwrap();
             for g in [i, j] {
                 let row = RowSource {
                     element: g,
-                    multiplier: table.div(lcm, basis.lead(g)).unwrap(),
+                    multiplier: table
+                        .div(lcm, basis.lead(g), &mut Budget::unbounded())
+                        .unwrap(),
                 };
                 rows.push(row);
                 if twice > 0 && k % twice == 0 {
@@ -110,9 +96,8 @@ impl Random {
             &mut table,
             &basis,
             &Grevlex,
-            1,
             rows,
-            Vec::new(),
+            &mut Buffers::new(),
             &mut budget(),
         )
         .unwrap();
@@ -122,30 +107,6 @@ impl Random {
             matrix,
         }
     }
-
-    fn reduce(&self, combine: Option<&mut Combine>) -> Reduction<Gf31> {
-        matrix::reduce::<Gf31, Dense16, Rank1, NoCofactors>(
-            &self.field,
-            &self.basis,
-            &self.matrix,
-            &mut NoCofactors,
-            &mut budget(),
-            true,
-            combine,
-            &mut Buffers::new(),
-            None,
-        )
-        .unwrap()
-    }
-}
-
-/// The made rows, each as its columns and coefficients, by leading column.
-fn rows(reduction: &Reduction<Gf31>) -> Vec<(Vec<MonoId>, Vec<u32>)> {
-    let mut made: Vec<&Reduced<Gf31>> = reduction.made.iter().collect();
-    made.sort_by_key(|r| r.cols[0]);
-    made.iter()
-        .map(|r| (r.cols.clone(), r.coefs.clone()))
-        .collect()
 }
 
 /// gfp-unsolved.2, .5: the made rows are the reduced row echelon form of
@@ -155,7 +116,7 @@ fn rows(reduction: &Reduction<Gf31>) -> Vec<(Vec<MonoId>, Vec<u32>)> {
 fn combinations_make_what_rows_make() {
     for p in [7, 46337, 65521, 46349, 2_147_483_647] {
         for seed in 0..12 {
-            let m = Random::new(
+            let m = Random::drawn(
                 p,
                 seed,
                 4 + (seed as usize % 12),
@@ -172,7 +133,7 @@ fn combinations_make_what_rows_make() {
 /// A matrix with no row to reduce: nothing made, combined or not.
 #[test]
 fn a_matrix_with_no_row_to_reduce() {
-    let m = Random::new(65521, 3, 6, 0, 0);
+    let m = Random::drawn(65521, 3, 6, 0, 0);
     for combine in [None, Some(Combine::new(1))] {
         let mut combine = combine;
         let got = m.reduce(combine.as_mut());
@@ -187,13 +148,16 @@ fn plain_run<C: Cofactors<Gf31, Dense16>, T: Trace>(
     trace: &mut T,
     seed: u64,
 ) -> (Table<Dense16>, Elements<Gf31, Rank1, C::Element>) {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let field = header.gf31().unwrap();
     let mut table = Table::new(
         Dense16::new(header.names.len()),
         &mut Xoshiro256PlusPlus::seed_from_u64(1),
     );
-    let generators = header.generators(&field, &mut table, &Grevlex).unwrap();
+    let generators = header
+        .generators(&field, &mut table, &Grevlex, &mut Budget::unbounded())
+        .map_err(Unread::unbounded)
+        .unwrap();
     let elements = f4::run(
         &field,
         &mut table,
@@ -215,7 +179,7 @@ fn basis_text<E>(
     table: &Table<Dense16>,
     elements: &Elements<Gf31, Rank1, E>,
 ) -> String {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let field = header.gf31().unwrap();
     let mut out = String::new();
     write_basis(
@@ -264,12 +228,14 @@ fn a_listener_leaves_the_basis() {
 #[test]
 fn the_plain_runs_cofactors_are_accepted() {
     for (name, text) in &cases() {
-        let header = Header::read(text).unwrap();
+        let header = Header::read(text, &mut Budget::unbounded()).unwrap();
         let field = header.gf31().unwrap();
         let n = header.names.len();
         let mut scratch = Table::new(Dense16::new(n), &mut Xoshiro256PlusPlus::seed_from_u64(1));
-        let generators: Vec<Poly<Gf31, Rank1>> =
-            header.generators(&field, &mut scratch, &Grevlex).unwrap();
+        let generators: Vec<Poly<Gf31, Rank1>> = header
+            .generators(&field, &mut scratch, &Grevlex, &mut Budget::unbounded())
+            .map_err(Unread::unbounded)
+            .unwrap();
         let generators = generators.len();
         let mut cof = Tracked::new(
             field,

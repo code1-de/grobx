@@ -9,66 +9,29 @@
 )]
 
 use std::collections::HashSet;
-use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use num_bigint::{BigInt, BigUint, Sign};
 use num_traits::{One, Signed, Zero};
-use rand_core::{Rng, SeedableRng};
+use rand_core::Rng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::Stop;
 use crate::budget::Budget;
 use crate::cofactors::{Cofactors, ENTRY, Tracked, sort_ids};
 use crate::field::{Field, Gf31};
 use crate::id::MonoId;
 use crate::lift::{SCALE, scale_part};
-use crate::matrix::RUN;
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
+use crate::numerators::Numerators;
 use crate::order::{Block, Grevlex, Lex, Order};
 use crate::poly::Poly;
 use crate::rational::{Rational, write_cofactor_q, write_poly_q};
+use crate::shared_tests::{P, budget, monomials, params, passed, passed_after, rng};
+use crate::sort::RUN;
 use crate::table::Table;
 use crate::text::{CHUNK, decimal_units, term_longest, write_basis, write_poly};
-use crate::{MonomialOrder, Params, Stop, Threads};
-
-const P: u64 = 65521;
-
-fn params() -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    )
-}
-
-/// A budget with no bound.
-fn generous() -> Budget {
-    Budget::new(Instant::now(), &params()).unwrap()
-}
-
-/// A budget whose deadline passed before the test began, and which has not
-/// been checked.
-fn passed() -> Budget {
-    let mut p = params();
-    p.deadline = Some(Duration::from_millis(1));
-    Budget::new(
-        Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
-        &p,
-    )
-    .unwrap()
-}
-
-/// `passed` with `units` of work between two full checks.
-fn passed_after(units: u64) -> Budget {
-    let mut b = passed();
-    b.set_work(units);
-    b
-}
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
 
 /// The text of a term with coefficient c on these names and exponents, in
 /// the canonical spelling: the reference the writers are checked against.
@@ -152,7 +115,7 @@ fn poly(
         .iter()
         .map(|e| {
             (
-                table.intern(e).unwrap(),
+                table.intern(e, &mut Budget::unbounded()).unwrap(),
                 field.coef(1 + r.next_u64() % (P - 1)),
             )
         })
@@ -161,8 +124,10 @@ fn poly(
 }
 
 /// Test 1, text-stop-latency.1 and .2: the basis text and a polynomial's
-/// text over GF(p) are the reference's and spend their terms' bytes; with
-/// the budget passed they stop inside the first long polynomial; a memory
+/// text over GF(p) are the reference's and spend their terms' bytes and the
+/// variables of the monomials they write from exponents
+/// (call-stop-latency.29); with the budget passed they stop inside the
+/// first long polynomial; a memory
 /// ceiling is read at the same checks.
 #[test]
 fn the_texts_over_gfp_spend_their_bytes() {
@@ -172,7 +137,7 @@ fn the_texts_over_gfp_spend_their_bytes() {
     let mut r = rng(2);
     let p1 = poly(&mut table, &field, &exponents(2 * CHUNK + 5), &mut r);
     let p2 = poly(&mut table, &field, &exponents(CHUNK), &mut r);
-    let one_id = table.intern(&[0, 0]).unwrap();
+    let one_id = table.intern(&[0, 0], &mut Budget::unbounded()).unwrap();
     let one = Poly::from_terms(
         &mut vec![(one_id, field.coef(1))],
         &field,
@@ -188,34 +153,45 @@ fn the_texts_over_gfp_spend_their_bytes() {
         .collect();
     let want = format!("[{texts}]:\n", texts = texts.join(",\n"));
 
-    let mut b = generous();
+    let mut b = budget();
     let mut out = String::new();
     write_basis(&mut out, &names, &table, &field, polys.iter(), &mut b).unwrap();
     assert_eq!(out, want);
     let terms: usize = texts.iter().map(String::len).sum();
+    // call-stop-latency.29: each distinct monomial's first text spends its
+    // variables beside the bytes.
+    let monomials: HashSet<MonoId> = polys
+        .iter()
+        .flat_map(|p| p.monomials.iter().copied())
+        .filter(|&m| table.degree(m) > 0)
+        .collect();
     assert_eq!(
         b.spent() as usize,
-        terms,
-        "the terms' bytes, no bracket or separator"
+        terms + monomials.len() * names.len(),
+        "the terms' bytes, no bracket or separator, and each monomial's variables once"
     );
 
-    let mut b = generous();
+    let mut b = budget();
     let mut out = String::new();
     write_poly(&mut out, &names, &table, &field, &polys[0], &mut b).unwrap();
     assert_eq!(out, texts[0]);
-    assert_eq!(b.spent() as usize, out.len());
+    assert_eq!(
+        b.spent() as usize,
+        out.len() + polys[0].len() * names.len(),
+        "the bytes and each term's variables"
+    );
 
     let zero: Poly<Gf31, Rank1> = Poly {
         monomials: Vec::new(),
         coefs: Vec::new(),
         position: (),
     };
-    let mut b = generous();
+    let mut b = budget();
     let mut out = String::new();
     write_poly(&mut out, &names, &table, &field, &zero, &mut b).unwrap();
     assert_eq!((out.as_str(), b.spent()), ("0", 0));
 
-    let bound = 4096 + CHUNK * term_longest(&names);
+    let bound = 4096 + CHUNK * (term_longest(&names) + names.len());
     let mut b = passed_after(4096);
     let mut out = String::new();
     assert_eq!(
@@ -236,7 +212,7 @@ fn the_texts_over_gfp_spend_their_bytes() {
     );
     assert!(b.spent() as usize <= bound && out.len() < texts[0].len());
 
-    let mut p = params();
+    let mut p = params(1);
     p.memory = Some(1);
     let mut b = Budget::new(Instant::now(), &p).unwrap();
     b.set_work(4096);
@@ -300,7 +276,8 @@ fn terms_q(names: &[&str], exponents: &[u32], coefs: &[(BigInt, Option<BigUint>)
 
 /// Test 2, text-stop-latency.3 and .4: `decimal_units` is the square of the
 /// limbs; the texts over ℚ are the reference's, and each term spends its
-/// bytes and the square of its integers' limbs; with the budget passed the
+/// bytes, the square of its integers' limbs, and two units a variable
+/// (call-stop-latency.29); with the budget passed the
 /// text holds its first term alone; the scaling spends SCALE·(m² + 4) a
 /// term and stops at its first.
 #[test]
@@ -325,7 +302,7 @@ fn the_texts_over_q_spend_their_terms() {
     }
     let want = terms_q(&names, &exponents, &coefs);
     let ints: Vec<BigInt> = coefs.iter().map(|(n, _)| n.clone()).collect();
-    let mut b = generous();
+    let mut b = budget();
     let mut out = String::new();
     write_poly_q(&mut out, &names, &exponents, &ints, &mut b).unwrap();
     assert_eq!(out, want.concat());
@@ -336,7 +313,7 @@ fn the_texts_over_q_spend_their_terms() {
             if n.is_zero() {
                 0
             } else {
-                t.len() + decimal_units(n.magnitude())
+                t.len() + decimal_units(n.magnitude()) + 2 * names.len()
             }
         })
         .sum();
@@ -368,7 +345,7 @@ fn the_texts_over_q_spend_their_terms() {
             den: d.clone().unwrap_or_else(BigUint::one),
         })
         .collect();
-    let mut b = generous();
+    let mut b = budget();
     let mut out = String::new();
     write_cofactor_q(&mut out, &names, &exponents, &rats, &mut b).unwrap();
     assert_eq!(out, want.concat());
@@ -379,7 +356,10 @@ fn the_texts_over_q_spend_their_terms() {
             if n.is_zero() {
                 0
             } else {
-                t.len() + decimal_units(n.magnitude()) + d.as_ref().map_or(0, decimal_units)
+                t.len()
+                    + decimal_units(n.magnitude())
+                    + d.as_ref().map_or(0, decimal_units)
+                    + 2 * names.len()
             }
         })
         .sum();
@@ -408,8 +388,12 @@ fn the_texts_over_q_spend_their_terms() {
         (BigInt::from(7), 2),
         (BigInt::from(1), 3),
     ];
-    let mut b = generous();
-    let got = scale_part(&l, &terms, &dens, &mut b).unwrap();
+    let mut numerators = Numerators::new();
+    for (n, k) in &terms {
+        numerators.push(n, *k);
+    }
+    let mut b = budget();
+    let got = scale_part(&l, numerators.run(), &dens, &mut b).unwrap();
     let want: Vec<Rational> = terms
         .iter()
         .map(|(n, k)| Rational::new(&l * n, BigInt::from(dens[*k as usize].clone())).unwrap())
@@ -422,31 +406,11 @@ fn the_texts_over_q_spend_their_terms() {
     // m = 1 + 1 for the first three, and 7 for the last.
     assert_eq!(b.spent() as usize, SCALE * (3 * (4 + 4) + (49 + 4)));
     let mut b = passed_after(1);
-    assert_eq!(scale_part(&l, &terms, &dens, &mut b), Err(Stop::Deadline));
+    assert_eq!(
+        scale_part(&l, numerators.run(), &dens, &mut b),
+        Err(Stop::Deadline)
+    );
     assert_eq!(b.spent() as usize, SCALE * 8, "the first term's spend");
-}
-
-/// `n` distinct monomials of `Dense16` on eight variables, of degree 24 or
-/// less, in the random order drawn, in a table of their own.
-fn monomials(n: usize, seed: u64) -> (Table<Dense16>, Vec<MonoId>) {
-    let mut t = Table::new(Dense16::new(8), &mut rng(seed));
-    let mut r = rng(seed ^ 0x6d6f);
-    let mut taken = HashSet::new();
-    let mut ids = Vec::with_capacity(n);
-    while ids.len() < n {
-        let mut e = [0u32; 8];
-        let mut d = (r.next_u64() % 25) as u32;
-        for x in &mut e {
-            let k = (r.next_u64() % (u64::from(d) + 1)) as u32;
-            *x = k;
-            d -= k;
-        }
-        let id = t.intern(&e).unwrap();
-        if taken.insert(id) {
-            ids.push(id);
-        }
-    }
-    (t, ids)
 }
 
 /// `n` distinct monomials on eight variables whose last five exponents are
@@ -461,7 +425,7 @@ fn tied(n: usize, seed: u64) -> (Table<Dense16>, Vec<MonoId>) {
                 break 'all;
             }
             let e = [a, b, 442 - a - b, 1, 2, 3, 4, 5];
-            ids.push(t.intern(&e).unwrap());
+            ids.push(t.intern(&e, &mut Budget::unbounded()).unwrap());
         }
     }
     assert_eq!(ids.len(), n);
@@ -476,7 +440,7 @@ fn tied(n: usize, seed: u64) -> (Table<Dense16>, Vec<MonoId>) {
 /// `sort_ids` returns the comparison sort's order, and checks at least once
 /// a run past `RUN`.
 fn sorts_as_compared<O: Order<Dense16>>(order: &O, t: &Table<Dense16>, ids: &[MonoId]) {
-    let mut b = generous();
+    let mut b = budget();
     let at = sort_ids(t, order, ids, &mut b).unwrap();
     let got: Vec<MonoId> = at.iter().map(|&i| ids[i as usize]).collect();
     let mut want = ids.to_vec();
@@ -497,7 +461,7 @@ fn sorts_as_compared<O: Order<Dense16>>(order: &O, t: &Table<Dense16>, ids: &[Mo
 /// run in lex.
 #[test]
 fn the_cofactor_entries_sort_in_runs() {
-    let (t, ids) = monomials(3 * RUN + 7, 0x7473);
+    let (t, ids) = monomials(8, 3 * RUN + 7, 0x7473);
     let block = Block::new(&[3], 8).unwrap();
     for len in [0, 1, RUN - 1, RUN, RUN + 1, ids.len()] {
         sorts_as_compared(&Grevlex, &t, &ids[..len]);
@@ -527,18 +491,20 @@ fn the_cofactor_entries_sort_in_runs() {
 #[test]
 fn the_cofactor_text_stops_inside_an_entry() {
     let field = Gf31::prime(P);
-    let (table, ids) = monomials(3 * RUN + 7, 0x636f);
+    let (table, ids) = monomials(8, 3 * RUN + 7, 0x636f);
     let names: Vec<String> = (0..8).map(|i| format!("x{i}")).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let mut cof = Tracked::new(field, Dense16::new(8), 2, &mut rng(4));
-    let g0 = cof.input(0, field.coef(1));
+    let g0 = cof
+        .input(0, field.coef(1), &mut Budget::unbounded())
+        .expect("a budget without bounds never stops");
     let mut r = rng(5);
     let q: Vec<(MonoId, u32)> = ids
         .iter()
         .map(|&u| (u, field.coef(1 + r.next_u64() % (P - 1))))
         .collect();
     let row = cof
-        .lift(&[(0, q.clone())], &[g0], &table, &mut generous())
+        .lift(&[(0, q.clone())], &[g0], &table, &mut budget())
         .unwrap();
     let mut sorted = q;
     sorted.sort_unstable_by(|a, b| table.cmp(&Grevlex, b.0, a.0));
@@ -547,7 +513,7 @@ fn the_cofactor_text_stops_inside_an_entry() {
         poly = poly_text(&names, &table, &field, &sorted)
     );
 
-    let mut b = generous();
+    let mut b = budget();
     let mut out = String::new();
     cof.write(
         &mut out,
@@ -577,8 +543,8 @@ fn the_cofactor_text_stops_inside_an_entry() {
     );
 
     let mut wide = Tracked::new(field, Dense16::new(8), 1000, &mut rng(6));
-    let zeros = wide.lift(&[], &[], &table, &mut generous()).unwrap();
-    let mut b = generous();
+    let zeros = wide.lift(&[], &[], &table, &mut budget()).unwrap();
+    let mut b = budget();
     let mut out = String::new();
     wide.write(
         &mut out,

@@ -12,12 +12,13 @@ use std::mem;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 
+use crate::limbs::{big, bits, cmp, limb};
 use crate::narrow::Narrow;
 #[cfg(test)]
 use crate::rational::bound;
 use crate::rational::{Converted, Rational};
 
-// q-reconstruct-time.7 cited: collins-1995 §4.2 -- ISMC is applied several times to the same modulus, so ⌊√(M/2)⌋ and its bit length are inputs that are not recomputed each time
+// q-reconstruct-time.7 cited-checked: collins-1995 §4.2 -- ISMC is applied several times to the same modulus, so ⌊√(M/2)⌋ and its bit length are inputs that are not recomputed each time
 /// Wang's reconstruction modulo one M, prepared once for every residue
 /// reconstructed modulo it: the reconstruction of the test code's lift of
 /// Wang's reconstruction alone (`lift::Reconstruct::Wang`).
@@ -68,7 +69,7 @@ impl Wang {
             if cmp(&e.v2, &self.n).is_gt() {
                 return None;
             }
-            // q-reconstruct-time.3 cited: collins-1995 §4.1, (4.1) and Figure 3 -- |V_{k+2}| ≤ 2|v_{k+2}V₂|, so L(v_{k+2}) < ⌊log₂ √(M/2)⌋ − L(V₂) − 1 keeps it below √(M/2); DDRPCC ensures |v₂| < m
+            // q-reconstruct-time.3 cited-checked: collins-1995 §4.1, (4.1) and Figure 3 -- |V_{k+2}| ≤ 2|v_{k+2}V₂|, so L(v_{k+2}) < ⌊log₂ √(M/2)⌋ − L(V₂) − 1 keeps it below √(M/2); DDRPCC ensures |v₂| < m
             let (bound_bits, v2_bits): (i64, i64) = (self.n_bits.narrow(), bits(&e.v2).narrow());
             let c = bound_bits - v2_bits - 1;
             // The limit 2^(c−1) bounds |v_{k+2}| below 2^h, h the right side
@@ -110,12 +111,12 @@ fn complement(m: &BigUint, x: &[u64]) -> Vec<u64> {
     limbs(&(m - 1u32 - big(x)))
 }
 
-// q-prime-count-time.4 tuned -- the threshold asks for 10 bits past the median of the largest quotient, not 6, which took the same time and, as the count of largest quotients halves per bit past the median (monagan-2004 §3, Table 4), lets 2^4 times as many false candidates through, or 16, which took more time (log 0076-1, _Step 3_)
+// q-prime-count-time.4 tuned-checked -- the threshold asks for 10 bits past the median of the largest quotient, not 6, which took the same time and, as the count of largest quotients halves per bit past the median (monagan-2004 §3, Table 4), lets 2^4 times as many false candidates through, or 16, which took more time (log 0076-1, _Step 3_)
 /// The bits past the median of the largest quotient that MQRR's threshold
 /// asks for.
 pub(crate) const MARGIN: u64 = 10;
 
-// q-prime-count-time.3 cited: monagan-2004 §3 -- the T used by algorithm MQRR must increase as m increases, log₂ T = ⌈log₂ log₂ m⌉ + c; §3.1 -- the median largest quotient's log₂ is about log₂ log₂ m + 0.2820
+// q-prime-count-time.3 cited-checked: monagan-2004 §3 -- the T used by algorithm MQRR must increase as m increases, log₂ T = ⌈log₂ log₂ m⌉ + c; §3.1 -- the median largest quotient's log₂ is about log₂ log₂ m + 0.2820
 /// MQRR's threshold T for M > 1: ⌈log₂ L(M)⌉ + `MARGIN`, L the bit length.
 pub(crate) fn threshold(m: &BigUint) -> u64 {
     debug_assert!(m.bits() > 1, "M = {m}");
@@ -145,7 +146,7 @@ pub(crate) enum Scaled {
     Residue(Vec<u64>),
 }
 
-// q-prime-count-time.1 cited: monagan-2004 §3 -- MQRR outputs n/d with high probability once m is only a modest number of bits longer than 2|n|d, where N = D = ⌊√(m/2)⌋ requires up to twice as many primes as are necessary; traverso-1989 §Reconstruction algorithms -- the coefficients are lifted one at a time, and the others are multiplied by the denominator found
+// q-prime-count-time.1 cited-checked: monagan-2004 §3 -- MQRR outputs n/d with high probability once m is only a modest number of bits longer than 2|n|d, where N = D = ⌊√(m/2)⌋ requires up to twice as many primes as are necessary; traverso-1989 §Reconstruction algorithms -- the coefficients are lifted one at a time, and the others are multiplied by the denominator found
 /// The maximal quotient rational reconstruction modulo one odd M > 1 at its
 /// threshold T, prepared once for every residue reconstructed modulo it.
 pub(crate) struct Mqrr {
@@ -154,7 +155,7 @@ pub(crate) struct Mqrr {
     modulus: BigUint,
     /// T: a quotient MQRR takes is at least 2^T.
     t: u64,
-    // q-lift-growth-time.12 design -- MQRR's bounds `small` and M − `small` are held on limbs, and a converted x is compared with them on limbs, not made num-bigint's BigUint first and compared (not measured)
+    // q-lift-growth-time.12 design-checked -- MQRR's bounds `small` and M − `small` are held on limbs, and a converted x is compared with them on limbs, not made num-bigint's BigUint first and compared (not measured)
     /// ⌊(M − 1)/2^(T+1)⌋ on limbs, the largest |v| with |v|·2^(T+1) < M.
     /// Up to it v/1 has a quotient of at least 2^T in MQRR on (M, v mod M),
     /// of either sign: ⌊M/v⌋ for v > 0, and ⌊(M − |v|)/|v|⌋ after the
@@ -194,7 +195,7 @@ impl Mqrr {
         self.t
     }
 
-    // q-prime-count-time.2 cited: traverso-1989 §Reconstruction algorithms -- the coefficients are lifted one at a time and the others multiplied by the denominator found, and the remaining coefficients that fall below the bound are lifted with denominator 1
+    // q-prime-count-time.2 cited-checked: traverso-1989 §Reconstruction algorithms -- the coefficients are lifted one at a time and the others multiplied by the denominator found, and the remaining coefficients that fall below the bound are lifted with denominator 1
     /// v = u·l mod M from the conversion of the images of u·l at M's primes
     /// (`rational::Crt::convert`): `Small(v)`, v in (−M/2, M/2], where
     /// |v|·2^(T+1) < M, and `Residue(v)`, v in [1, M), where it is not. x
@@ -229,7 +230,7 @@ impl Mqrr {
         }
     }
 
-    // q-prime-count-time.5 design -- MQRR runs in two passes, the remainders alone to find the step of the first largest quotient and then the remainders and the cosequence to that step, not one pass with the cosequence throughout as monagan-2004 §3 writes MQRR (not measured)
+    // q-prime-count-time.5 design-checked -- MQRR runs in two passes, the remainders alone to find the step of the first largest quotient and then the remainders and the cosequence to that step, not one pass with the cosequence throughout as monagan-2004 §3 writes MQRR (not measured)
     /// MQRR on (M, v), monagan-2004 §3: the rational n/d = `r_i/t_i` of the
     /// Euclidean algorithm on (M, v) before its first largest quotient
     /// `q_{i+1}`, where `q_{i+1}` ≥ 2^T and `gcd(r_i, t_i)` = 1, d = `|t_i|`;
@@ -242,7 +243,7 @@ impl Mqrr {
         self.rational_at(v, steps)
     }
 
-    // q-attempt-time.3 invented -- MQRR's first pass ends at the first quotient, in the order of the steps, that reaches 2^T, and the attempt takes the rational before it where it fits at p, MQRR running to its largest quotient only where it does not, not the first pass to the remainder below the largest quotient at every coefficient, nor the pass ended at a quotient past √M (log 0085-1)
+    // q-attempt-time.3 invented-checked -- MQRR's first pass ends at the first quotient, in the order of the steps, that reaches 2^T, and the attempt takes the rational before it where it fits at p, MQRR running to its largest quotient only where it does not, not the first pass to the remainder below the largest quotient at every coefficient, nor the pass ended at a quotient past √M (log 0085-1)
     /// The rational `r_i/t_i` of the Euclidean algorithm on (M, v) before
     /// its first quotient `q_{i+1}` of at least 2^T, in the order of the
     /// steps, d = `|t_i|`, as `First` says. Where it is `Nothing`,
@@ -266,7 +267,7 @@ impl Mqrr {
     fn rational_at(&self, v: &[u64], steps: u64) -> Option<Rational> {
         let mut e = Euclid::new(self.m.clone(), v.to_vec());
         e.v2.push(1);
-        // q-prime-count-time.6 cited: monagan-2004 §4 -- the efficiency improvements made to Wang's algorithm by Collins and Encarnación should be applicable to MQRR, both being based on the Euclidean algorithm; collins-1995 §4.1, Figure 4 -- ISMC: the quotients of a run come from the leading digits, and the run is applied to the remainders and the cosequence in one linear combination each
+        // q-prime-count-time.6 cited-checked: monagan-2004 §4 -- the efficiency improvements made to Wang's algorithm by Collins and Encarnación should be applicable to MQRR, both being based on the Euclidean algorithm; collins-1995 §4.1, Figure 4 -- ISMC: the quotients of a run come from the leading digits, and the run is applied to the remainders and the cosequence in one linear combination each
         // Every quotient taken is a true one, so after `steps` steps A₂ and
         // V₂ are `r_i` and `|t_i|`, whatever the runs.
         let mut taken = 0;
@@ -293,7 +294,7 @@ enum Until {
     Largest,
 }
 
-// q-prime-count-time.6 cited: monagan-2004 §4 -- the efficiency improvements made to Wang's algorithm by Collins and Encarnación should be applicable to MQRR, both being based on the Euclidean algorithm; collins-1995 §4.1, Figure 4 -- ISMC: the quotients of a run come from the leading digits, and the run is applied to the remainders and the cosequence in one linear combination each
+// q-prime-count-time.6 cited-checked: monagan-2004 §4 -- the efficiency improvements made to Wang's algorithm by Collins and Encarnación should be applicable to MQRR, both being based on the Euclidean algorithm; collins-1995 §4.1, Figure 4 -- ISMC: the quotients of a run come from the leading digits, and the run is applied to the remainders and the cosequence in one linear combination each
 /// MQRR's first pass on (M, v), the remainders alone: the count of steps of
 /// the Euclidean algorithm on (M, v) before the quotient `until` names,
 /// where that quotient is at least 2^t; None where none is. v in [1, M).
@@ -314,7 +315,7 @@ fn largest_quotient(m: &[u64], v: &[u64], t: u64, until: Until) -> Option<u64> {
         Until::First => true,
         Until::Largest => false,
     };
-    // q-prime-count-time.7 cited: monagan-2004 §3, algorithm MQRR -- the loop runs while r₁ ≠ 0 and r₀ > T, and T becomes each quotient larger than it
+    // q-prime-count-time.7 cited-checked: monagan-2004 §3, algorithm MQRR -- the loop runs while r₁ ≠ 0 and r₀ > T, and T becomes each quotient larger than it
     while !euclid.a2.is_empty()
         && bits(&euclid.a1) > t
         && best.as_ref().is_none_or(|(largest, _)| match until {
@@ -323,7 +324,7 @@ fn largest_quotient(m: &[u64], v: &[u64], t: u64, until: Until) -> Option<u64> {
         })
     {
         let run = euclid.run(UNLIMITED, NO_CAP, floor);
-        // q-lift-rest-time.4 design -- MQRR's first pass ends at a step its Lehmer runs do not give where the remainders' bit lengths differ by more than T, as ⌊A₁/A₂⌋ ≥ 2^(L(A₁)−L(A₂)−1) reaches 2^T, not num-bigint's division of the step (q-reconstruct-time.6) for a quotient of which it reads only that (log 0088-1)
+        // q-lift-rest-time.4 design-checked -- MQRR's first pass ends at a step its Lehmer runs do not give where the remainders' bit lengths differ by more than T, as ⌊A₁/A₂⌋ ≥ 2^(L(A₁)−L(A₂)−1) reaches 2^T, not num-bigint's division of the step (q-reconstruct-time.6) for a quotient of which it reads only that (log 0088-1)
         if run.k == 0 && first && bits(&euclid.a1) - bits(&euclid.a2) > t {
             return Some(steps);
         }
@@ -356,7 +357,7 @@ pub(crate) fn coprime(x: &BigUint, y: &BigUint) -> bool {
     coprime_limbs(limbs(x), limbs(y))
 }
 
-// q-reconstruct-time.4 cited: collins-1995 §4.3 -- method I, gcd(A, B) computed by the algorithm of Section 3, used throughout
+// q-reconstruct-time.4 cited-checked: collins-1995 §4.3 -- method I, gcd(A, B) computed by the algorithm of Section 3, used throughout
 /// As `coprime`, on limbs.
 fn coprime_limbs(x: Vec<u64>, y: Vec<u64>) -> bool {
     let e = to_a_word(x, y);
@@ -366,7 +367,7 @@ fn coprime_limbs(x: Vec<u64>, y: Vec<u64>) -> bool {
     }
 }
 
-// q-rational-time.9 cited: collins-1995 §4.3 -- method I, gcd(A, B) computed by the algorithm of Section 3, used throughout
+// q-rational-time.9 practice-checked: Lehmer's gcd algorithm -- gcd(|v|, L) and gcd(L, d) are Lehmer's Euclid on limbs, as `coprime_limbs` runs it, not num-integer's binary `gcd` on `BigUint`
 /// gcd(x, y) by Lehmer's Euclid on limbs, as `coprime` runs it. gcd(0, y)
 /// = y.
 pub(crate) fn gcd(x: &BigUint, y: &BigUint) -> BigUint {
@@ -403,7 +404,7 @@ const NO_CAP: u64 = u64::MAX;
 /// No floor on a run's quotients: none reaches it.
 const NO_FLOOR: u128 = u128::MAX;
 
-// q-reconstruct-time.1 cited: lehmer-1938 §1, via collins-1995 §3 -- the first partial quotients come from approximations of a few figures, and formula (6) recovers the large remainders from the convergents; jebelean-1993 §2, via collins-1995 §3 -- the partial cosequence is computed on pairs of double digits; collins-1995 §3 attributes its condition (3.3) to Collins 1980, and §4.1, Figure 4 -- ISMC: the quotients of a run come from the leading digits, and the run is applied to the remainders and the cosequence in one linear combination each; monagan-2004 §2.1 -- the Euclidean algorithm may be accelerated by a constant factor using Lehmer's algorithm, 3.6 at 1550 bits
+// q-reconstruct-time.1 cited-checked: lehmer-1938 §1, via collins-1995 §3 -- the first partial quotients come from approximations of a few figures, and formula (6) recovers the large remainders from the convergents; jebelean-1993 §2, via collins-1995 §3 -- the partial cosequence is computed on pairs of double digits; collins-1995 §3 attributes its condition (3.3) to Collins 1980, and §4.1, Figure 4 -- ISMC: the quotients of a run come from the leading digits, and the run is applied to the remainders and the cosequence in one linear combination each; monagan-2004 §2.1 -- the Euclidean algorithm may be accelerated by a constant factor using Lehmer's algorithm, 3.6 at 1550 bits
 /// The Euclidean algorithm on A₁ ≥ A₂ under way: the two remainders, the
 /// magnitudes |t| of the cosequence they belong to where it is tracked,
 /// and two scratch buffers the combinations are written to and swapped in.
@@ -446,7 +447,7 @@ impl Euclid {
     /// `floor`: its first element below 2^64, and every later one below
     /// `limit` ≤ 2^64.
     fn run(&self, limit: u128, cap: u64, floor: u128) -> Run {
-        // q-reconstruct-time.2 design -- the leading parts are 128 bits at every size, and a number of at most 128 bits is its own leading part, whose quotients are exact, not ISMC's single digits for numbers of four words or less (not measured)
+        // q-reconstruct-time.2 design-checked -- the leading parts are 128 bits at every size, and a number of at most 128 bits is its own leading part, whose quotients are exact, not ISMC's single digits for numbers of four words or less (not measured)
         let h = bits(&self.a1).saturating_sub(128);
         cosequence(
             top(&self.a1, h),
@@ -488,7 +489,7 @@ impl Euclid {
     /// One step of the Euclidean algorithm on the whole numbers, A₂ > 0,
     /// and its quotient.
     fn full_step(&mut self, cosequence: bool) -> BigUint {
-        // q-reconstruct-time.6 design -- a step whose quotient the leading parts do not give divides through num-bigint, not by a long division on the module's limbs (log 0018-1)
+        // q-reconstruct-time.6 design-checked -- a step whose quotient the leading parts do not give divides through num-bigint, not by a long division on the module's limbs (log 0018-1)
         let (q, r) = big(&self.a1).div_rem(&big(&self.a2));
         mem::swap(&mut self.a1, &mut self.a2);
         set(&mut self.a2, &r);
@@ -506,7 +507,7 @@ impl Euclid {
     fn rational(self) -> Option<Rational> {
         let sign = if self.odd { Sign::Minus } else { Sign::Plus };
         let (num, den) = (big(&self.a2), big(&self.v2));
-        // q-lift.14 cited: collins-1995 §2 -- RATCONVERT applied to M = 12 and U = 5 outputs (−2, 2), since it does not check gcd(B, M) = 1; §4.3 -- gcd(A, B) = gcd(B, M), and A and B are at most about half the length of M
+        // q-lift.14 cited-checked: collins-1995 §2, §4.3 -- RATCONVERT applied to M = 12 and U = 5 outputs (−2, 2), since it does not check gcd(B, M) = 1; gcd(A, B) = gcd(B, M), A and B at most about half the length of M, and method I, gcd(A, B), is used throughout, not method II, a division of B by each prime of M
         if !coprime_limbs(self.a2, self.v2) {
             return None;
         }
@@ -564,7 +565,7 @@ fn cosequence(mut a: u128, mut b: u128, exact: bool, limit: u128, cap: u64, floo
         else {
             break;
         };
-        // q-reconstruct-time.13 cited: collins-1995 §4.1, Figure 3 -- the restriction |v_{k+2}| < m need not prevent DDRPCC from doing one step, hence "|v₂| < m or v₁ ≤ 1" in its output specifications
+        // q-reconstruct-time.13 cited-checked: collins-1995 §4.1, Figure 3 -- the restriction |v_{k+2}| < m need not prevent DDRPCC from doing one step, hence "|v₂| < m or v₁ ≤ 1" in its output specifications
         if w3 >= UNLIMITED || run.k > 0 && w3 >= limit {
             break;
         }
@@ -597,7 +598,7 @@ fn cosequence(mut a: u128, mut b: u128, exact: bool, limit: u128, cap: u64, floo
     run
 }
 
-// q-reconstruct-time.12 cited: collins-1995 §3 -- lines 3, 4, and 5 of DDPCC should not be implemented in a straightforward way, bit shifting and subtraction should be used instead
+// q-reconstruct-time.12 cited-checked: collins-1995 §3 -- lines 3, 4, and 5 of DDPCC should not be implemented in a straightforward way, bit shifting and subtraction should be used instead
 /// ⌊a/b⌋ and a mod b for a ≥ b > 0: a quotient below 4 by subtraction,
 /// any other by a 64-bit division where a fits 64 bits, else by a 128-bit
 /// one.
@@ -618,7 +619,7 @@ fn divide(a: u128, b: u128) -> (u128, u128) {
     }
 }
 
-// q-reconstruct-time.5 cited: collins-1995 §4.2 -- the linear combinations can be formed in one pass through the digits since the signs of the results are known in advance
+// q-reconstruct-time.5 cited-checked: collins-1995 §4.2 -- the linear combinations can be formed in one pass through the digits since the signs of the results are known in advance
 /// a·x − b·y, known nonnegative and no longer than the longer of x and y,
 /// into `out`, in one pass over the limbs.
 fn lin_sub(out: &mut Vec<u64>, x: &[u64], a: u64, y: &[u64], b: u64) {
@@ -646,7 +647,7 @@ fn lin_sub(out: &mut Vec<u64>, x: &[u64], a: u64, y: &[u64], b: u64) {
     trim(out);
 }
 
-// q-reconstruct-time.5 cited: collins-1995 §4.2 -- the linear combinations can be formed in one pass through the digits since the signs of the results are known in advance
+// q-reconstruct-time.5 cited-checked: collins-1995 §4.2 -- the linear combinations can be formed in one pass through the digits since the signs of the results are known in advance
 /// a·x + b·y into `out`, in one pass over the limbs.
 fn lin_add(out: &mut Vec<u64>, x: &[u64], a: u64, y: &[u64], b: u64) {
     out.clear();
@@ -674,10 +675,6 @@ fn lin_add(out: &mut Vec<u64>, x: &[u64], a: u64, y: &[u64], b: u64) {
     trim(out);
 }
 
-fn limb(x: &[u64], i: usize) -> u64 {
-    x.get(i).copied().unwrap_or(0)
-}
-
 fn limbs(x: &BigUint) -> Vec<u64> {
     let mut out = Vec::new();
     set(&mut out, x);
@@ -697,35 +694,10 @@ fn set(out: &mut Vec<u64>, x: &BigUint) {
     trim(out);
 }
 
-fn big(x: &[u64]) -> BigUint {
-    if x.len() <= 2 {
-        return BigUint::from(u128::from(limb(x, 0)) | u128::from(limb(x, 1)) << 64);
-    }
-    BigUint::new(
-        x.iter()
-            .flat_map(|&l| -> [u32; 2] { [(l & u64::from(u32::MAX)).narrow(), (l >> 32).narrow()] })
-            .collect(),
-    )
-}
-
 fn trim(x: &mut Vec<u64>) {
     while x.last() == Some(&0) {
         x.pop();
     }
-}
-
-/// L(x), the bit length.
-fn bits(x: &[u64]) -> u64 {
-    x.last()
-        .map_or(0, |&l| 64 * x.len() as u64 - u64::from(l.leading_zeros()))
-}
-
-/// x against y, each on limbs, least significant first, with no zero limb
-/// at the top.
-pub(crate) fn cmp(x: &[u64], y: &[u64]) -> Ordering {
-    x.len()
-        .cmp(&y.len())
-        .then_with(|| x.iter().rev().cmp(y.iter().rev()))
 }
 
 /// ⌊x/2^h⌋, which is below 2^128.

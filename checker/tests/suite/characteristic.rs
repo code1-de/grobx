@@ -5,6 +5,8 @@
 
 use grobx_checker::{Error, Mode, Order, Verdict, check};
 
+use crate::common::holds;
+
 /// The check of F = {x} over the characteristic `n`, with G = {x} and the
 /// cofactor 1.
 fn over(n: &str) -> Result<Verdict, Error> {
@@ -15,13 +17,6 @@ fn over(n: &str) -> Result<Verdict, Error> {
         &Order::Grevlex,
         Mode::Exact,
     )
-}
-
-fn holds() -> Verdict {
-    Verdict {
-        groebner: Ok(()),
-        reduced: Ok(()),
-    }
 }
 
 fn refused() -> Result<Verdict, Error> {

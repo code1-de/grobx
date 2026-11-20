@@ -6,7 +6,20 @@ build-backend = "maturin"
 
 [project]
 name = "grobx"
+keywords = [
+    "groebner",
+    "gröbner",
+    "groebner basis",
+    "polynomial ideal",
+    "computer algebra",
+    "finite field",
+    "f4",
+    "gf2",
+    "boolean polynomial",
+    "grobx",
+]
 classifiers = [
+    "Intended Audience :: Science/Research",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Rust",

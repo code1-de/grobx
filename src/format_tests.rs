@@ -10,33 +10,28 @@
 )]
 
 use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use rand_core::{Rng, SeedableRng};
-use rand_xoshiro::Xoshiro256PlusPlus;
+use rand_core::Rng;
 
 use crate::budget::Budget;
-use crate::entry::{self, Width};
-use crate::f4::Halt;
+use crate::call::{built, groebner_in, replay_in};
 use crate::fglm::{self, MAX_STAIRCASE};
-use crate::fglm_tests::PRIMES;
-use crate::id::{MonoId, RowId};
-use crate::monomial::{Dense8, Dense16, Dense32, Format};
+use crate::halt::Halt;
+use crate::id::{MonoId, RowId, RowSource};
+use crate::monomial::{Dense8, Dense16, Dense32, Format, Width};
 use crate::order::Grevlex;
+use crate::shared_tests::{CASE_DEADLINE, RANDOM_PRIMES, rng};
 use crate::systems::{dense, random_square, random_system};
 use crate::table::{Limit, Table};
-use crate::trace::{NoLearner, NoTrace, Record, Recording, RowSource, Trace};
+use crate::trace::{NoLearner, NoTrace, Record, Recording, Trace};
 use crate::{CheckerMode, Error, Outcome, Params, Threads};
 
 const WIDTHS: [Width; 3] = [Width::W8, Width::W16, Width::W32];
 
-/// The deadline of each call of `every_width` and of
-/// `the_outcome_and_the_record_agree_in_every_width`.
-const DEADLINE: Duration = Duration::from_millis(200);
-
 /// One thread and a fixed seed; with cofactors, the checker in the exact
 /// mode.
-fn params(order: &str, cofactors: bool) -> Params {
+pub(crate) fn params(order: &str, cofactors: bool) -> Params {
     let order = order.parse().expect("a name of the family");
     let mut p = Params::new(order, Threads::Count(NonZeroUsize::new(1).unwrap()), 0x5eed);
     p.cofactors = cofactors;
@@ -48,7 +43,7 @@ fn params(order: &str, cofactors: bool) -> Params {
 
 /// A trace that keeps the rows of every matrix it hears of, in order.
 #[derive(Default)]
-struct Heard(Vec<Vec<RowSource>>);
+pub(crate) struct Heard(pub(crate) Vec<Vec<RowSource>>);
 
 impl Trace for Heard {
     fn matrix(&mut self, rows: &[RowSource]) {
@@ -59,18 +54,23 @@ impl Trace for Heard {
 }
 
 /// The call in the widths from `first` to `last`.
-fn call(text: &str, params: &Params, first: Width, last: Width) -> Result<Outcome, Error> {
-    entry::groebner_in(text, params, first, last, &mut NoTrace, &mut NoLearner)
+pub(crate) fn call(
+    text: &str,
+    params: &Params,
+    first: Width,
+    last: Width,
+) -> Result<Outcome, Error> {
+    groebner_in(text, params, first, last, &mut NoTrace, &mut NoLearner)
 }
 
 /// The call in the width `w` alone.
-fn alone(text: &str, params: &Params, w: Width) -> Result<Outcome, Error> {
+pub(crate) fn alone(text: &str, params: &Params, w: Width) -> Result<Outcome, Error> {
     call(text, params, w, w)
 }
 
 /// The call in the widths from `first` to `last`, with the matrices it
 /// heard and its record.
-fn heard(
+pub(crate) fn heard(
     text: &str,
     params: &Params,
     first: Width,
@@ -78,11 +78,11 @@ fn heard(
 ) -> (Result<Outcome, Error>, Heard, Record) {
     let mut trace = Heard::default();
     let mut recording = Recording::new();
-    let got = entry::groebner_in(text, params, first, last, &mut trace, &mut recording);
+    let got = groebner_in(text, params, first, last, &mut trace, &mut recording);
     (got, trace, recording.finish(params.order.clone()))
 }
 
-// monomial-formats.15 design -- the test code compares the formats on whole outcomes, the basis, the cofactors, the stats, the checker's verdict, and the record, not the basis alone (not measured)
+// monomial-formats.15 design-checked -- the test code compares the formats on whole outcomes, the basis, the cofactors, the stats, the checker's verdict, and the record, not the basis alone (not measured)
 /// Each width alone returns W32's outcome or `Error::Overflow`, and the call
 /// in all widths returns the narrowest's that holds the case
 /// (monomial-formats.15). None where a deadline stopped a width, or the
@@ -133,7 +133,7 @@ fn one_outcome(name: &str, text: &str, params: &Params) -> Option<Outcome> {
 }
 
 /// Every case in grevlex, lex, and `block:1`, with and without cofactors, a
-/// `DEADLINE` on each call: one outcome, compared on at least nine
+/// `CASE_DEADLINE` on each call: one outcome, compared on at least nine
 /// cases in ten.
 fn every_width(cases: &[(String, String)]) {
     let (mut compared, mut total) = (0, 0);
@@ -141,7 +141,10 @@ fn every_width(cases: &[(String, String)]) {
         for order in ["grevlex", "lex", "block:1"] {
             for cofactors in [false, true] {
                 let mut p = params(order, cofactors);
-                p.deadline = Some(DEADLINE);
+                if built(&p).is_err() {
+                    continue;
+                }
+                p.deadline = Some(CASE_DEADLINE);
                 total += 1;
                 if one_outcome(name, text, &p).is_some() {
                     compared += 1;
@@ -195,7 +198,7 @@ fn the_edge_cases_in_every_width() {
 #[test]
 fn random_systems_in_every_width() {
     let mut cases = Vec::new();
-    for p in PRIMES {
+    for p in RANDOM_PRIMES {
         for seed in 0..10 {
             cases.push((format!("random-p{p}-{seed}"), random_system(p, seed)));
         }
@@ -206,7 +209,7 @@ fn random_systems_in_every_width() {
 #[test]
 fn square_systems_in_every_width() {
     let mut cases = Vec::new();
-    for p in PRIMES {
+    for p in RANDOM_PRIMES {
         for seed in 0..10 {
             cases.push((format!("square-p{p}-{seed}"), random_square(p, seed)));
         }
@@ -224,7 +227,7 @@ fn dense_systems_in_every_width() {
 
 /// The same call in every width returns the same outcome and records the
 /// same record, signatures on and off and in every order. A case whose
-/// `W8` call `DEADLINE` stops is left out.
+/// `W8` call `CASE_DEADLINE` stops is left out.
 #[test]
 fn the_outcome_and_the_record_agree_in_every_width() {
     let mut cases: Vec<String> = vec![dense(3, 3, 65521, 1), dense(3, 3, 65521, 2)];
@@ -241,7 +244,7 @@ fn the_outcome_and_the_record_agree_in_every_width() {
         ] {
             let mut p = params(order, false);
             p.signatures = signatures;
-            p.deadline = Some(DEADLINE);
+            p.deadline = Some(CASE_DEADLINE);
             let (first, _, record) = heard(text, &p, Width::W8, Width::W8);
             let first = first.unwrap();
             if first.stopped.is_some() {
@@ -294,6 +297,9 @@ fn each_bound_starts_the_call_over() {
         for cofactors in [false, true] {
             for signatures in [true, false] {
                 let mut p = params(order, cofactors);
+                if built(&p).is_err() {
+                    continue;
+                }
                 p.signatures = signatures;
                 let case =
                     format!("{text:?} in {order}, cofactors {cofactors}, signatures {signatures}");
@@ -354,6 +360,9 @@ fn each_bound_holds_its_own() {
     for &(text, order, w) in AT {
         for cofactors in [false, true] {
             let p = params(order, cofactors);
+            if built(&p).is_err() {
+                continue;
+            }
             let case = format!("{text:?} in {order}, cofactors {cofactors}");
             let held = alone(text, &p, w).unwrap_or_else(|e| panic!("{case}: {w:?}: {e:?}"));
             assert!(held.basis.is_some(), "{case}");
@@ -451,11 +460,11 @@ fn a_replay_in_every_width() {
         let p = params(order, false);
         let (learned, _, record) = heard(text, &p, Width::W8, Width::W32);
         let learned = learned.unwrap();
-        let replayed = entry::replay_in(text, &p, &record, Width::W8, Width::W32, &mut NoTrace)
+        let replayed = replay_in(text, &p, &record, Width::W8, Width::W32, &mut NoTrace)
             .unwrap_or_else(|e| panic!("{order}: {e:?}\n{text}"));
         assert_eq!(replayed.basis, learned.basis, "{order}\n{text}");
         for w in WIDTHS {
-            match entry::replay_in(text, &p, &record, w, w, &mut NoTrace) {
+            match replay_in(text, &p, &record, w, w, &mut NoTrace) {
                 Ok(o) => assert_eq!(o, replayed, "{order} {w:?}\n{text}"),
                 Err(Error::Overflow { .. }) => {
                     assert!(!every && w < Width::W32, "{order} {w:?}\n{text}");
@@ -467,16 +476,12 @@ fn a_replay_in_every_width() {
     for (text, order, _) in cases.iter().filter(|(_, _, every)| !every) {
         let p = params(order, false);
         let (_, _, record) = heard(text, &p, Width::W8, Width::W32);
-        let got = entry::replay_in(text, &p, &record, Width::W8, Width::W8, &mut NoTrace);
+        let got = replay_in(text, &p, &record, Width::W8, Width::W8, &mut NoTrace);
         assert!(
             matches!(got, Err(Error::Overflow { line: None })),
             "{order}: {got:?}\n{text}"
         );
     }
-}
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
 }
 
 /// `intern`, `mul`, and `lcm` at the bound and one past it; an overflow
@@ -485,23 +490,31 @@ fn table_bound<M: Format>() {
     let max = M::MAX_DEGREE;
     let half = max / 2 + 1;
     let mut t = Table::new(M::new(2), &mut rng(3));
-    let top = t.intern(&[max, 0]).unwrap();
+    let top = t.intern(&[max, 0], &mut Budget::unbounded()).unwrap();
     assert_eq!(t.degree(top), max);
-    assert_eq!(t.intern(&[max + 1, 0]), Err(Limit::Overflow));
-    assert_eq!(t.intern(&[half, half]), Err(Limit::Overflow));
-    let x = t.intern(&[half, 0]).unwrap();
-    let y = t.intern(&[0, half]).unwrap();
+    assert_eq!(
+        t.intern(&[max + 1, 0], &mut Budget::unbounded()),
+        Err(Limit::Overflow)
+    );
+    assert_eq!(
+        t.intern(&[half, half], &mut Budget::unbounded()),
+        Err(Limit::Overflow)
+    );
+    let x = t.intern(&[half, 0], &mut Budget::unbounded()).unwrap();
+    let y = t.intern(&[0, half], &mut Budget::unbounded()).unwrap();
     let len = t.len();
-    assert_eq!(t.mul(x, y), Err(Limit::Overflow));
-    assert_eq!(t.mul(x, x), Err(Limit::Overflow));
-    assert_eq!(t.lcm(x, y), Err(Limit::Overflow));
+    assert_eq!(t.mul(x, y, &mut Budget::unbounded()), Err(Limit::Overflow));
+    assert_eq!(t.mul(x, x, &mut Budget::unbounded()), Err(Limit::Overflow));
+    assert_eq!(t.lcm(x, y, &mut Budget::unbounded()), Err(Limit::Overflow));
     assert_eq!(t.len(), len, "an overflow stores nothing");
     assert_eq!(t.lcm_degree(x, y), max + 1);
-    let z = t.intern(&[max - half, 0]).unwrap();
-    let p = t.mul(x, z).unwrap();
+    let z = t
+        .intern(&[max - half, 0], &mut Budget::unbounded())
+        .unwrap();
+    let p = t.mul(x, z, &mut Budget::unbounded()).unwrap();
     assert_eq!(p, top);
-    assert_eq!(t.div(p, z), Ok(x));
-    assert_eq!(t.lcm(top, x), Ok(top));
+    assert_eq!(t.div(p, z, &mut Budget::unbounded()), Ok(x));
+    assert_eq!(t.lcm(top, x, &mut Budget::unbounded()), Ok(top));
 }
 
 #[test]
@@ -523,14 +536,14 @@ fn sequence<M: Format>() -> Vec<(MonoId, u64, u32, u32)> {
         for _ in 0..12 {
             e[(draw.next_u64() % n as u64) as usize] += (draw.next_u64() % 4) as u32;
         }
-        ids.push(t.intern(&e).unwrap());
+        ids.push(t.intern(&e, &mut Budget::unbounded()).unwrap());
     }
     let mut out = Vec::new();
     for k in 0..ids.len() - 1 {
         let (a, b) = (ids[k], ids[k + 1]);
-        let p = t.mul(a, b).unwrap();
-        let l = t.lcm(a, b).unwrap();
-        let q = t.div(p, b).unwrap();
+        let p = t.mul(a, b, &mut Budget::unbounded()).unwrap();
+        let l = t.lcm(a, b, &mut Budget::unbounded()).unwrap();
+        let q = t.div(p, b, &mut Budget::unbounded()).unwrap();
         for id in [a, p, l, q] {
             out.push((id, t.hash(id), t.mask(id), t.degree(id)));
         }
@@ -549,9 +562,12 @@ fn the_table_is_the_same_in_every_format() {
 
 /// The staircase of the leading monomials x^a, y^b: its size, None, or
 /// `Halt::Overflow`.
-fn staircase<M: Format>(a: u32, b: u32) -> Result<Option<usize>, Halt> {
+pub(crate) fn staircase<M: Format>(a: u32, b: u32) -> Result<Option<usize>, Halt> {
     let mut t = Table::new(M::new(2), &mut rng(1));
-    let leads = [t.intern(&[a, 0]).unwrap(), t.intern(&[0, b]).unwrap()];
+    let leads = [
+        t.intern(&[a, 0], &mut Budget::unbounded()).unwrap(),
+        t.intern(&[0, b], &mut Budget::unbounded()).unwrap(),
+    ];
     let p = params("lex", false);
     let mut budget = Budget::new(Instant::now(), &p).unwrap();
     fglm::staircase(&mut t, &Grevlex, &leads, &mut budget).map(|s| s.map(|s| s.len()))

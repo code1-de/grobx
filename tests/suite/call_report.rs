@@ -9,21 +9,15 @@
 
 use std::time::Duration;
 
-use grobx::id::RowId;
-use grobx::trace::{NoTrace, RowSource, Trace};
+use grobx::trace::NoTrace;
 use grobx::{Cancel, CheckerMode, Error, Outcome, Params, Stop};
 
-use crate::common::{P, P31, dense, params, params_in, random_square};
+use crate::common::{
+    EDGE_GENERATORS, Listening, P, P31, dense, params, params_in, random_square, reported,
+};
 use crate::report::{
     Line, assert_stage_times, assert_stats, of, report as lines_of, untimed, without_report,
 };
-
-/// `params` with the report on.
-fn reported(seed: u64) -> Params {
-    let mut p = params(seed);
-    p.report = true;
-    p
-}
 
 /// The outcome of `text` under `params`, which ask for the report, and
 /// the same call's outcome without it: the two agree but for the report,
@@ -74,30 +68,16 @@ fn assert_call_line(line: &Line, params: &Params, entry: &str, trace: &str) {
     }
 }
 
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name and generators.
-const EDGE: [(&str, &str); 7] = [
-    ("the zero ideal", "0"),
-    ("F = (0, 0)", "0,\n0"),
-    ("no generator", ""),
-    ("the unit ideal", "x*z-1,\nx"),
-    ("already a Gröbner basis", "x+z,\nz^2+1"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-    ),
-    ("an eliminable variable", "x-y^2-z,\ny*z-1,\nz^2-y"),
-];
-
 /// Test 5: the edge cases over GF(65521), signatures on and off: each
 /// report parses and agrees with the stats; the unit ideal writes
 /// `constant`, and an ideal of no nonzero generator a run that reads none
 /// and makes no element.
 #[test]
 fn the_edge_cases() {
-    for (case, generators) in EDGE {
+    for (case, generators) in EDGE_GENERATORS {
         let text = format!("x,y,z\n{P}\n{generators}\n");
         for signatures in [true, false] {
-            let mut p = reported(0xca11);
+            let mut p = reported(params(0xca11));
             p.signatures = signatures;
             let (outcome, lines) = both(&text, &p);
             let name = format!("{case}, signatures {signatures}");
@@ -149,7 +129,7 @@ fn instances() -> Vec<(String, String)> {
 fn generated_instances() {
     for (name, text) in instances() {
         for signatures in [true, false] {
-            let mut p = reported(0x7e57);
+            let mut p = reported(params(0x7e57));
             p.signatures = signatures;
             let (outcome, lines) = both(&text, &p);
             assert_stats(&lines, &outcome.stats);
@@ -232,7 +212,7 @@ fn the_widths() {
          x^29*y^15*z^41-6*x^3*y^10*z^7,\nx^30*y^15*z^24-4*x^34*y^6*z^36\n",
     ] {
         for signatures in [true, false] {
-            let mut p = reported(1);
+            let mut p = reported(params(1));
             p.signatures = signatures;
             let (outcome, lines) = both(text, &p);
             assert_stats(&lines, &outcome.stats);
@@ -249,7 +229,7 @@ fn the_widths() {
     );
     assert_stats(&lines, &outcome.stats);
 
-    let got = grobx::groebner("x\n65521\nx^2147483648-1\n", &reported(1));
+    let got = grobx::groebner("x\n65521\nx^2147483648-1\n", &reported(params(1)));
     assert!(
         matches!(got, Err(Error::Overflow { line: Some(3) })),
         "{got:?}"
@@ -287,21 +267,13 @@ fn lex_and_block() {
     );
 }
 
-/// A trace that listens and keeps nothing.
-struct Listening;
-
-impl Trace for Listening {
-    fn matrix(&mut self, _: &[RowSource]) {}
-    fn counted(&mut self, _: &[RowId]) {}
-}
-
 /// Test 10: the `call` line names a listening trace through
 /// `groebner_with`, and the entry `learn`, whose first run's role is
 /// `learn`.
 #[test]
 fn the_call_line_names_the_entry_and_the_trace() {
     let text = dense(4, 3, P, 1);
-    let mut params = reported(0x30de);
+    let mut params = reported(params(0x30de));
     params.signatures = false;
     let heard = grobx::groebner_with(&text, &params, &mut Listening).unwrap();
     let lines = lines_of(&heard);
@@ -328,7 +300,7 @@ fn learn_and_replay() {
     for p in [P, P31] {
         let text = dense(4, 3, p, 1);
         for signatures in [true, false] {
-            let mut params = reported(0x1ea2);
+            let mut params = reported(params(0x1ea2));
             params.signatures = signatures;
             let (learned, record) = grobx::learn(&text, &params, &mut NoTrace).unwrap();
             let record = record.expect("a record");
@@ -358,7 +330,7 @@ fn learn_and_replay() {
 #[test]
 fn bounds_stop_the_call() {
     let text = dense(8, 3, P, 1);
-    let mut p = reported(0xb0d);
+    let mut p = reported(params(0xb0d));
     p.deadline = Some(Duration::from_millis(50));
     let outcome = grobx::groebner(&text, &p).unwrap();
     assert_eq!(
@@ -375,7 +347,7 @@ fn bounds_stop_the_call() {
 
     let cancel = Cancel::new();
     cancel.set();
-    let mut p = reported(0xb0d);
+    let mut p = reported(params(0xb0d));
     p.cancel = Some(cancel);
     let outcome = grobx::groebner(&text, &p).unwrap();
     assert_eq!(outcome.stopped, Some(Stop::Cancel));
@@ -394,7 +366,7 @@ fn bounds_stop_the_call() {
 /// texts' lengths.
 #[test]
 fn cofactors_and_the_checker() {
-    let mut p = reported(0xc0f);
+    let mut p = reported(params(0xc0f));
     p.cofactors = true;
     p.checker = Some(CheckerMode::Exact);
     let (outcome, lines) = both(&dense(4, 3, P, 1), &p);
@@ -451,7 +423,7 @@ fn the_report_off() {
     assert_eq!(replayed.report, None);
     for (_, text) in instances() {
         for seed in [2, u64::MAX] {
-            both(&text, &reported(seed));
+            both(&text, &reported(params(seed)));
         }
     }
 }
@@ -464,8 +436,8 @@ fn the_report_is_the_calls() {
         ("cubic-4", dense(4, 3, P, 1)),
         ("square-1", random_square(P, 1)),
     ] {
-        let a = grobx::groebner(&text, &reported(4)).unwrap();
-        let b = grobx::groebner(&text, &reported(4)).unwrap();
+        let a = grobx::groebner(&text, &reported(params(4))).unwrap();
+        let b = grobx::groebner(&text, &reported(params(4))).unwrap();
         assert_eq!(untimed(&lines_of(&a)), untimed(&lines_of(&b)), "{name}");
     }
 }

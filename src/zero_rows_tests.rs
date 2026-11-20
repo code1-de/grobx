@@ -11,13 +11,15 @@
 )]
 
 use crate::Stop;
-use crate::cyclic_gap_tests::{Random, alone, long, rows, short, with_rest};
-use crate::f4::Halt;
+use crate::band_tests::setup_units;
+use crate::budget::PROBE;
+use crate::cyclic_gap_tests::{Random, alone, long, short, with_rest};
 use crate::field::Gf31;
+use crate::halt::Halt;
 use crate::matrix::{
     BLOCK, Combine, FIRST, GROUP_ROWS, Pivot, Reduction, STREAK, zero_combinations,
 };
-use crate::plain_band_tests::passed_after;
+use crate::shared_tests::{budget, passed_after, rows};
 
 /// The primes that take tests of two combinations: below 2^16 and the
 /// largest below 2^31.
@@ -127,11 +129,7 @@ fn pivots(reduction: &Reduction<Gf31>) -> Vec<Option<(bool, usize)>> {
 fn assert_as_alone(name: &str, m: &Random, seed: u64) -> Reduction<Gf31> {
     let alone = m.reduce(None);
     let tested = m
-        .reduce_with(
-            None,
-            Some(&mut Combine::new(seed)),
-            &mut crate::cyclic_gap_tests::budget(),
-        )
+        .reduce_with(None, Some(&mut Combine::new(seed)), &mut budget())
         .unwrap();
     let order = |r: &Reduction<Gf31>| r.made.iter().map(|x| x.row).collect::<Vec<_>>();
     assert_eq!(
@@ -280,11 +278,14 @@ fn the_small_primes() {
 
 /// Test 7: a deadline inside the tests. The matrices of test 5 at 65521
 /// whose reference runs a test; a deadline passed and unchecked, the
-/// setup's units and `T` more between two full checks, for `T` one to
-/// seven eighths of the units past the setup's that the reduction with the
-/// tests spends unbounded: the reduction stops with `Deadline` after one
-/// full check and at most `T` + W units past the setup's, W the matrix's
-/// width, which bounds the length of every row added or subtracted.
+/// setup's units (`band_tests::setup_units`) and `T` more between two full
+/// checks, for `T` one to seven eighths of the units past the setup's that
+/// the reduction with the tests spends unbounded: the reduction stops with
+/// `Deadline` after one full check and at most `T` + W units past the
+/// setup's, W the larger of the matrix's width, which bounds the length of
+/// every row added or subtracted and every scan, and `PROBE` units a given
+/// row, which bound a group's search for its least leading column
+/// (call-stop-latency.52).
 #[test]
 fn a_deadline_stops_the_tests() {
     let mut cases = 0;
@@ -297,9 +298,9 @@ fn a_deadline_stops_the_tests() {
             if g.whole_passed + g.whole_failed + g.block_passed + g.block_failed == 0 {
                 continue;
             }
-            let setup = (m.matrix.rows.len() + m.matrix.columns()) as u64;
-            let width = m.matrix.columns() as u64;
-            let mut b = crate::cyclic_gap_tests::budget();
+            let setup = setup_units(&m.matrix);
+            let width = m.matrix.columns().max(PROBE * m.matrix.given) as u64;
+            let mut b = budget();
             m.reduce_with(None, Some(&mut Combine::new(seed)), &mut b)
                 .unwrap();
             let past = b.spent() - setup;

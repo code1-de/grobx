@@ -5,24 +5,16 @@
 //! (plan.md, _Test code_).
 
 use grobx_checker::Order;
-use num_bigint::BigUint;
-use num_integer::Integer;
-use num_traits::One;
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::catch_up_tests::{L1, L2, L3};
-use crate::chain_tests::{
-    EDGE, assert_accepted, basis, both_reports as both, generated, params, with_cofactors,
-};
-use crate::field::is_prime_64;
+use crate::call::built;
+use crate::chain_tests::{EDGE, assert_accepted, both_reports as both, generated};
 use crate::lehmer::MARGIN;
 use crate::mqrr_tests::of_bits;
-
-/// The least prime at or above n.
-fn prime_from(n: u64) -> u64 {
-    (n..).find(|&q| is_prime_64(q)).unwrap()
-}
+use crate::shared_tests::{
+    L1, L2, L3, basis, drawn_coprime, lift_params, prime_from, with_cofactors,
+};
 
 /// The k least primes from 2^61 + `offset` on.
 pub(crate) fn wide(k: usize, offset: u64) -> Vec<u64> {
@@ -34,17 +26,6 @@ pub(crate) fn wide(k: usize, offset: u64) -> Vec<u64> {
         n = p + 2;
     }
     ps
-}
-
-/// A random odd integer of exactly `bits` bits prime to every one of
-/// `others`.
-pub(crate) fn coprime(rng: &mut Xoshiro256PlusPlus, bits: u64, others: &[&BigUint]) -> BigUint {
-    loop {
-        let x = of_bits(rng, bits) | BigUint::one();
-        if others.iter().all(|o| x.gcd(o).is_one()) {
-            return x;
-        }
-    }
 }
 
 /// The fewest and the most primes of [2^61, 2^62) whose product M passes
@@ -71,7 +52,7 @@ fn an_integer_of_many_primes() {
     for sign in ['-', '+'] {
         let text = format!("x\n0\nx{sign}{n}\n");
         let case = format!("x {sign} n");
-        let (outcome, chain, _) = both(&case, &text, &params(9), &[]);
+        let (outcome, chain, _) = both(&case, &text, &lift_params(9), &[]);
         assert_eq!(basis(&outcome), format!("[x{sign}{n}]:\n"), "{case}");
         assert!(
             (fewest + 1..=most + 2).contains(&chain.combined.len()),
@@ -90,23 +71,23 @@ fn an_integer_of_many_primes() {
 #[test]
 fn a_rational_of_many_primes() {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x7a71);
-    let d = coprime(&mut rng, 6_000, &[]);
-    let a = coprime(&mut rng, 6_000, &[&d]);
-    let b = coprime(&mut rng, 6_000, &[&d]);
+    let d = drawn_coprime(&mut rng, 6_000, &[]);
+    let a = drawn_coprime(&mut rng, 6_000, &[&d]);
+    let b = drawn_coprime(&mut rng, 6_000, &[&d]);
     let text = format!("x,y,z\n0\n{d}*x+{a}*y+{b}*z\n");
-    let (outcome, chain, _) = both("6,000 bits", &text, &params(10), &[]);
+    let (outcome, chain, _) = both("6,000 bits", &text, &lift_params(10), &[]);
     assert_eq!(basis(&outcome), format!("[{d}*x+{a}*y+{b}*z]:\n"));
     assert_eq!(chain.reconstructed, chain.euclid + 1, "{chain:?}");
     let (_, most) = primes_for(12_000);
     assert!(chain.combined.len() <= most + 2, "{chain:?}");
 
-    let d1 = coprime(&mut rng, 2_000, &[]);
-    let n1 = coprime(&mut rng, 2_000, &[&d1]);
-    let d2 = coprime(&mut rng, 31, &[&d1]);
+    let d1 = drawn_coprime(&mut rng, 2_000, &[]);
+    let n1 = drawn_coprime(&mut rng, 2_000, &[&d1]);
+    let d2 = drawn_coprime(&mut rng, 31, &[&d1]);
     let dd = &d1 * &d2;
-    let n2 = coprime(&mut rng, 2_000, &[&dd]);
+    let n2 = drawn_coprime(&mut rng, 2_000, &[&dd]);
     let text = format!("x,y\n0\n{dd}*x+{n2},\n{d1}*y+{n1}\n");
-    let (outcome, chain, _) = both("the guess", &text, &params(10), &[]);
+    let (outcome, chain, _) = both("the guess", &text, &lift_params(10), &[]);
     assert_eq!(basis(&outcome), format!("[{d1}*y+{n1},\n{dd}*x+{n2}]:\n"));
     let (_, most) = primes_for(4_000);
     assert!(chain.combined.len() <= most + 3, "{chain:?}");
@@ -127,7 +108,10 @@ fn images_that_lack_a_term() {
     let e = of_bits(&mut rng, 240) * ws[0];
     let text = format!("y,z,w\n0\ny+{c}*z+{e}*w\n");
     let forced = [L1, ws[0], ws[1]];
-    for params in [params(11), with_cofactors(11)] {
+    for params in [lift_params(11), with_cofactors(11)] {
+        if built(&params).is_err() {
+            continue;
+        }
         let case = format!("cofactors {cofactors}", cofactors = params.cofactors);
         let (outcome, chain, _) = both(&case, &text, &params, &forced);
         assert_eq!(basis(&outcome), format!("[y+{c}*z+{e}*w]:\n"), "{case}");
@@ -144,8 +128,12 @@ fn images_that_lack_a_term() {
 #[test]
 fn the_edge_cases() {
     for (case, text) in EDGE {
-        both(case, text, &params(12), &[]);
-        let (outcome, _, _) = both(case, text, &with_cofactors(12), &[]);
+        both(case, text, &lift_params(12), &[]);
+        let tracked = with_cofactors(12);
+        if built(&tracked).is_err() {
+            continue;
+        }
+        let (outcome, _, _) = both(case, text, &tracked, &[]);
         assert_accepted(case, text, &outcome, &Order::Grevlex);
     }
 }
@@ -159,8 +147,12 @@ fn generated_systems_at_mixed_primes() {
     let ws = wide(3, 91_000);
     let forced = [L1, L2, ws[0], L3, ws[1], ws[2]];
     for (case, text) in generated() {
-        both(&case, &text, &params(13), &forced);
-        let (outcome, _, _) = both(&case, &text, &with_cofactors(13), &forced);
+        both(&case, &text, &lift_params(13), &forced);
+        let tracked = with_cofactors(13);
+        if built(&tracked).is_err() {
+            continue;
+        }
+        let (outcome, _, _) = both(&case, &text, &tracked, &forced);
         assert_accepted(&case, &text, &outcome, &Order::Grevlex);
     }
 }

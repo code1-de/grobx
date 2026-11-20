@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use grobx::Stop;
 
-use crate::common::{self, params_in};
+use crate::common::{self, ORDERS, params_in};
 use crate::q::{accepted_q, finished_q};
 
 /// The product of two primes near 2^30.5 (pauer-1992 §4, example 4).
@@ -21,8 +21,6 @@ struct Case {
     text: String,
     bases: [Option<&'static str>; 3],
 }
-
-const ORDERS: [&str; 3] = ["grevlex", "lex", "block:1"];
 
 fn case(name: &'static str, text: &str, bases: [Option<&'static str>; 3]) -> Case {
     Case {
@@ -141,7 +139,7 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-// q-lift.43 design -- the edge cases in lex and block:1 run with a deadline of 10 s, and, as order-family.19's cases in an order that is not graded, a call the deadline stops passes where 9 in 10 finish, not every case in every order asserted to finish (log 0016-4)
+// q-lift.43 design-checked -- the edge cases in lex and block:1 run with a deadline of 10 s, and, as order-family.19's cases in an order that is not graded, a call the deadline stops passes where 9 in 10 finish, not every case in every order asserted to finish (log 0016-4)
 /// Every case in every order it takes: with cofactors, canonical, and
 /// accepted by the checker in the exact mode, the basis as written; and
 /// the call with signatures off and no cofactors gives the same basis. In

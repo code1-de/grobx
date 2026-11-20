@@ -16,8 +16,9 @@ pub(crate) fn after(
 ) -> bool {
     h.after_round(early, gap, made, zeros, || {
         calls.set(calls.get() + 1);
-        n
+        Ok(n)
     })
+    .unwrap()
 }
 
 /// `after` on a new `Handover` whose plain run would reduce each row

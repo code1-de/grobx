@@ -15,7 +15,7 @@ const WITHDRAWN: u64 = 4;
 /// recorded.
 fn pair_work(h: &mut Handover, pairs: u64, subtracted: u64) -> (bool, Option<bool>, Option<u64>) {
     assert!(
-        !h.after_round(false, false, 1, 0, || 0),
+        !h.after_round(false, false, 1, 0, || Ok(0)).unwrap(),
         "no early, gap, or outgrown test hands over"
     );
     let handed = h.after_pairs(pairs, subtracted);

@@ -4,47 +4,43 @@
 //! unwritten pages outside the resident set (plan.md, _Test code_, 1 to
 //! 5).
 
-use std::num::NonZeroUsize;
-use std::time::Instant;
+use std::ops::Range;
 
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
-use crate::child_tests;
+use crate::child_tests::measures_here;
+use crate::columns::Columns;
 use crate::field::{Field, Gf31};
-use crate::id::{ElementId, MonoId, RowId};
-use crate::matrix::{self, Matrix, RESERVATION, RESERVE_PAST, make_room};
+use crate::id::{ElementId, MonoId, RowId, RowSource};
+use crate::matrix::{self, Buffers, Matrix, RESERVATION, RESERVE_PAST, make_room};
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Format};
+use crate::narrow_matrix_tests::wide;
 use crate::order::Grevlex;
 use crate::os::resident;
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::budget;
 use crate::table::Table;
-use crate::trace::RowSource;
-use crate::{MonomialOrder, Params, Threads};
 
-fn budget() -> Budget {
-    let p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    );
-    Budget::new(Instant::now(), &p).unwrap()
-}
-
-/// A vector of `len` entries, each its index, grown by pushes.
-fn columns(len: usize) -> Vec<MonoId> {
-    let mut cols = Vec::new();
+/// A vector of `len` entries, each its index, grown an entry at a time.
+fn columns(len: usize) -> Columns {
+    let mut cols = Columns::new();
     for k in 0..len {
-        cols.push(MonoId::at(k));
+        cols.extend(&[k]);
     }
     cols
 }
 
 /// Whether the entries are still each its index.
-fn intact(cols: &[MonoId]) -> bool {
-    cols.iter().enumerate().all(|(k, &c)| c == MonoId::at(k))
+fn intact(cols: &Columns) -> bool {
+    (0..cols.len()).all(|k| cols.entry(k) == k)
+}
+
+/// The entries `range`, appended as `multiply` appends a row.
+fn append(cols: &mut Columns, range: Range<usize>) {
+    cols.extend(&range.collect::<Vec<usize>>());
 }
 
 /// Test 1, matrix-slack.1, .2, .7: columns that stay at `RESERVE_PAST`
@@ -53,7 +49,7 @@ fn intact(cols: &[MonoId]) -> bool {
 /// finds room; columns that hold a reservation keep it as it is.
 #[test]
 fn make_room_reserves_past_its_bound_alone() {
-    let mut empty: Vec<MonoId> = Vec::new();
+    let mut empty = Columns::new();
     make_room(&mut empty, 10);
     assert_eq!(empty.capacity(), 0, "10 entries of none");
 
@@ -72,7 +68,7 @@ fn make_room_reserves_past_its_bound_alone() {
     assert_eq!(past.len(), RESERVE_PAST - 6);
     assert!(intact(&past), "the entries moved unchanged");
 
-    let mut first: Vec<MonoId> = Vec::new();
+    let mut first = Columns::new();
     make_room(&mut first, RESERVE_PAST + 1);
     assert!(
         first.capacity() >= RESERVATION,
@@ -80,17 +76,17 @@ fn make_room_reserves_past_its_bound_alone() {
     );
     assert_eq!(first.len(), 0, "the reservation holds no column");
 
-    let mut long: Vec<MonoId> = Vec::new();
+    let mut long = Columns::new();
     make_room(&mut long, RESERVATION + 1);
     assert!(
         long.capacity() > RESERVATION,
         "a row longer than RESERVATION"
     );
 
-    let (pointer, capacity) = (past.as_ptr(), past.capacity());
+    let (pointer, capacity) = (past.words().as_ptr(), past.capacity());
     make_room(&mut past, 1000);
     make_room(&mut past, RESERVE_PAST);
-    assert_eq!(past.as_ptr(), pointer, "a reservation held");
+    assert_eq!(past.words().as_ptr(), pointer, "a reservation held");
     assert_eq!(past.capacity(), capacity, "a reservation held");
 }
 
@@ -101,16 +97,16 @@ fn make_room_reserves_past_its_bound_alone() {
 #[test]
 fn the_reservation_holds_its_columns_in_place() {
     const ROW: usize = 5005;
-    let mut cols: Vec<MonoId> = Vec::new();
+    let mut cols = Columns::new();
     let mut pointer = None;
     while cols.len() + ROW <= RESERVATION {
         make_room(&mut cols, ROW);
         let start = cols.len();
-        cols.extend((start..start + ROW).map(MonoId::at));
+        append(&mut cols, start..start + ROW);
         if cols.len() > RESERVE_PAST {
-            let at = *pointer.get_or_insert(cols.as_ptr());
+            let at = *pointer.get_or_insert(cols.words().as_ptr());
             assert_eq!(
-                cols.as_ptr(),
+                cols.words().as_ptr(),
                 at,
                 "the columns moved at {len}",
                 len = cols.len()
@@ -121,7 +117,7 @@ fn the_reservation_holds_its_columns_in_place() {
     assert!(intact(&cols));
     make_room(&mut cols, ROW);
     let start = cols.len();
-    cols.extend((start..start + ROW).map(MonoId::at));
+    append(&mut cols, start..start + ROW);
     assert!(cols.len() > RESERVATION);
     assert!(cols.capacity() >= cols.len());
     assert!(intact(&cols), "the columns past RESERVATION");
@@ -136,7 +132,7 @@ fn element() -> (Gf31, Table<Dense8>, Basis<Gf31, Rank1>) {
     let mut draw = Xoshiro256PlusPlus::seed_from_u64(0x51ac);
     let mut terms = Vec::new();
     for e in exponents(6, 9) {
-        let m = table.intern(&e).unwrap();
+        let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
         let c = 1 + draw.next_u64() % 65520;
         terms.push((m, field.coef(c)));
     }
@@ -144,7 +140,7 @@ fn element() -> (Gf31, Table<Dense8>, Basis<Gf31, Rank1>) {
     assert_eq!(g.len(), 5005);
     g.make_monic(&field);
     let mut basis = Basis::new();
-    basis.push_min(&table, g).unwrap();
+    basis.push_min(&table, g, &mut Budget::unbounded()).unwrap();
     (field, table, basis)
 }
 
@@ -173,21 +169,21 @@ fn fill(e: &mut [u32], i: usize, left: u32, out: &mut Vec<Vec<u32>>) {
     e[i] = 0;
 }
 
-/// The matrix of round `round` of `count` multiples of the basis's
-/// element, its multipliers the first `count` monomials of degree 1 to 3,
-/// by `build_rows`, and the multipliers. Each matrix of a table takes a
-/// round of its own.
+/// The matrix of `count` multiples of the basis's element, its multipliers
+/// the first `count` monomials of degree 1 to 3, by `build_rows`, its
+/// entries 4 bytes each where `wide_rows` holds and else 2, and the
+/// multipliers.
 fn multiples(
     table: &mut Table<Dense8>,
     basis: &Basis<Gf31, Rank1>,
     count: usize,
-    round: u32,
+    wide_rows: bool,
 ) -> (Matrix, Vec<MonoId>) {
     let multipliers: Vec<MonoId> = exponents(6, 3)
         .into_iter()
         .filter(|e| e.iter().sum::<u32>() > 0)
         .take(count)
-        .map(|e| table.intern(&e).unwrap())
+        .map(|e| table.intern(&e, &mut Budget::unbounded()).unwrap())
         .collect();
     assert_eq!(multipliers.len(), count);
     let rows = multipliers
@@ -197,27 +193,36 @@ fn multiples(
             multiplier: t,
         })
         .collect();
-    let m = matrix::build_rows(
-        table,
-        basis,
-        &Grevlex,
-        round,
-        rows,
-        Vec::new(),
-        &mut budget(),
-    )
-    .unwrap();
+    let build = || {
+        matrix::build_rows(
+            table,
+            basis,
+            &Grevlex,
+            rows,
+            &mut Buffers::new(),
+            &mut budget(),
+        )
+        .unwrap()
+    };
+    let m = if wide_rows { wide(build) } else { build() };
+    assert_eq!(
+        m.index(),
+        if wide_rows { 4 } else { 2 },
+        "the entries' bytes"
+    );
     (m, multipliers)
 }
 
-/// Test 3, matrix-slack.1: 60 multiples, 300,300 entries, sit in a
-/// reservation, and every row's columns are its multiplier's products with
-/// the element's monomials, in order; 10 multiples, 50,050 entries, take
+/// Test 3, matrix-slack.1: 60 multiples, 300,300 entries of 4 bytes, sit
+/// in a reservation, and every row's columns are its multiplier's products
+/// with the element's monomials, in order; 10 multiples, 50,050 entries,
+/// take none. Beside the plan's, column-index-peak.10: the 60 multiples in
+/// 2 bytes an entry fill 150,150 words, below `RESERVE_PAST`, and take
 /// none.
 #[test]
 fn a_matrix_past_the_bound_keeps_its_rows() {
     let (_, mut table, basis) = element();
-    let (m, multipliers) = multiples(&mut table, &basis, 60, 1);
+    let (m, multipliers) = multiples(&mut table, &basis, 60, true);
     assert_eq!(m.entries(), 60 * 5005);
     assert!(
         m.capacity() >= RESERVATION,
@@ -227,20 +232,28 @@ fn a_matrix_past_the_bound_keeps_its_rows() {
     );
     let g = basis.element(ElementId::at(0));
     for (r, &t) in multipliers.iter().enumerate() {
-        let row = m.row(RowId::at(r));
+        let row = m.row(RowId::at(r)).to_wide();
         assert!(row.windows(2).all(|w| w[0] < w[1]), "row {r} increasing");
         let got: Vec<MonoId> = row.iter().map(|&c| m.monomials[c.index()]).collect();
         let want: Vec<MonoId> = g
             .monomials
             .iter()
-            .map(|&u| table.mul(t, u).unwrap())
+            .map(|&u| table.mul(t, u, &mut Budget::unbounded()).unwrap())
             .collect();
         assert_eq!(got, want, "row {r}");
     }
 
-    let (small, _) = multiples(&mut table, &basis, 10, 2);
+    let (small, _) = multiples(&mut table, &basis, 10, true);
     assert_eq!(small.entries(), 10 * 5005);
     assert!(small.capacity() < RESERVATION, "50,050 entries");
+
+    let (narrow, _) = multiples(&mut table, &basis, 60, false);
+    assert_eq!(narrow.words(), 30 * 5005);
+    assert!(narrow.words() <= RESERVE_PAST, "150,150 words");
+    assert!(
+        narrow.capacity() < RESERVATION,
+        "300,300 entries of 2 bytes"
+    );
 }
 
 /// Test 4, q-replay-time.14 with matrix-slack.1: the matrix of 300,300
@@ -248,7 +261,7 @@ fn a_matrix_past_the_bound_keeps_its_rows() {
 #[test]
 fn a_kept_matrix_gives_its_reservation_back() {
     let (_, mut table, basis) = element();
-    let (mut m, _) = multiples(&mut table, &basis, 60, 1);
+    let (mut m, _) = multiples(&mut table, &basis, 60, true);
     assert!(m.capacity() >= RESERVATION);
     m.shrink_to_fit();
     assert!(m.capacity() >= m.entries());
@@ -266,19 +279,18 @@ fn a_kept_matrix_gives_its_reservation_back() {
 /// its reservation spans 32 MiB. The parent runs the child.
 #[test]
 fn the_reservation_is_resident_as_written() {
-    if child_tests::running() {
-        let (_, mut table, basis) = element();
-        let before = resident();
-        let (m, _) = multiples(&mut table, &basis, 60, 1);
-        let after = resident();
-        assert!(m.capacity() >= RESERVATION);
-        let grown = after.saturating_sub(before);
-        assert!(
-            grown < 16 << 20,
-            "the resident set grew by {grown} bytes for {entries} entries",
-            entries = m.entries()
-        );
+    if !measures_here("slack_tests::the_reservation_is_resident_as_written") {
         return;
     }
-    child_tests::run("slack_tests::the_reservation_is_resident_as_written");
+    let (_, mut table, basis) = element();
+    let before = resident();
+    let (m, _) = multiples(&mut table, &basis, 60, true);
+    let after = resident();
+    assert!(m.capacity() >= RESERVATION);
+    let grown = after.saturating_sub(before);
+    assert!(
+        grown < 16 << 20,
+        "the resident set grew by {grown} bytes for {entries} entries",
+        entries = m.entries()
+    );
 }

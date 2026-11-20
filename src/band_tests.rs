@@ -10,55 +10,46 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
+use std::collections::HashSet;
 
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::budget::Budget;
-use crate::cofactors::{NoCofactors, Tracked};
+use crate::Stop;
+use crate::budget::{Budget, PROBE};
+use crate::cofactors::NoCofactors;
+#[cfg(feature = "cofactors")]
+use crate::cofactors::Tracked;
 use crate::field::{BAND, Field, Gf31, Gf31Pair, Gf64, Gf64Pair};
-use crate::id::{KeepId, MonoId, RowId};
+use crate::id::{KeepId, MonoId, RowId, RowSource};
 use crate::matrix::{self, BAND_ENTRIES, Buffers, Matrix, Pivot, Reduced, Reducer};
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::Grevlex;
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::{budget, passed_after, read_all};
+use crate::sort::SORTED;
 use crate::systems::Rng;
 use crate::table::Table;
-use crate::trace::RowSource;
-use crate::{MonomialOrder, Params, Stop, Threads};
 
 /// The primes of test 1: the smallest, below 2^16 on both sides of the
 /// combinations' bound, from 2^16, and the largest below 2^31.
 pub(crate) const PRIMES: [u64; 7] = [2, 3, 7, 32003, 65521, 65537, 2_147_483_647];
 
-pub(crate) fn params() -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    )
-}
-
-/// A budget with no bound.
-pub(crate) fn budget() -> Budget {
-    Budget::new(Instant::now(), &params()).unwrap()
-}
-
-/// A budget whose deadline passed before the test began, unchecked, with
-/// `units` of work between two full checks.
-pub(crate) fn passed_after(units: u64) -> Budget {
-    let mut p = params();
-    p.deadline = Some(Duration::from_millis(1));
-    let mut b = Budget::new(
-        Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
-        &p,
-    )
-    .unwrap();
-    b.set_work(units);
-    b
+/// The units `matrix::reduce` spends on its setup of `matrix` before it
+/// reduces a row: the matrix's columns once the reducer is made, `PROBE`
+/// units a row its loops over the rows read, and its sort of the rows to
+/// reduce, `SORTED` units a row, and a unit a row written back
+/// (call-stop-latency.18, .53, .54). The rows to reduce are the given rows
+/// but the first of each leading column no reducer row leads.
+pub(crate) fn setup_units(matrix: &Matrix) -> u64 {
+    let lead = |r: usize| matrix.row(RowId::at(r)).lead();
+    let reducers: HashSet<MonoId> = (matrix.given..matrix.rows.len()).map(lead).collect();
+    let mut pivots = HashSet::new();
+    let rest = (0..matrix.given)
+        .filter(|&r| reducers.contains(&lead(r)) || !pivots.insert(lead(r)))
+        .count();
+    (matrix.columns() + PROBE * matrix.rows.len() + (SORTED + 1) * rest) as u64
 }
 
 /// A random sparse row of width `width`: increasing columns, each kept
@@ -82,19 +73,6 @@ fn multiplier(f: &Gf31, rng: &mut Rng) -> u32 {
     } else {
         f.coef(rng.below(f.characteristic()))
     }
-}
-
-/// Every entry of the band and of the dense rows read by `take`: the
-/// values agree, and both hold zeros after.
-fn read_all(f: &Gf31, band: &mut [[i64; BAND]], dense: &mut [Vec<i64>; BAND], case: &str) {
-    for (c, entry) in band.iter_mut().enumerate() {
-        for k in 0..BAND {
-            let a = f.take(&mut entry[k]);
-            let b = f.take(&mut dense[k][c]);
-            assert_eq!(a, b, "{case}: column {c}, band row {k}");
-        }
-    }
-    assert!(band.iter().all(|e| e.iter().all(|&x| x == 0)), "{case}");
 }
 
 /// Test 1: row-traffic-time.2, .5, .6. The band's row operations of
@@ -178,31 +156,35 @@ fn the_band_operations_agree_with_four_dense_rows() {
     read_all(&f, &mut band, &mut dense, "2^20 subtractions over 65521");
 }
 
-/// A random matrix over GF(p) on four variables, as `combine_tests` builds
-/// one: a basis of `elements` random monic polynomials of 2 to `most` + 1
-/// terms of degree at most `degree`, and given rows that are the halves of
-/// random S-pairs of the basis, every `twice`-th draw's rows given twice.
-/// Symbolic preprocessing adds the reducers.
-pub(crate) struct Random {
-    pub(crate) field: Gf31,
-    pub(crate) basis: Basis<Gf31, Rank1>,
+/// A random matrix over a field on four variables, as `combine_tests`
+/// builds one: a basis of `elements` random monic polynomials of 2 to
+/// `most` + 1 terms of degree at most `degree`, and given rows that are the
+/// halves of random S-pairs of the basis, every `twice`-th draw's rows given
+/// twice. Symbolic preprocessing adds the reducers in round 1 of the table,
+/// which the struct keeps for a later round's matrix.
+pub(crate) struct Random<F: Field = Gf31> {
+    pub(crate) field: F,
+    pub(crate) table: Table<Dense16>,
+    pub(crate) basis: Basis<F, Rank1>,
     pub(crate) matrix: Matrix,
 }
 
-impl Random {
-    pub(crate) fn new(
-        p: u64,
+impl<F: Field> Random<F> {
+    /// The random matrix over `field`, drawn as over GF(p) for p its
+    /// characteristic: one matrix for two fields of one characteristic.
+    pub(crate) fn of(
+        field: F,
         seed: u64,
         (elements, pairs, twice): (usize, usize, usize),
         (most, degree): (u64, u64),
-    ) -> Random {
-        let field = Gf31::new(p).unwrap();
+    ) -> Random<F> {
+        let p = field.characteristic();
         let mut table = Table::new(
             Dense16::new(4),
             &mut Xoshiro256PlusPlus::seed_from_u64(seed),
         );
         let mut rng = Rng::new(seed ^ p.rotate_left(17) ^ 0xba4e);
-        let mut basis: Basis<Gf31, Rank1> = Basis::new();
+        let mut basis: Basis<F, Rank1> = Basis::new();
         while basis.len() < elements {
             let mut terms = Vec::new();
             for _ in 0..2 + rng.below(most) {
@@ -213,7 +195,7 @@ impl Random {
                     *x = k;
                     degree -= k;
                 }
-                let m = table.intern(&e).unwrap();
+                let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                 terms.push((m, field.coef(1 + rng.below(p - 1))));
             }
             let mut g = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
@@ -221,7 +203,7 @@ impl Random {
                 continue;
             }
             g.make_monic(&field);
-            basis.push_min(&table, g).unwrap();
+            basis.push_min(&table, g, &mut Budget::unbounded()).unwrap();
         }
         let min = basis.min().to_vec();
         let mut rows = Vec::new();
@@ -231,11 +213,15 @@ impl Random {
             if i == j {
                 continue;
             }
-            let lcm = table.lcm(basis.lead(i), basis.lead(j)).unwrap();
+            let lcm = table
+                .lcm(basis.lead(i), basis.lead(j), &mut Budget::unbounded())
+                .unwrap();
             for g in [i, j] {
                 let row = RowSource {
                     element: g,
-                    multiplier: table.div(lcm, basis.lead(g)).unwrap(),
+                    multiplier: table
+                        .div(lcm, basis.lead(g), &mut Budget::unbounded())
+                        .unwrap(),
                 };
                 rows.push(row);
                 if twice > 0 && k % twice == 0 {
@@ -247,17 +233,29 @@ impl Random {
             &mut table,
             &basis,
             &Grevlex,
-            1,
             rows,
-            Vec::new(),
+            &mut Buffers::new(),
             &mut budget(),
         )
         .unwrap();
         Random {
             field,
+            table,
             basis,
             matrix,
         }
+    }
+}
+
+impl Random {
+    /// The random matrix over GF(p), p a prime below 2^31.
+    pub(crate) fn new(
+        p: u64,
+        seed: u64,
+        shape: (usize, usize, usize),
+        terms: (u64, u64),
+    ) -> Random {
+        Random::of(Gf31::new(p).unwrap(), seed, shape, terms)
     }
 
     /// A reducer from fresh buffers, as `reducer_in` makes it.
@@ -265,38 +263,47 @@ impl Random {
         self.reducer_in(&mut Buffers::new())
     }
 
-    /// A reducer from `bufs` with the pivots `matrix::reduce` sets before
-    /// it reduces: every reducer row, and of the given rows of one leading
-    /// column the sparsest; and the rows it then reduces, here by
-    /// increasing leading column, where `matrix::reduce` takes them by
-    /// decreasing leading column (cyclic-gap.1). The reducer's counts start
-    /// at a fresh budget's, zero, as those of the fresh budgets its callers
-    /// reduce under, save test 2's two reducers, which share one budget, so
-    /// that each counts the other's entries written as well.
+    /// A reducer from `bufs` of the matrix, as `reducer_of` makes it.
     pub(crate) fn reducer_in(
         &self,
         bufs: &mut Buffers<Gf31>,
     ) -> (Reducer<'_, Gf31, Rank1>, Vec<RowId>) {
-        let m = &self.matrix;
-        let mut red = Reducer::new(&self.field, &self.basis, m, bufs, &budget());
-        let lead = |r: RowId| m.row(r)[0].index();
-        for r in (m.given..m.rows.len()).map(RowId::at) {
-            red.pivot[lead(r)] = Pivot::Row(r);
-        }
-        let mut rest = Vec::new();
-        for r in (0..m.given).map(RowId::at) {
-            match red.pivot[lead(r)] {
-                Pivot::Row(q) if m.row(q).len() > m.row(r).len() => {
-                    rest.push(q);
-                    red.pivot[lead(r)] = Pivot::Row(r);
-                }
-                Pivot::Row(_) => rest.push(r),
-                Pivot::None | Pivot::New(_) => red.pivot[lead(r)] = Pivot::Row(r),
-            }
-        }
-        rest.sort_by_key(|&r| lead(r));
-        (red, rest)
+        reducer_of(&self.field, &self.basis, &self.matrix, bufs)
     }
+}
+
+/// A reducer of `m` over `field` and `basis` from `bufs` with the pivots
+/// `matrix::reduce` sets before it reduces: every reducer row, and of the
+/// given rows of one leading column the sparsest; and the rows it then
+/// reduces, here by increasing leading column, where `matrix::reduce` takes
+/// them by decreasing leading column (cyclic-gap.1). The reducer's counts
+/// start at a fresh budget's, zero, as those of the fresh budgets its
+/// callers reduce under, save test 2's two reducers, which share one
+/// budget, so that each counts the other's entries written as well.
+pub(crate) fn reducer_of<'a>(
+    field: &'a Gf31,
+    basis: &'a Basis<Gf31, Rank1>,
+    m: &'a Matrix,
+    bufs: &mut Buffers<Gf31>,
+) -> (Reducer<'a, Gf31, Rank1>, Vec<RowId>) {
+    let mut red = Reducer::new(field, basis, m, bufs, &budget());
+    let lead = |r: RowId| m.row(r).lead().index();
+    for r in (m.given..m.rows.len()).map(RowId::at) {
+        red.pivot[lead(r)] = Pivot::Row(r);
+    }
+    let mut rest = Vec::new();
+    for r in (0..m.given).map(RowId::at) {
+        match red.pivot[lead(r)] {
+            Pivot::Row(q) if m.row(q).len() > m.row(r).len() => {
+                rest.push(q);
+                red.pivot[lead(r)] = Pivot::Row(r);
+            }
+            Pivot::Row(_) => rest.push(r),
+            Pivot::None | Pivot::New(_) => red.pivot[lead(r)] = Pivot::Row(r),
+        }
+    }
+    rest.sort_by_key(|&r| lead(r));
+    (red, rest)
 }
 
 /// A pivot as a pair, to compare two pivot arrays.
@@ -314,7 +321,7 @@ fn pivots(red: &Reducer<'_, Gf31, Rank1>) -> Vec<(u8, usize)> {
 /// Reduces the run `rows` with `red`, as `reduce_sig` reduces a run of
 /// reductants: in one band where it holds two rows or more, else alone; the
 /// nonzero rows kept in order. The rows reduced to zero.
-fn reduce_run(
+pub(crate) fn reduce_run(
     red: &mut Reducer<'_, Gf31, Rank1>,
     m: &Matrix,
     rows: &[RowId],
@@ -325,7 +332,7 @@ fn reduce_run(
     } else {
         let r = rows[0];
         let row = red
-            .reduce::<Dense16, NoCofactors>(r, m.row(r)[0], &mut NoCofactors, b)
+            .reduce::<Dense16, NoCofactors>(r, m.row(r).lead(), &mut NoCofactors, b)
             .unwrap();
         vec![row]
     };
@@ -335,7 +342,10 @@ fn reduce_run(
             zero.push(row.row);
             continue;
         }
-        assert!(red.keep::<Dense16, NoCofactors>(row, &mut NoCofactors));
+        assert!(
+            red.keep::<Dense16, NoCofactors>(row, &mut NoCofactors, &mut Budget::unbounded())
+                .expect("a budget without bounds never stops")
+        );
     }
     zero
 }
@@ -376,7 +386,7 @@ fn a_band_makes_what_its_rows_make_one_at_a_time() {
                     let row = one
                         .reduce::<Dense16, NoCofactors>(
                             r,
-                            m.matrix.row(r)[0],
+                            m.matrix.row(r).lead(),
                             &mut NoCofactors,
                             &mut b,
                         )
@@ -395,7 +405,14 @@ fn a_band_makes_what_its_rows_make_one_at_a_time() {
                         }
                         continue;
                     }
-                    assert!(one.keep::<Dense16, NoCofactors>(row, &mut NoCofactors));
+                    assert!(
+                        one.keep::<Dense16, NoCofactors>(
+                            row,
+                            &mut NoCofactors,
+                            &mut Budget::unbounded()
+                        )
+                        .expect("a budget without bounds never stops")
+                    );
                 }
                 assert_eq!(made(&band), made(&one), "{name}: rows made, run at {k}");
                 assert_eq!(zero_band, zero_one, "{name}: zero rows, run at {k}");
@@ -469,6 +486,7 @@ fn long_rows_take_bands_where_the_field_has_them_and_no_cofactors() {
         .unwrap();
     let m = &m.matrix;
     assert!(matrix::takes_bands::<Gf31, Dense16, NoCofactors>(m));
+    #[cfg(feature = "cofactors")]
     assert!(!matrix::takes_bands::<Gf31, Dense16, Tracked<Gf31, Dense16>>(m));
     assert!(!matrix::takes_bands::<Gf64, Dense16, NoCofactors>(m));
     assert!(!matrix::takes_bands::<Gf64Pair, Dense16, NoCofactors>(m));
@@ -589,10 +607,13 @@ fn the_band_comes_from_the_buffers() {
 /// Test 10: row-traffic-time.12. A band spends each pivot row's length
 /// once per band row it is subtracted from. On test 2's matrices over
 /// 65521 whose first run of up to `BAND` rows spends more than
-/// 4·(T + 4·L) units in its band, L the matrix's longest row: unbounded,
-/// the band spends at least what `reduce` spends on the run's first row
-/// alone; with a deadline passed and unchecked and T units a check, it
-/// stops with `Deadline` after one check and at most T + 4·L units.
+/// 4·(T + 4·L) units in its band's subtractions, L the matrix's longest
+/// row, beside the band's fill and its sweep's columns, `BAND` units a
+/// column each (call-stop-latency.51, .53): unbounded, the band spends at
+/// least what `reduce` spends on the run's first row alone; with a
+/// deadline passed and unchecked and the fill's units and T more a check,
+/// it stops with `Deadline` after one check and at most T + 4·L units past
+/// the fill's.
 #[test]
 fn a_band_spends_its_row_operations() {
     const T: u64 = 256;
@@ -609,18 +630,25 @@ fn a_band_spends_its_row_operations() {
             .max()
             .unwrap() as u64;
         let bound = T + BAND as u64 * longest;
+        let width = m.matrix.columns();
+        let from = run
+            .iter()
+            .map(|&r| m.matrix.row(r).lead().index())
+            .min()
+            .unwrap();
+        let (fill, swept) = ((BAND * width) as u64, (BAND * (width - from)) as u64);
         let (mut red, _) = m.reducer();
         let mut b = budget();
         red.reduce_band(run, &mut b).unwrap();
         let total = b.spent();
-        if total <= 4 * bound {
+        if total - fill - swept <= 4 * bound {
             continue;
         }
         cases += 1;
         let (mut one, _) = m.reducer();
         let mut b = budget();
         let r = run[0];
-        one.reduce::<Dense16, NoCofactors>(r, m.matrix.row(r)[0], &mut NoCofactors, &mut b)
+        one.reduce::<Dense16, NoCofactors>(r, m.matrix.row(r).lead(), &mut NoCofactors, &mut b)
             .unwrap();
         assert!(
             total >= b.spent(),
@@ -628,7 +656,7 @@ fn a_band_spends_its_row_operations() {
             spent = b.spent()
         );
         let (mut red, _) = m.reducer();
-        let mut b = passed_after(T);
+        let mut b = passed_after(fill + T);
         assert_eq!(
             red.reduce_band(run, &mut b).err(),
             Some(Stop::Deadline),
@@ -636,7 +664,7 @@ fn a_band_spends_its_row_operations() {
         );
         assert_eq!(b.checks(), 1, "seed {seed}");
         assert!(
-            b.spent() <= bound,
+            b.spent() <= fill + bound,
             "seed {seed}: {spent} spent before the stop, {total} in all",
             spent = b.spent()
         );

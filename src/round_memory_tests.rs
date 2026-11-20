@@ -9,35 +9,24 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use std::num::NonZeroUsize;
-use std::time::Instant;
-
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
 use crate::cofactors::NoCofactors;
+use crate::columns::Columns;
 use crate::field::{Field, Gf31};
-use crate::id::{ElementId, MonoId, RowId};
+use crate::id::{ElementId, MonoId, RowId, RowSource};
 use crate::matrix::{
     self, Buffers, Combine, Matrix, Pivot, RESERVATION, RESERVE_PAST, Reduced, Reduction,
 };
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Dense16, Format};
+use crate::narrow_matrix_tests::wide;
 use crate::order::Grevlex;
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::budget;
 use crate::table::Table;
-use crate::trace::RowSource;
-use crate::{MonomialOrder, Params, Threads};
-
-fn budget() -> Budget {
-    let p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    );
-    Budget::new(Instant::now(), &p).unwrap()
-}
 
 /// A random system over GF(p) on four variables: a basis of `elements`
 /// random monic polynomials, and the rows of the random S-pairs of its
@@ -70,7 +59,7 @@ impl System {
                     *x = k;
                     degree -= k;
                 }
-                let m = table.intern(&e).unwrap();
+                let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                 terms.push((m, field.coef(1 + below(p - 1))));
             }
             let mut g = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
@@ -78,7 +67,7 @@ impl System {
                 continue;
             }
             g.make_monic(&field);
-            basis.push_min(&table, g).unwrap();
+            basis.push_min(&table, g, &mut Budget::unbounded()).unwrap();
         }
         let min = basis.min().to_vec();
         let mut rows = Vec::new();
@@ -88,11 +77,15 @@ impl System {
             if i == j {
                 continue;
             }
-            let lcm = table.lcm(basis.lead(i), basis.lead(j)).unwrap();
+            let lcm = table
+                .lcm(basis.lead(i), basis.lead(j), &mut Budget::unbounded())
+                .unwrap();
             for g in [i, j] {
                 let row = RowSource {
                     element: g,
-                    multiplier: table.div(lcm, basis.lead(g)).unwrap(),
+                    multiplier: table
+                        .div(lcm, basis.lead(g), &mut Budget::unbounded())
+                        .unwrap(),
                 };
                 rows.push(row);
                 if k % 3 == 0 {
@@ -108,25 +101,27 @@ impl System {
         }
     }
 
-    /// The matrix of the system's rows in round `round`, its columns in
-    /// `cols`. Each matrix of a table takes a round of its own.
-    fn matrix(&mut self, round: u32, cols: Vec<MonoId>) -> Matrix {
+    /// The matrix of the system's rows, its columns in `cols`, from buffers
+    /// that hold that vector alone.
+    fn matrix(&mut self, cols: Columns) -> Matrix {
         let rows = self.rows.clone();
         matrix::build(
             &mut self.table,
             &self.basis,
             &Grevlex,
-            round,
             rows,
-            cols,
+            &mut Buffers::of_cols(cols),
             &mut budget(),
         )
         .unwrap()
     }
 
-    /// The inter-reduction's matrix of `G_min` in round `round`.
-    fn inter(&mut self, round: u32) -> Matrix {
-        let one = self.table.intern(&[0; 4]).unwrap();
+    /// The inter-reduction's matrix of `G_min`.
+    fn inter(&mut self) -> Matrix {
+        let one = self
+            .table
+            .intern(&[0; 4], &mut Budget::unbounded())
+            .unwrap();
         let rows = self
             .basis
             .min()
@@ -140,9 +135,8 @@ impl System {
             &mut self.table,
             &self.basis,
             &Grevlex,
-            round,
             rows,
-            Vec::new(),
+            &mut Buffers::new(),
             &mut budget(),
         )
         .unwrap()
@@ -165,6 +159,7 @@ impl System {
             full,
             combine.as_mut(),
             bufs,
+            None,
             None,
         )
         .unwrap()
@@ -218,7 +213,7 @@ fn same_matrix(a: &Matrix, b: &Matrix, case: &str) {
     assert_eq!(a.rows, b.rows, "{case}");
     assert_eq!(a.monomials, b.monomials, "{case}");
     for r in (0..a.rows.len()).map(RowId::at) {
-        assert_eq!(a.row(r), b.row(r), "{case}: row {r}");
+        assert_eq!(a.row(r).to_wide(), b.row(r).to_wide(), "{case}: row {r}");
     }
 }
 
@@ -232,7 +227,7 @@ fn the_rows_a_reduction_makes_hold_their_entries_at_their_length() {
     for p in [65521, 46349, 2_147_483_647, 101] {
         for seed in 0..12 {
             let mut s = System::new(p, seed, 4 + seed as usize % 10, 20 + 8 * seed as usize);
-            let m = s.matrix(1, Vec::new());
+            let m = s.matrix(Columns::new());
             let mut bufs = Buffers::new();
             for (combine, full) in [
                 (None, false),
@@ -247,7 +242,7 @@ fn the_rows_a_reduction_makes_hold_their_entries_at_their_length() {
                 assert_eq!(made(&red), made(&fresh), "{case}");
                 rows += red.made.len();
             }
-            let inter = s.inter(2);
+            let inter = s.inter();
             let reduced = matrix::inter_reduce::<Gf31, Dense16, Rank1, NoCofactors>(
                 &s.field,
                 &s.basis,
@@ -286,8 +281,8 @@ fn one_runs_buffers_over_a_sequence_of_matrices() {
         let cols = bufs.take_cols();
         assert!(cols.is_empty(), "{case}: a column vector taken empty");
         assert_eq!(cols.capacity(), kept, "{case}: the kept capacity handed on");
-        let m = s.matrix(1, cols);
-        let fresh = s.matrix(2, Vec::new());
+        let m = s.matrix(cols);
+        let fresh = s.matrix(Columns::new());
         same_matrix(&m, &fresh, &case);
         widths.push(m.columns());
         if k % 3 == 1 {
@@ -308,7 +303,7 @@ fn one_runs_buffers_over_a_sequence_of_matrices() {
         );
         at_length(&red.made, &case);
         let capacity = m.capacity();
-        bufs.keep_cols(m);
+        bufs.keep(m);
         assert_eq!(bufs.capacities()[0], capacity, "{case}: the vector kept");
     }
     let (least, most) = (widths.iter().min(), widths.iter().max());
@@ -323,14 +318,14 @@ fn element() -> (Table<Dense8>, Basis<Gf31, Rank1>) {
     let mut draw = Xoshiro256PlusPlus::seed_from_u64(0x51ad);
     let mut terms = Vec::new();
     for e in exponents(6, 9) {
-        let m = table.intern(&e).unwrap();
+        let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
         terms.push((m, field.coef(1 + draw.next_u64() % 65520)));
     }
     let mut g: Poly<Gf31, Rank1> = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
     assert_eq!(g.len(), 5005);
     g.make_monic(&field);
     let mut basis = Basis::new();
-    basis.push_min(&table, g).unwrap();
+    basis.push_min(&table, g, &mut Budget::unbounded()).unwrap();
     (table, basis)
 }
 
@@ -355,15 +350,15 @@ fn exponents(n: usize, d: u32) -> Vec<Vec<u32>> {
     out
 }
 
-/// The matrix of round `round` of `count` multiples of the element, its
-/// multipliers the first `count` monomials of degree 1 to 3, by
-/// `build_rows` into `cols`.
+/// The matrix of `count` multiples of the element, its multipliers the
+/// first `count` monomials of degree 1 to 3, by `build_rows` into `cols`,
+/// from buffers that hold that vector alone, its entries 4 bytes each, as
+/// the reservation's bounds count them.
 fn multiples(
     table: &mut Table<Dense8>,
     basis: &Basis<Gf31, Rank1>,
     count: usize,
-    round: u32,
-    cols: Vec<MonoId>,
+    cols: Columns,
 ) -> Matrix {
     let rows = exponents(6, 3)
         .into_iter()
@@ -371,10 +366,20 @@ fn multiples(
         .take(count)
         .map(|e| RowSource {
             element: ElementId::at(0),
-            multiplier: table.intern(&e).unwrap(),
+            multiplier: table.intern(&e, &mut Budget::unbounded()).unwrap(),
         })
         .collect();
-    matrix::build_rows(table, basis, &Grevlex, round, rows, cols, &mut budget()).unwrap()
+    wide(|| {
+        matrix::build_rows(
+            table,
+            basis,
+            &Grevlex,
+            rows,
+            &mut Buffers::of_cols(cols),
+            &mut budget(),
+        )
+        .unwrap()
+    })
 }
 
 /// Test 3, round-memory-time.6, matrix-slack.1: a matrix past
@@ -387,17 +392,12 @@ fn multiples(
 fn a_matrix_past_the_bound_from_kept_buffers() {
     let (mut table, basis) = element();
     let mut bufs: Buffers<Gf31> = Buffers::new();
-    let mut round = 0;
-    let mut next = || {
-        round += 1;
-        round
-    };
-    let small = multiples(&mut table, &basis, 10, next(), bufs.take_cols());
+    let small = multiples(&mut table, &basis, 10, bufs.take_cols());
     assert!(small.capacity() < RESERVATION, "50,050 entries");
-    bufs.keep_cols(small);
+    bufs.keep(small);
     for k in 0..2 {
-        let big = multiples(&mut table, &basis, 60, next(), bufs.take_cols());
-        let fresh = multiples(&mut table, &basis, 60, next(), Vec::new());
+        let big = multiples(&mut table, &basis, 60, bufs.take_cols());
+        let fresh = multiples(&mut table, &basis, 60, Columns::new());
         assert!(
             big.entries() > RESERVE_PAST,
             "{entries} entries",
@@ -410,16 +410,16 @@ fn a_matrix_past_the_bound_from_kept_buffers() {
         );
         same_matrix(&big, &fresh, &format!("pass {k}"));
         let capacity = big.capacity();
-        bufs.keep_cols(big);
-        let small = multiples(&mut table, &basis, 10, next(), bufs.take_cols());
-        let fresh = multiples(&mut table, &basis, 10, next(), Vec::new());
+        bufs.keep(big);
+        let small = multiples(&mut table, &basis, 10, bufs.take_cols());
+        let fresh = multiples(&mut table, &basis, 10, Columns::new());
         assert_eq!(
             small.capacity(),
             capacity,
             "pass {k}: the small matrix after"
         );
         same_matrix(&small, &fresh, &format!("pass {k}, small"));
-        bufs.keep_cols(small);
+        bufs.keep(small);
     }
 }
 
@@ -431,13 +431,13 @@ fn the_polynomial_takes_the_rows_column_vector() {
     let mut polys = 0;
     for seed in 0..12 {
         let mut s = System::new(65521, 300 + seed, 6, 60);
-        let m = s.matrix(1, Vec::new());
+        let m = s.matrix(Columns::new());
         let red = s.reduce(&m, None, true, &mut Buffers::new());
         for r in red.made {
             let pointer = r.cols.as_ptr();
             let want: Vec<MonoId> = r.cols.iter().map(|&c| m.monomials[c.index()]).collect();
             let coefs = r.coefs.clone();
-            let p: Poly<Gf31, Rank1> = r.poly(&m);
+            let p: Poly<Gf31, Rank1> = r.poly(&m, &mut Budget::unbounded()).unwrap();
             assert_eq!(p.monomials.as_ptr(), pointer, "seed {seed}");
             assert_eq!(p.monomials, want, "seed {seed}");
             assert_eq!(p.coefs, coefs, "seed {seed}");
@@ -455,15 +455,15 @@ fn the_polynomial_takes_the_rows_column_vector() {
 fn release_gives_everything_back() {
     let mut s = System::new(65521, 500, 8, 80);
     let mut bufs: Buffers<Gf31> = Buffers::new();
-    let m = s.matrix(1, bufs.take_cols());
+    let m = s.matrix(bufs.take_cols());
     let red = s.reduce(&m, None, true, &mut bufs);
     assert!(!red.made.is_empty());
-    bufs.keep_cols(m);
+    bufs.keep(m);
     let [cols, dense, row_cols, row_coefs] = bufs.capacities();
     assert!(cols > 0 && dense > 0 && row_cols > 0 && row_coefs > 0);
     bufs.release();
     assert_eq!(bufs.capacities(), [0; 4]);
-    let m = s.matrix(2, bufs.take_cols());
+    let m = s.matrix(bufs.take_cols());
     let again = s.reduce(&m, None, true, &mut bufs);
     let fresh = s.reduce(&m, None, true, &mut Buffers::new());
     assert_eq!(made(&again), made(&fresh));

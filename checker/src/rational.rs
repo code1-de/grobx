@@ -22,14 +22,14 @@ pub fn limbs(n: &BigInt) -> usize {
     (n.bits() as usize).div_ceil(64)
 }
 
-// checker-stop-latency.6 design -- a product or a quotient of a and b over Q counts 2 + la·lb/16 units, la and lb their limbs, and a gcd or an lcm 64·(1 + L) + 2·L², L the larger's limbs, not a gcd counted as a product (log 0059-1)
+// checker-stop-latency.6 design-checked -- a product or a quotient of a and b over Q counts 2 + la·lb/16 units, la and lb their limbs, and a gcd or an lcm 64·(1 + L) + 2·L², L the larger's limbs, not a gcd counted as a product (log 0059-1)
 /// The units of work of a product or a quotient of a and b: two, and one
 /// per `LIMBS` products of a limb of a by a limb of b.
 pub fn cost(a: &BigInt, b: &BigInt) -> usize {
     2 + limbs(a) * limbs(b) / LIMBS
 }
 
-// checker-stop-latency.6 design -- a product or a quotient of a and b over Q counts 2 + la·lb/16 units, la and lb their limbs, and a gcd or an lcm 64·(1 + L) + 2·L², L the larger's limbs, not a gcd counted as a product (log 0059-1)
+// checker-stop-latency.6 design-checked -- a product or a quotient of a and b over Q counts 2 + la·lb/16 units, la and lb their limbs, and a gcd or an lcm 64·(1 + L) + 2·L², L the larger's limbs, not a gcd counted as a product (log 0059-1)
 /// The units of work of a gcd or an lcm of a and b, L the limbs of the
 /// larger: 64 per limb and one more, and 2 per square of a limb. The gcd
 /// shifts its operands a bit at a time.
@@ -62,9 +62,9 @@ pub struct Terms {
     dens: Vec<BigInt>,
 }
 
-// checker-q.6 cited: monagan-2011 §2.3 -- rational arithmetic does about ten times the integer operations; fraction-free algorithms scale fractions to a common denominator
-// checker-q.11 cited: brickenstein-2010 §4 -- over Q coefficients are kept in Z, and the content is extracted from an element used to reduce others
-// checker-q.18 practice: content and primitive part -- a polynomial over Q is held once, as a fraction times its primitive part
+// checker-q.6 cited-checked: monagan-2011 §2.3 -- rational arithmetic does about ten times the integer operations; fraction-free algorithms scale fractions to a common denominator
+// checker-q.11 cited-checked: brickenstein-2010 §4 -- over Q coefficients are kept in Z, and the content is extracted from an element used to reduce others
+// checker-q.18 practice-checked: content and primitive part -- a polynomial over Q is held once, as a fraction times its primitive part
 /// A polynomial over Q, (num/den)·r. r is an integer polynomial whose
 /// coefficients have no common factor and whose leading coefficient is
 /// positive, its primitive part. num/den is in lowest terms and den > 0. The
@@ -134,7 +134,7 @@ impl Numbers for Rationals {
         Some(())
     }
 
-    // checker-q.15 design -- a term's coefficient is read as a fraction, and the polynomial is brought over one denominator when it ends (not measured)
+    // checker-q.15 design-checked -- a term's coefficient is read as a fraction, and the polynomial is brought over one denominator when it ends (not measured)
     fn push(&self, terms: &mut Terms, m: &[u32], c: Fraction, negative: bool, poll: &mut Poll) {
         let Fraction { mut n, mut d } = c;
         if n.is_zero() {

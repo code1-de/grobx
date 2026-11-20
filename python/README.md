@@ -5,6 +5,10 @@ GF(p), p a prime below 2^64, and over the rationals ℚ. This is its Python
 module. It takes the ideal's generators as text and returns the basis as
 text.
 
+Over ℚ and over GF(p), grobx is 4× faster than Maple and msolve.
+[grobx.com/benchmarks.html](https://grobx.com/benchmarks.html) gives the time and memory of every
+instance.
+
 The package is a wheel for Linux on x86-64 and CPython 3.12 and later.
 
 ## Install
@@ -44,7 +48,7 @@ grobx.groebner(text, *, order="grevlex", threads=0, seed=None, deadline=None, ca
 
 | Keyword | Meaning |
 |---|---|
-| `order` | `"grevlex"`, `"lex"`, or `"block:k1,…,km"`: grevlex blocks of k1, …, km variables and a last block of the rest |
+| `order` | `"grevlex"`, `"deglex"`, `"lex"`, or `"block:k1,…,km"`: grevlex blocks of k1, …, km variables and a last block of the rest |
 | `threads` | How many threads the call may use, 0 for all; the engine computes on one |
 | `seed` | The one source of every random choice, 0 to 2^64 − 1; `None` draws one |
 | `deadline` | A time limit on the whole call, in milliseconds |

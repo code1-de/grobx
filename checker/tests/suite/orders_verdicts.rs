@@ -5,13 +5,11 @@
 //! order that is not degree compatible, the cheap mode's degree bound, and
 //! matrices of grevlex and lex giving those orders' verdicts.
 
-use std::num::NonZeroU32;
-
 use grobx_checker::{
     Error, Flaw, Mode, Order, Part, Verdict, check, check_cofactors, check_polled,
 };
 
-use crate::common::{Case, quadrics, random_system, random_system_q};
+use crate::common::{Case, cheap, quadrics, random_system, random_system_q};
 use crate::orders::{
     Jl, accept_and_reject_in, grevlex_matrix, grevlex_matrix_nonnegative, lex_matrix,
     lex_matrix_heavy, same_verdicts, solved_in, solved_permuted, variables,
@@ -28,13 +26,6 @@ const TRUE3: [(&str, &str, &str); 2] = [
     ("x,y,z\n65521\nx\n", "[x]:\n", "[[1]]:\n"),
     ("x,y,z\n0\nx\n", "[x]:\n", "[[1]]:\n"),
 ];
-
-fn cheap(k: u32, seed: u64) -> Mode {
-    Mode::Cheap {
-        points: NonZeroU32::new(k).expect("k is at least 1"),
-        seed,
-    }
-}
 
 /// The exact verdict; an error fails the test.
 fn verdict(instance: &str, basis: &str, cofactors: &str, order: &Order) -> Verdict {

@@ -17,23 +17,25 @@ use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
-use crate::cofactors::{Cofactors, NoCofactors, Tracked};
-use crate::f4::{self, Elements, Halt};
+use crate::call_stop_sites_tests::Case;
+#[cfg(feature = "cofactors")]
+use crate::cofactors::Tracked;
+use crate::cofactors::{Cofactors, NoCofactors};
+use crate::f4;
 use crate::fglm::{self, Staircase};
 use crate::field::{Field, Gf31};
+use crate::halt::Halt;
 use crate::id::MonoId;
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::{Block, Grevlex, Lex, Order};
-use crate::poly::Poly;
+use crate::poly::{Elements, Poly};
+use crate::shared_tests::RANDOM_PRIMES;
 use crate::systems::{dense, random_square, random_system};
 use crate::table::Table;
-use crate::text::{Header, write_basis};
+use crate::text::{Header, Unread, write_basis};
 use crate::trace::{NoLearner, NoTrace};
-use crate::{Cancel, MonomialOrder, Params, Stats, Stop, Threads};
-
-/// The primes of the random systems.
-pub(crate) const PRIMES: [u64; 5] = [2, 3, 7, 65521, 2_147_483_647];
+use crate::{Cancel, MonomialOrder, Params, Stats, Stop, Threads, groebner};
 
 /// Seeds per prime and generator.
 const SEEDS: u64 = 20;
@@ -63,7 +65,7 @@ struct Call {
 
 impl Call {
     fn new(text: &str) -> Call {
-        let header = Header::read(text).unwrap();
+        let header = Header::read(text, &mut Budget::unbounded()).unwrap();
         let field = header.gf31().unwrap();
         let n = header.names.len();
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(1);
@@ -85,9 +87,15 @@ impl Call {
 
     /// The generators in `order`.
     fn generators<O: Order<Dense16>>(&mut self, order: &O) -> Vec<Poly<Gf31, Rank1>> {
-        let header = Header::read(&self.text).unwrap();
+        let header = Header::read(&self.text, &mut Budget::unbounded()).unwrap();
         header
-            .generators(&self.field, &mut self.table, order)
+            .generators(
+                &self.field,
+                &mut self.table,
+                order,
+                &mut Budget::unbounded(),
+            )
+            .map_err(Unread::unbounded)
             .unwrap()
     }
 
@@ -207,7 +215,7 @@ impl Call {
 
 /// The monomial with these exponents, interned.
 fn monomial(call: &mut Call, e: &[u32]) -> MonoId {
-    call.table.intern(e).unwrap()
+    call.table.intern(e, &mut Budget::unbounded()).unwrap()
 }
 
 #[test]
@@ -224,11 +232,13 @@ fn zero_dimensional_by_the_pure_powers() {
     for &(leads, want) in cases {
         let mut call = Call::new("x,y\n65521\nx\n");
         let ids: Vec<MonoId> = leads.iter().map(|e| monomial(&mut call, e)).collect();
-        assert_eq!(fglm::zero_dimensional(&call.table, &ids), want, "{leads:?}");
+        let got = fglm::zero_dimensional(&call.table, &ids, &mut Budget::unbounded())
+            .expect("a budget without bounds never stops");
+        assert_eq!(got, want, "{leads:?}");
     }
 }
 
-// fglm-lex.23 cited: bigatti-2025 Example 38, Example 41, Example 46, and §2.7 -- a staircase and its border, two multiplication matrices over GF(101), and a DRL basis changed to lex, each printed with every coefficient
+// fglm-lex.23 design-checked -- the unit tests take bigatti-2025's printed cases, Example 38's staircase and border, Example 46's multiplication matrices over GF(101), and §2.7's lex basis, not cases computed by hand for the tests (log 0012-1)
 /// bigatti-2025 Examples 38 and 41: the staircase and the border of
 /// G = {xy² − y, y⁴ − x², x³ − y³} in `DegRevLex` over GF(101).
 #[test]
@@ -400,7 +410,7 @@ fn hand_computed_changes() {
 /// The instances of the round trips and the comparisons.
 fn systems() -> Vec<(String, String)> {
     let mut list = Vec::new();
-    for p in PRIMES {
+    for p in RANDOM_PRIMES {
         for seed in 0..SEEDS {
             list.push((format!("square-p{p}-{seed}"), random_square(p, seed)));
             list.push((format!("random-p{p}-{seed}"), random_system(p, seed)));
@@ -515,6 +525,7 @@ fn the_division_multiplied_out() {
 
 /// With `Tracked`, the lifted cofactors of the changed basis express it in
 /// the instance's generators, and the checker accepts the result in lex.
+#[cfg(feature = "cofactors")]
 #[test]
 fn the_lifted_cofactors() {
     let mut cases: Vec<(String, String)> = [
@@ -532,7 +543,7 @@ fn the_lifted_cofactors() {
     for m in [2, 3] {
         cases.push((format!("cubic-{m}"), dense(m, 3, 65521, m as u64)));
     }
-    for p in PRIMES {
+    for p in RANDOM_PRIMES {
         for seed in 0..10 {
             cases.push((format!("square-p{p}-{seed}"), random_square(p, seed)));
         }
@@ -612,5 +623,27 @@ fn a_cancel_stops_the_change() {
         matches!(got, Err(Halt::Stop(Stop::Cancel))),
         "{got:?}",
         got = got.map(|e| e.len())
+    );
+}
+
+/// A zero-dimensional call in lex whose staircase of 65536 monomials passes `MAX_STAIRCASE`,
+/// in `Dense32` after `Dense16`'s degree bound: the call report says `past-bound`, and the call
+/// gives the basis without the change.
+#[test]
+fn a_call_past_the_staircase_bound() {
+    let mut case = Case::new("x,y\n65521\nx^256,\ny^256\n", "lex", false);
+    case.params.report = true;
+    let outcome = groebner(&case.text, &case.params).expect("the call");
+    let report = outcome.report.as_deref().expect("the call report");
+    assert!(
+        report
+            .lines()
+            .any(|l| l.contains(" fglm verdict=past-bound")),
+        "{report}"
+    );
+    assert_eq!(
+        outcome.basis.as_deref(),
+        Some("[y^256,\nx^256]:\n"),
+        "{report}"
     );
 }

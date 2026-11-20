@@ -13,20 +13,20 @@
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::band_tests::{PRIMES, Random, budget, passed_after};
+use crate::band_tests::{PRIMES, Random};
+use crate::budget::Budget;
 use crate::cofactors::NoCofactors;
-use crate::f4::Halt;
 use crate::field::{Field, Gf31, Gf31Pair, Gf64, Gf64Pair};
-use crate::id::{ElementId, MonoId, RowId};
+use crate::halt::Halt;
+use crate::id::{ElementId, MonoId, RowId, RowSource};
 use crate::matrix::{self, Buffers, Combine, Reduction, Scan};
 use crate::module::Rank1;
-use crate::modulus_tests::{L1, L2, W1, W2};
 use crate::monomial::{Dense16, Format};
 use crate::order::Grevlex;
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::{L1, L2, W1, W2, budget, passed_after};
 use crate::signature_zero_tests::{Made, Round, failing, made};
 use crate::table::Table;
-use crate::trace::RowSource;
 
 /// The three scans; the first, the dense scan of every column, is what
 /// the others are compared with.
@@ -62,6 +62,7 @@ fn assert_plain_scans_agree(m: &Random, combine: bool, full: bool, case: &str) {
             full,
             combine.then_some(&mut combination),
             &mut buffers(scan),
+            None,
             None,
         ))
     });
@@ -140,6 +141,7 @@ fn assert_round_scans_agree<F: Field>(field: F, seeds: u64, tests: bool) {
                     None,
                     &mut buffers(scan),
                     None,
+                    None,
                 ))
             });
             assert_eq!(outcomes[1], outcomes[0], "{case}, matrix::reduce: marked");
@@ -186,7 +188,12 @@ fn chain(w: u32, c: u64, h: &[(u32, u64)]) -> (Gf31, Basis<Gf31, Rank1>, matrix:
     let mut poly = |terms: &[(u32, u64)]| {
         let mut terms: Vec<(MonoId, u32)> = terms
             .iter()
-            .map(|&(e, v)| (table.intern(&[e]).unwrap(), field.coef(v)))
+            .map(|&(e, v)| {
+                (
+                    table.intern(&[e], &mut Budget::unbounded()).unwrap(),
+                    field.coef(v),
+                )
+            })
             .collect();
         Poly::from_terms(&mut terms, &field, &table, &Grevlex, ())
     };
@@ -197,20 +204,19 @@ fn chain(w: u32, c: u64, h: &[(u32, u64)]) -> (Gf31, Basis<Gf31, Rank1>, matrix:
     let rows = vec![
         RowSource {
             element: ElementId::at(0),
-            multiplier: table.intern(&[w - 1]).unwrap(),
+            multiplier: table.intern(&[w - 1], &mut Budget::unbounded()).unwrap(),
         },
         RowSource {
             element: ElementId::at(1),
-            multiplier: table.intern(&[0]).unwrap(),
+            multiplier: table.intern(&[0], &mut Budget::unbounded()).unwrap(),
         },
     ];
     let matrix = matrix::build(
         &mut table,
         &basis,
         &Grevlex,
-        1,
         rows,
-        Vec::new(),
+        &mut Buffers::new(),
         &mut budget(),
     )
     .unwrap();
@@ -232,6 +238,7 @@ fn reduce_chain(
         false,
         None,
         &mut buffers(scan),
+        None,
         None,
     ))
 }
@@ -305,7 +312,7 @@ fn the_chosen_scan_turns() {
         let order = short[..100].iter().chain(&long).chain(&short[100..]);
         let (mut ba, mut bb) = (budget(), budget());
         for &r in order {
-            let lead = m.matrix.row(r)[0];
+            let lead = m.matrix.row(r).lead();
             let x = a.reduce::<Dense16, NoCofactors>(r, lead, &mut NoCofactors, &mut ba);
             let y = b.reduce::<Dense16, NoCofactors>(r, lead, &mut NoCofactors, &mut bb);
             let (x, y) = (x.unwrap(), y.unwrap());
@@ -315,8 +322,14 @@ fn the_chosen_scan_turns() {
                 "seed {seed}, row {r}"
             );
             if !x.cols.is_empty() {
-                assert!(a.keep::<Dense16, NoCofactors>(x, &mut NoCofactors));
-                assert!(b.keep::<Dense16, NoCofactors>(y, &mut NoCofactors));
+                assert!(
+                    a.keep::<Dense16, NoCofactors>(x, &mut NoCofactors, &mut Budget::unbounded())
+                        .expect("a budget without bounds never stops")
+                );
+                assert!(
+                    b.keep::<Dense16, NoCofactors>(y, &mut NoCofactors, &mut Budget::unbounded())
+                        .expect("a budget without bounds never stops")
+                );
             }
         }
     }
@@ -347,6 +360,7 @@ fn a_stopped_marked_reduction_leaves_nothing_behind() {
                 None,
                 &mut bufs,
                 None,
+                None,
             );
             if halted.is_err() {
                 stopped += 1;
@@ -361,6 +375,7 @@ fn a_stopped_marked_reduction_leaves_nothing_behind() {
                 None,
                 &mut bufs,
                 None,
+                None,
             ));
             let dense = outcome(matrix::reduce::<Gf31, Dense16, Rank1, NoCofactors>(
                 &m.field,
@@ -371,6 +386,7 @@ fn a_stopped_marked_reduction_leaves_nothing_behind() {
                 true,
                 None,
                 &mut buffers(Scan::Dense),
+                None,
                 None,
             ));
             assert_eq!(after, dense, "seed {seed}, {units} units");
@@ -394,7 +410,7 @@ fn the_lead_before_the_start() {
         let (mut b, _) = m.reducer_in(&mut dense);
         let (mut ba, mut bb) = (budget(), budget());
         for r in (0..m.matrix.given).map(RowId::at) {
-            let after = MonoId::at(m.matrix.row(r)[0].index() + 1);
+            let after = MonoId::at(m.matrix.row(r).lead().index() + 1);
             let x = a
                 .reduce::<Dense16, NoCofactors>(r, after, &mut NoCofactors, &mut ba)
                 .unwrap();
@@ -408,7 +424,7 @@ fn the_lead_before_the_start() {
             );
             assert_eq!(
                 x.cols[0],
-                m.matrix.row(r)[0],
+                m.matrix.row(r).lead(),
                 "seed {seed}, row {r}: the lead kept"
             );
         }

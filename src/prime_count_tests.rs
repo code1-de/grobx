@@ -7,19 +7,16 @@
 
 use grobx_checker::Order;
 use num_bigint::{BigInt, BigUint};
-use num_integer::Integer;
-use num_traits::One;
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::catch_up_tests::L1;
-use crate::chain_tests::{
-    EDGE, assert_accepted, basis, both_reports_as, generated, params, with_cofactors,
-};
-use crate::field::is_prime_64;
+use crate::call::built;
+use crate::chain_tests::{EDGE, assert_accepted, both_reports_as, generated};
 use crate::lift::{Replays, Report};
 use crate::mqrr_tests::of_bits;
-use crate::shortcut_tests::{image, product};
+use crate::shared_tests::{
+    L1, basis, drawn_coprime, image, lift_params, prime_from, product, with_cofactors,
+};
 use crate::{Outcome, Params};
 
 /// As `chain_tests::both_reports`, the replays alone: an attempt follows
@@ -27,17 +24,6 @@ use crate::{Outcome, Params};
 /// attempt once a pair (q-lift-rest-time.2).
 fn both(case: &str, text: &str, params: &Params, forced: &[u64]) -> (Outcome, Report, Report) {
     both_reports_as(case, text, params, forced, Replays::Alone)
-}
-
-/// A random odd integer of exactly `bits` bits prime to every one of
-/// `others`.
-pub(crate) fn coprime(rng: &mut Xoshiro256PlusPlus, bits: u64, others: &[&BigUint]) -> BigUint {
-    loop {
-        let x = of_bits(rng, bits) | BigUint::one();
-        if others.iter().all(|o| x.gcd(o).is_one()) {
-            return x;
-        }
-    }
 }
 
 /// q-prime-count-time.1, .5 to .7: one coefficient n/d whose numerator
@@ -49,11 +35,11 @@ pub(crate) fn coprime(rng: &mut Xoshiro256PlusPlus, bits: u64, others: &[&BigUin
 fn lopsided_rationals_take_fewer_primes() {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x10b5);
     for (bn, bd) in [(600, 31), (31, 600)] {
-        let d = coprime(&mut rng, bd, &[]);
-        let n = coprime(&mut rng, bn, &[&d]);
+        let d = drawn_coprime(&mut rng, bd, &[]);
+        let n = drawn_coprime(&mut rng, bn, &[&d]);
         let text = format!("x\n0\n{d}*x-{n}\n");
         let case = format!("n of {bn} bits, d of {bd}");
-        let (outcome, chain, wang) = both(&case, &text, &params(1), &[]);
+        let (outcome, chain, wang) = both(&case, &text, &lift_params(1), &[]);
         assert_eq!(basis(&outcome), format!("[{d}*x-{n}]:\n"), "{case}");
         assert!(chain.combined.len() <= 13, "{case}: {chain:?}");
         assert!(wang.combined.len() >= 20, "{case}: {wang:?}");
@@ -67,11 +53,11 @@ fn lopsided_rationals_take_fewer_primes() {
 #[test]
 fn the_chain_carries_an_elements_other_coefficients() {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0xc4a2);
-    let d = coprime(&mut rng, 400, &[]);
-    let a = coprime(&mut rng, 400, &[&d]);
-    let b = coprime(&mut rng, 400, &[&d]);
+    let d = drawn_coprime(&mut rng, 400, &[]);
+    let a = drawn_coprime(&mut rng, 400, &[&d]);
+    let b = drawn_coprime(&mut rng, 400, &[&d]);
     let text = format!("x,y,z\n0\n{d}*x+{a}*y+{b}*z\n");
-    let (outcome, chain, _) = both("the chain", &text, &params(2), &[]);
+    let (outcome, chain, _) = both("the chain", &text, &lift_params(2), &[]);
     assert_eq!(basis(&outcome), format!("[{d}*x+{a}*y+{b}*z]:\n"));
     assert_eq!(chain.reconstructed, chain.euclid + 1, "{chain:?}");
 }
@@ -90,21 +76,21 @@ fn the_chain_carries_an_elements_other_coefficients() {
 #[test]
 fn the_previous_elements_denominator() {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x9e55);
-    let d1 = coprime(&mut rng, 200, &[]);
-    let n1 = coprime(&mut rng, 200, &[&d1]);
-    let d2 = coprime(&mut rng, 200, &[&d1]);
+    let d1 = drawn_coprime(&mut rng, 200, &[]);
+    let n1 = drawn_coprime(&mut rng, 200, &[&d1]);
+    let d2 = drawn_coprime(&mut rng, 200, &[&d1]);
     let dd = &d1 * &d2;
-    let n2 = coprime(&mut rng, 400, &[&dd]);
+    let n2 = drawn_coprime(&mut rng, 400, &[&dd]);
     let text = format!("x,y\n0\n{dd}*x+{n2},\n{d1}*y+{n1}\n");
-    let (outcome, chain, wang) = both("the guess", &text, &params(3), &[]);
+    let (outcome, chain, wang) = both("the guess", &text, &lift_params(3), &[]);
     assert_eq!(basis(&outcome), format!("[{d1}*y+{n1},\n{dd}*x+{n2}]:\n"));
     assert!(chain.combined.len() <= 13, "{chain:?}");
     assert!(wang.combined.len() >= 14, "{wang:?}");
 
-    let d3 = coprime(&mut rng, 31, &[&d1]);
-    let n3 = coprime(&mut rng, 600, &[&d3]);
+    let d3 = drawn_coprime(&mut rng, 31, &[&d1]);
+    let n3 = drawn_coprime(&mut rng, 600, &[&d3]);
     let text = format!("x,y\n0\n{d3}*x+{n3},\n{d1}*y+{n1}\n");
-    let (outcome, chain, wang) = both("an unrelated guess", &text, &params(3), &[]);
+    let (outcome, chain, wang) = both("an unrelated guess", &text, &lift_params(3), &[]);
     assert_eq!(basis(&outcome), format!("[{d1}*y+{n1},\n{d3}*x+{n3}]:\n"));
     assert!(chain.combined.len() <= 13, "{chain:?}");
     assert!(wang.combined.len() >= 20, "{wang:?}");
@@ -121,11 +107,14 @@ fn the_previous_elements_denominator() {
 #[test]
 fn a_chain_denominator_past_the_modulus() {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0xde1e);
-    let d = coprime(&mut rng, 160, &[]);
-    let e = coprime(&mut rng, 60, &[&d]);
+    let d = drawn_coprime(&mut rng, 160, &[]);
+    let e = drawn_coprime(&mut rng, 60, &[&d]);
     let de = &d * &e;
     let text = format!("x,y,z\n0\n{de}*x+{e}*y+z\n");
-    for params in [params(4), with_cofactors(4)] {
+    for params in [lift_params(4), with_cofactors(4)] {
+        if built(&params).is_err() {
+            continue;
+        }
         let (outcome, chain, wang) = both("past the modulus", &text, &params, &[]);
         assert_eq!(basis(&outcome), format!("[{de}*x+{e}*y+z]:\n"));
         let most = if params.cofactors { 5 } else { 4 };
@@ -135,11 +124,6 @@ fn a_chain_denominator_past_the_modulus() {
             assert_accepted("past the modulus", &text, &outcome, &Order::Grevlex);
         }
     }
-}
-
-/// The least prime at or above n.
-fn prime_from(n: u64) -> u64 {
-    (n..).find(|&q| is_prime_64(q)).unwrap()
 }
 
 /// q-prime-count-time.1, .2, q-rational-time.10: a chain's last that p
@@ -180,7 +164,7 @@ fn a_chain_denominator_that_a_prime_of_m_divides() {
         let e = of_bits(&mut rng, bits);
         let text = format!("y,z,w\n0\ny+{c}*z+{e}*w\n");
         let case = format!("e of {bits} bits");
-        let (outcome, chain, _) = both(&case, &text, &params(6), &[L1, p1, p2, p3, p4, p5]);
+        let (outcome, chain, _) = both(&case, &text, &lift_params(6), &[L1, p1, p2, p3, p4, p5]);
         assert_eq!(basis(&outcome), format!("[y+{c}*z+{e}*w]:\n"), "{case}");
         assert_eq!(
             chain.combined[..5],
@@ -201,7 +185,7 @@ fn the_threshold_at_one_prime() {
     for (c, primes) in [((1u64 << 44) - 1, 2), ((1u64 << 46) + 1, 3)] {
         let text = format!("x\n0\nx-{c}\n");
         let case = format!("x − {c}");
-        let (outcome, chain, wang) = both(&case, &text, &params(5), &[]);
+        let (outcome, chain, wang) = both(&case, &text, &lift_params(5), &[]);
         assert_eq!(basis(&outcome), format!("[x-{c}]:\n"), "{case}");
         assert_eq!(chain.combined.len(), primes, "{case}: {chain:?}");
         assert!(wang.combined.len() >= 3, "{case}: {wang:?}");
@@ -217,7 +201,10 @@ fn the_threshold_at_one_prime() {
 fn generated_systems_through_both_lifts() {
     let (mut ours, mut theirs) = (0, 0);
     for (case, text) in generated() {
-        for (params, cofactors) in [(params(7), false), (with_cofactors(7), true)] {
+        for (params, cofactors) in [(lift_params(7), false), (with_cofactors(7), true)] {
+            if built(&params).is_err() {
+                continue;
+            }
             let (outcome, chain, wang) = both(&case, &text, &params, &[]);
             if cofactors {
                 assert_accepted(&case, &text, &outcome, &Order::Grevlex);
@@ -236,6 +223,10 @@ fn generated_systems_through_both_lifts() {
 /// `OBJECTIVES.md`'s edge cases over Q with cofactors, through both
 /// lifts: one outcome, and the checker accepts in the exact mode.
 #[test]
+#[cfg_attr(
+    not(feature = "cofactors"),
+    ignore = "the build leaves out the cofactors"
+)]
 fn the_edge_cases() {
     for (case, text) in EDGE {
         let (outcome, _, _) = both(case, text, &with_cofactors(8), &[]);

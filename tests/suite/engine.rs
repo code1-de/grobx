@@ -4,9 +4,7 @@
 
 use grobx::{Error, MonomialOrder};
 
-use crate::common::{P, PRIMES, basis, dense, msolve, params, random_system, run, sha256};
-
-const TINY: &str = "x,y\n65521\nx^2+y,\nx*y+1\n";
+use crate::common::{P, PRIMES, TINY, basis, dense, msolve, params, random_system, run, sha256};
 
 #[test]
 fn the_tiny_instance() {
@@ -166,7 +164,7 @@ fn a_coprime_pair_past_the_format() {
 #[test]
 fn what_the_engine_refuses() {
     let order = |name: &str| name.parse::<MonomialOrder>();
-    assert!(matches!(order("deglex"), Err(Error::Order { .. })));
+    assert!(matches!(order("degneglex"), Err(Error::Order { .. })));
     assert!(matches!(order("degrevlex"), Err(Error::Order { .. })));
     // 0, Q, is taken since q-lift; 4 is composite, and 2^31 is no prime.
     for p in ["4", "2147483648"] {

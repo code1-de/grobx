@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use grobx_cli::{Command, ERROR, Input, Run, Usage};
 
-// small-block-time.4 design -- the CLI sets the crate's allocator as its global allocator, not the crate setting it for every program that links it (not measured)
+// small-block-time.4 design-checked -- the CLI sets the crate's allocator as its global allocator, not the crate setting it for every program that links it (not measured)
 #[global_allocator]
 static GLOBAL: grobx::Allocator = grobx::Allocator;
 
@@ -29,7 +29,7 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
-// cli.15 practice: GNU error message format -- every message to standard error is one line, grobx: and the message, not the message alone
+// cli.15 practice-checked: GNU error message format -- every message to standard error is one line, grobx: and the message, not the message alone
 /// Writes `grobx: `, `message`, and a line feed to standard error, and
 /// ignores a failure to write there.
 fn say(message: &str) {
@@ -86,22 +86,25 @@ fn execute(mut run: Run) -> u8 {
         say(&format!("{name}: the instance is not UTF-8"));
         return ERROR;
     };
-    // cli.21 design -- the watch starts once the instance is read, and SIGINT's default action ends a process that waits on its input, not the watch first in main with a SIGINT during the read held for the call (not measured)
+    // cli.21 design-checked -- the watch starts once the instance is read, and SIGINT's default action ends a process that waits on its input, not the watch first in main with a SIGINT during the read held for the call (not measured)
     let cancel = grobx::Cancel::new();
     if let Err(e) = interrupt::watch(&cancel) {
         say(&format!("SIGINT: {e}"));
         return ERROR;
     }
-    // cli.17 design -- the output files are created after the instance is read and before the call, not after the call (not measured)
+    // cli.17 design-checked -- the output files are created after the instance is read and before the call, not after the call (not measured)
     let Ok(output) = create(run.output.as_deref()) else {
         return ERROR;
     };
     let Ok(cofactors) = create(run.cofactors.as_deref()) else {
         return ERROR;
     };
-    // call-report.25 design -- the report's file is created with the other output files before the call (cli.17), not created after the call returns an outcome (not measured)
-    // error-report.2 design -- where the call returns an error, the report's file stays, ending in the error line, not removed (not measured)
+    // call-report.25 design-checked -- the report's file is created with the other output files before the call (cli.17), not created after the call returns an outcome (not measured)
+    // error-report.2 design-checked -- where the call returns an error, the report's file stays, ending in the error line, not removed (not measured)
     let Ok(report) = create(run.report.as_deref()) else {
+        return ERROR;
+    };
+    let Ok(regular) = regular(report.as_ref().zip(run.report.as_deref())) else {
         return ERROR;
     };
     if run.drawn {
@@ -123,7 +126,7 @@ fn execute(mut run: Run) -> u8 {
     run.params.cancel = Some(cancel);
     let outcome = match grobx::groebner(&text, &run.params) {
         Ok(outcome) => outcome,
-        // cli.16 design -- an error the crate returns is written as the input's name and the error's Display, not with the error's variant first (not measured)
+        // cli.16 practice-checked: GNU error message format (program: file: message) -- an error the crate returns is written as the input's name and the error's Display, not with the error's variant first (not measured)
         Err(e) => {
             say(&format!("{name}: {e}"));
             return ERROR;
@@ -143,11 +146,24 @@ fn execute(mut run: Run) -> u8 {
     {
         return ERROR;
     }
-    // Written whole again: a write the sink lost is in the outcome's text.
+    // silent-fallbacks.6 design-checked -- a line the sink lost is said before a regular file is written whole again, and the exit status stays the call's where that succeeds, not exit status 2 at once, nor silence where the rewrite succeeds, nor a writer of the CLI's own that says it at the failed write
+    if let (Some(path), Some(e)) = (&run.report, &outcome.sink_error) {
+        say(&format!("{path}: {e}", path = path.display()));
+    }
+    // cli-report-device.1 design-checked -- a report file that is no regular file keeps the lines the sink streamed to it, and nothing follows its end line, not the report written whole again after them, since a device or a pipe cannot be truncated, nor one write at the call's end alone, which a reader that watches the call would wait on
+    // cli-report-device.2 design-checked -- a line lost on such a file exits 2, the report there being incomplete and beyond repair, not the call's exit status with the loss said alone
+    // Only where the sink lost a line: the streamed file holds every line else, and the `alloc`
+    // lines, which the sink alone takes, would be lost to a rewrite from the outcome's text.
     if let (Some(file), Some(path), Some(text)) = (&report, &run.report, &outcome.report)
-        && rewrite(file, path, &(grobx_cli::header(&run) + text)).is_err()
+        && outcome.sink_error.is_some()
     {
-        return ERROR;
+        if !regular {
+            return ERROR;
+        }
+        // Written whole again: a write the sink lost is in the outcome's text.
+        if rewrite(file, path, &(grobx_cli::header(&run) + text)).is_err() {
+            return ERROR;
+        }
     }
     if let Some(line) = grobx_cli::diagnostic(&outcome) {
         say(&line);
@@ -160,6 +176,19 @@ fn execute(mut run: Run) -> u8 {
 fn create(path: Option<&Path>) -> Result<Option<File>, ()> {
     let Some(path) = path else { return Ok(None) };
     File::create(path).map(Some).map_err(|e| {
+        say(&format!("{path}: {e}", path = path.display()));
+    })
+}
+
+// cli-report-device.3 practice-checked: TOCTOU avoidance (fstat of the open file, not stat of the path) -- the report file's kind is read from the open file's metadata, not from fs::metadata or symlink_metadata of the path, which can be replaced between the check and the write, and whose link's own kind is not the file's
+/// Whether the report file is a regular file, which the CLI writes whole
+/// again after the call; false where there is none. `Err` once it has
+/// said why the kind could not be read.
+fn regular(report: Option<(&File, &Path)>) -> Result<bool, ()> {
+    let Some((file, path)) = report else {
+        return Ok(false);
+    };
+    file.metadata().map(|m| m.is_file()).map_err(|e| {
         say(&format!("{path}: {e}", path = path.display()));
     })
 }

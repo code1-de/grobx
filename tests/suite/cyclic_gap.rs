@@ -6,31 +6,10 @@
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, assert_accepted, params, params_in, random_square, run, with_cofactors,
+    EDGE_BASES, P, P31, assert_accepted, params, params_in, random_square, run, with_cofactors,
 };
 use crate::orders::{accepted_in, assert_canonical};
 use crate::q::accepted_q;
-
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name, generators, and the
-/// basis over GF(65521) in grevlex, as `plain_reduction_time.rs` writes
-/// them.
-const EDGE: [(&str, &str, &str); 7] = [
-    ("the zero ideal", "0", "[]:\n"),
-    ("F = (0, 0)", "0,\n0", "[]:\n"),
-    ("no generator", "", "[]:\n"),
-    ("the unit ideal", "x*z-1,\nx", "[1]:\n"),
-    ("already a Gröbner basis", "x+z,\nz^2+1", "[x+z,\nz^2+1]:\n"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-        "[y^2+65520*x,\nx*y+65520*z,\nx^2+65520*y*z]:\n",
-    ),
-    (
-        "an eliminable variable",
-        "x-y^2-z,\ny*z-1,\nz^2-y",
-        "[x+65519*z,\nz^2+65520*y,\ny*z+65520,\ny^2+65520*z]:\n",
-    ),
-];
 
 /// Test 5: the edge cases over 65521, 7, 2^31 − 1, and ℚ in grevlex,
 /// signatures off and on. Over 7 each row is reduced on its own, from
@@ -40,7 +19,7 @@ const EDGE: [(&str, &str, &str); 7] = [
 /// is the accepted one of `accepted_q`.
 #[test]
 fn the_edge_cases() {
-    for (case, generators, want) in EDGE {
+    for (case, generators, want) in EDGE_BASES {
         for p in [P, 7, P31] {
             let text = format!("x,y,z\n{p}\n{generators}\n");
             for signatures in [false, true] {
@@ -80,7 +59,7 @@ fn the_edge_cases() {
 /// the exact mode.
 #[test]
 fn outside_grevlex() {
-    // test-mq-systems.12 design -- a call that F4 runs in block:2 takes the random square system of degrees 2, 3, and 2, where the map's dense cubic one on three variables runs for seconds (log 0084-3)
+    // test-mq-systems.12 design-checked -- a call that F4 runs in block:2 takes the random square system of degrees 2, 3, and 2, where the map's dense cubic one on three variables runs for seconds (log 0084-3)
     let text = random_square(P, 27);
     for order in ["lex", "block:2"] {
         let name = format!("square-27-p65521 in {order}");

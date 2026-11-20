@@ -7,66 +7,26 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use std::collections::HashSet;
-use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use rand_core::{Rng, SeedableRng};
-use rand_xoshiro::Xoshiro256PlusPlus;
+use rand_core::Rng;
 
-use crate::budget::{Budget, WORK};
+use crate::band_tests::setup_units;
+use crate::budget::{Budget, Site, WORK};
 use crate::cofactors::NoCofactors;
-use crate::f4::Halt;
-use crate::field::{Field, Gf31};
-use crate::id::{MonoId, RowId};
-use crate::matrix::{
-    self, Buffers, Combine, Matrix, RUN, Reduced, Reduction, by_signature, sort_decreasing,
-    sort_runs,
-};
+use crate::field::{BAND, Field, Gf31};
+use crate::halt::Halt;
+use crate::id::{MonoId, RowId, RowSource};
+use crate::matrix::{self, Buffers, Combine, Matrix, Reduced, Reduction};
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::{Block, Grevlex, Lex, Order};
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::{budget, monomials, params, passed, passed_after, rng};
 use crate::sig::Sig;
+use crate::sort::{RUN, by_signature, sort_decreasing, sort_runs};
 use crate::table::Table;
-use crate::trace::RowSource;
-use crate::{Cancel, MonomialOrder, Params, Stop, Threads};
-
-fn params() -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    )
-}
-
-/// A budget with no bound.
-fn generous() -> Budget {
-    Budget::new(Instant::now(), &params()).unwrap()
-}
-
-/// A budget whose deadline passed before the test began, and which has not
-/// been checked.
-fn passed() -> Budget {
-    let mut p = params();
-    p.deadline = Some(Duration::from_millis(1));
-    Budget::new(
-        Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
-        &p,
-    )
-    .unwrap()
-}
-
-/// `passed` with `units` of work between two full checks.
-fn passed_after(units: u64) -> Budget {
-    let mut b = passed();
-    b.set_work(units);
-    b
-}
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
+use crate::{Cancel, Stop};
 
 /// Test 1, matrix-stop-latency.1 and .2: a full check comes once the units
 /// spent since the last reach the units per check, or 64 ticks have passed;
@@ -75,48 +35,48 @@ fn rng(seed: u64) -> Xoshiro256PlusPlus {
 fn the_budget_spends() {
     assert_eq!(WORK, 1 << 23);
     let cancel = Cancel::new();
-    let mut p = params();
+    let mut p = params(1);
     p.cancel = Some(cancel.clone());
     let mut b = Budget::new(Instant::now(), &p).unwrap();
     b.set_work(100);
 
     for units in [1, 0, 98] {
-        b.spend(units).unwrap();
+        b.spend(units, Site::Row).unwrap();
     }
     assert_eq!(b.checks(), 0, "99 units make no check");
-    b.spend(1).unwrap();
+    b.spend(1, Site::Row).unwrap();
     assert_eq!(b.checks(), 1, "the 100th unit checks, and the flag is down");
-    b.spend(99).unwrap();
+    b.spend(99, Site::Row).unwrap();
     assert_eq!(b.checks(), 1, "99 more units make none");
-    b.spend(1).unwrap();
+    b.spend(1, Site::Row).unwrap();
     assert_eq!(b.checks(), 2);
-    b.spend(1000).unwrap();
+    b.spend(1000, Site::Row).unwrap();
     assert_eq!(b.checks(), 3, "a spend far past what is left checks once");
 
     // Ticks and units share their check, and one check resets both.
     for _ in 0..63 {
-        b.tick().unwrap();
+        b.tick(Site::Row).unwrap();
     }
-    b.spend(99).unwrap();
+    b.spend(99, Site::Row).unwrap();
     assert_eq!(b.checks(), 3, "63 ticks and 99 units");
-    b.tick().unwrap();
+    b.tick(Site::Row).unwrap();
     assert_eq!(b.checks(), 4, "the 64th tick");
-    b.spend(99).unwrap();
+    b.spend(99, Site::Row).unwrap();
     for _ in 0..63 {
-        b.tick().unwrap();
+        b.tick(Site::Row).unwrap();
     }
     assert_eq!(b.checks(), 4, "the tick's check reset the units");
 
     // With the flag raised, the 100th unit stops the budget.
     cancel.set();
-    assert_eq!(b.spend(1), Err(Stop::Cancel));
+    assert_eq!(b.spend(1, Site::Row), Err(Stop::Cancel));
     assert_eq!(b.spent(), 1 + 98 + 1 + 99 + 1 + 1000 + 99 + 99 + 1);
 
     // A budget from `new` checks at `WORK` units, and not one before.
-    let mut b = generous();
-    b.spend(WORK as usize - 1).unwrap();
+    let mut b = budget();
+    b.spend(WORK as usize - 1, Site::Row).unwrap();
     assert_eq!(b.checks(), 0);
-    b.spend(1).unwrap();
+    b.spend(1, Site::Row).unwrap();
     assert_eq!(b.checks(), 1);
 }
 
@@ -143,11 +103,11 @@ impl Dense {
         let mut lower = Vec::new();
         for d in 0..D {
             for a in 0..=d {
-                lower.push(table.intern(&[a, d - a]).unwrap());
+                lower.push(table.intern(&[a, d - a], &mut Budget::unbounded()).unwrap());
             }
         }
         let leads: Vec<MonoId> = (0..=D)
-            .map(|a| table.intern(&[a, D - a]).unwrap())
+            .map(|a| table.intern(&[a, D - a], &mut Budget::unbounded()).unwrap())
             .collect();
         let mut basis = Basis::new();
         let mut elements = Vec::new();
@@ -163,11 +123,16 @@ impl Dense {
                 "g_{a} leads with x^{a}·y^{b}",
                 b = D - a as u32
             );
-            elements.push(basis.push_min(&table, g).unwrap());
+            elements.push(
+                basis
+                    .push_min(&table, g, &mut Budget::unbounded())
+                    .unwrap()
+                    .id,
+            );
         }
         assert_eq!(basis.min().len(), D as usize + 1);
-        let x = table.intern(&[1, 0]).unwrap();
-        let y = table.intern(&[0, 1]).unwrap();
+        let x = table.intern(&[1, 0], &mut Budget::unbounded()).unwrap();
+        let y = table.intern(&[0, 1], &mut Budget::unbounded()).unwrap();
         let mut given = Vec::new();
         for a in 0..D as usize {
             given.push(RowSource {
@@ -192,9 +157,8 @@ impl Dense {
             &mut self.table,
             &self.basis,
             &Grevlex,
-            1,
             self.given.clone(),
-            Vec::new(),
+            &mut Buffers::new(),
             budget,
         )
     }
@@ -216,12 +180,16 @@ impl Dense {
             combine,
             &mut Buffers::new(),
             None,
+            None,
         )
     }
 
     /// The inter-reduction's matrix: `G_min`'s elements as given rows.
     fn inter_matrix(&mut self, budget: &mut Budget) -> Result<Matrix, Halt> {
-        let one = self.table.intern(&[0, 0]).unwrap();
+        let one = self
+            .table
+            .intern(&[0, 0], &mut Budget::unbounded())
+            .unwrap();
         let rows = self
             .basis
             .min()
@@ -235,21 +203,29 @@ impl Dense {
             &mut self.table,
             &self.basis,
             &Grevlex,
-            2,
             rows,
-            Vec::new(),
+            &mut Buffers::new(),
             budget,
         )
     }
 
-    fn inter_reduce(&self, m: &Matrix, budget: &mut Budget) -> Result<Vec<Reduced<Gf31>>, Stop> {
+    /// The inter-reduction of `m`, from buffers that allow it bands where
+    /// `bands` says.
+    fn inter_reduce(
+        &self,
+        m: &Matrix,
+        bands: bool,
+        budget: &mut Budget,
+    ) -> Result<Vec<Reduced<Gf31>>, Stop> {
+        let mut bufs = Buffers::new();
+        bufs.bands = bands;
         matrix::inter_reduce::<Gf31, Dense16, Rank1, NoCofactors>(
             &self.field,
             &self.basis,
             m,
             &mut NoCofactors,
             budget,
-            &mut Buffers::new(),
+            &mut bufs,
         )
     }
 }
@@ -271,18 +247,21 @@ fn longest(m: &Matrix) -> u64 {
         .unwrap() as u64
 }
 
-/// Test 2, matrix-stop-latency.1, .3, .5, and .8: with a deadline passed
-/// and unchecked, and 4,096 units a check, the build stops at its first
-/// row's products, and each reduction inside the first row it reduces;
-/// the back-substitution and the inter-reduction stop inside their work.
-/// Generous, each returns its result.
+/// Test 2, matrix-stop-latency.1, .3, .5, and call-stop-latency.53, .54:
+/// with a deadline passed and unchecked, and 4,096 units a check, the
+/// build stops at its first row's products, and each reduction, with its
+/// setup's units more a check, within a scan of its width or a band's
+/// spend past them; the back-substitution and the inter-reduction stop
+/// inside their work,
+/// the inter-reduction in bands within a band's spend of the check
+/// (row-traffic-time.12). Generous, each returns its result.
 #[test]
 fn a_round_matrix_stops_inside_its_work() {
     const T: u64 = 4096;
     let mut dense = Dense::new();
 
     // The build: fewer than 64 reducer rows, so no tick checks.
-    let mut b = generous();
+    let mut b = budget();
     let m = dense.build(&mut b).unwrap();
     let reducers = m.rows.len() - m.given;
     assert_eq!(m.given, 2 * D as usize);
@@ -301,23 +280,32 @@ fn a_round_matrix_stops_inside_its_work() {
     );
 
     // The reductions, with combinations and without.
-    let mut b = generous();
+    let mut b = budget();
     let exact = dense.reduce(&m, true, None, &mut b).unwrap();
     let exact_spent = b.spent();
-    let mut b = generous();
+    let mut b = budget();
     let combined = dense
         .reduce(&m, true, Some(&mut Combine::new(1)), &mut b)
         .unwrap();
     let combined_spent = b.spent();
     assert_eq!(rows(&combined.made), rows(&exact.made));
     assert!(!exact.made.is_empty());
-    let bound = T + longest(&m);
-    for (name, total, combine) in [
-        ("row by row", exact_spent, None),
-        ("combinations", combined_spent, Some(Combine::new(1))),
+    // The setup's units (`band_tests::setup_units`), then T, then at most a
+    // scan of the matrix's width, or with combinations a band's fill or
+    // sweep (call-stop-latency.16, .51, .53).
+    let setup = setup_units(&m);
+    for (name, total, combine, most) in [
+        ("row by row", exact_spent, None, m.columns()),
+        (
+            "combinations",
+            combined_spent,
+            Some(Combine::new(1)),
+            BAND * m.columns(),
+        ),
     ] {
+        let bound = setup + T + most as u64;
         let mut combine = combine;
-        let mut b = passed_after(T);
+        let mut b = passed_after(setup + T);
         assert_eq!(
             dense.reduce(&m, true, combine.as_mut(), &mut b).err(),
             Some(Halt::Stop(Stop::Deadline)),
@@ -333,7 +321,7 @@ fn a_round_matrix_stops_inside_its_work() {
 
     // The back-substitution: the forward reduction spends F, and with F + 64
     // units a check the stop comes after it.
-    let mut b = generous();
+    let mut b = budget();
     let forward = dense.reduce(&m, false, None, &mut b).unwrap();
     let f = b.spent();
     assert!(exact_spent > f + 64, "the back-substitution spends");
@@ -346,19 +334,27 @@ fn a_round_matrix_stops_inside_its_work() {
     assert!(b.spent() > f, "the stop came in the back-substitution");
     assert!(b.spent() <= f + 64 + longest(&m));
 
-    // The inter-reduction.
-    let mut b = generous();
+    // The inter-reduction, one row at a time and in bands, whose dense rows
+    // take them (back-substitution-time.5, .6).
+    let mut b = budget();
     let inter = dense.inter_matrix(&mut b).unwrap();
-    let mut b = generous();
-    let reduced = dense.inter_reduce(&inter, &mut b).unwrap();
-    assert_eq!(reduced.len(), D as usize + 1);
-    let total = b.spent();
-    let mut b = passed_after(T);
-    assert_eq!(
-        dense.inter_reduce(&inter, &mut b).err(),
-        Some(Stop::Deadline)
-    );
-    assert!(b.spent() <= T + longest(&inter) && 4 * T < total);
+    for (bands, rows) in [(false, 1), (true, BAND as u64)] {
+        let mut b = budget();
+        let reduced = dense.inter_reduce(&inter, bands, &mut b).unwrap();
+        assert_eq!(reduced.len(), D as usize + 1, "bands {bands}");
+        let total = b.spent();
+        let mut b = passed_after(T);
+        assert_eq!(
+            dense.inter_reduce(&inter, bands, &mut b).err(),
+            Some(Stop::Deadline),
+            "bands {bands}"
+        );
+        assert!(
+            b.spent() <= T + rows * longest(&inter) && 4 * T < total,
+            "bands {bands}: {spent} spent before the stop, {total} in all",
+            spent = b.spent()
+        );
+    }
 }
 
 /// `n` distinct values in a random order.
@@ -372,34 +368,11 @@ fn shuffled(n: usize, seed: u64) -> Vec<u32> {
     v
 }
 
-/// `n` distinct monomials of `Dense16` on six variables, of degree 24 or
-/// less, in the random order drawn, in a table of their own.
-fn monomials(n: usize, seed: u64) -> (Table<Dense16>, Vec<MonoId>) {
-    let mut t = Table::new(Dense16::new(6), &mut rng(seed));
-    let mut r = rng(seed ^ 0x6d6f);
-    let mut taken = HashSet::new();
-    let mut ids = Vec::with_capacity(n);
-    while ids.len() < n {
-        let mut e = [0u32; 6];
-        let mut d = (r.next_u64() % 25) as u32;
-        for x in &mut e {
-            let k = (r.next_u64() % (u64::from(d) + 1)) as u32;
-            *x = k;
-            d -= k;
-        }
-        let id = t.intern(&e).unwrap();
-        if taken.insert(id) {
-            ids.push(id);
-        }
-    }
-    (t, ids)
-}
-
 /// `sort_decreasing` returns the comparison sort's order.
 fn sorts_as_compared<O: Order<Dense16>>(order: &O, t: &Table<Dense16>, ids: &[MonoId]) {
     let mut got = ids.to_vec();
-    let mut b = generous();
-    sort_decreasing(t, order, &mut got, &mut b).unwrap();
+    let mut b = budget();
+    sort_decreasing(t, order, &mut got, &mut b, Site::Columns).unwrap();
     let mut want = ids.to_vec();
     want.sort_by(|&a, &b| t.cmp(order, b, a));
     assert_eq!(got, want, "{order:?}, {len} ids", len = ids.len());
@@ -423,8 +396,8 @@ fn the_sorts_in_runs() {
     {
         let v = shuffled(n, k as u64);
         let mut got = v.clone();
-        let mut b = generous();
-        sort_runs(&mut got, |a: &u32, b: &u32| b.cmp(a), &mut b).unwrap();
+        let mut b = budget();
+        sort_runs(&mut got, |a: &u32, b: &u32| b.cmp(a), &mut b, Site::Columns).unwrap();
         let mut want = v;
         want.sort_unstable_by(|a, b| b.cmp(a));
         assert_eq!(got, want, "{n} values");
@@ -435,12 +408,12 @@ fn the_sorts_in_runs() {
     let mut v = shuffled(3 * RUN + 7, 9);
     let mut b = passed();
     assert_eq!(
-        sort_runs(&mut v, |a: &u32, b: &u32| a.cmp(b), &mut b),
+        sort_runs(&mut v, |a: &u32, b: &u32| a.cmp(b), &mut b, Site::Columns),
         Err(Stop::Deadline)
     );
     assert_eq!(b.checks(), 1, "the first run's check");
 
-    let (t, ids) = monomials(3 * RUN + 7, 0x736f);
+    let (t, ids) = monomials(6, 3 * RUN + 7, 0x736f);
     for len in [0, 1, RUN, ids.len()] {
         sorts_as_compared(&Grevlex, &t, &ids[..len]);
         sorts_as_compared(&Lex, &t, &ids[..len]);
@@ -448,12 +421,12 @@ fn the_sorts_in_runs() {
     }
     let mut got = ids.clone();
     assert_eq!(
-        sort_decreasing(&t, &Lex, &mut got, &mut passed()),
+        sort_decreasing(&t, &Lex, &mut got, &mut passed(), Site::Columns),
         Err(Stop::Deadline)
     );
     let mut got = ids.clone();
     assert_eq!(
-        sort_decreasing(&t, &Grevlex, &mut got, &mut passed_after(1)),
+        sort_decreasing(&t, &Grevlex, &mut got, &mut passed_after(1), Site::Columns),
         Err(Stop::Deadline)
     );
 
@@ -466,7 +439,7 @@ fn the_sorts_in_runs() {
             index: (r.next_u64() % 3) as u32,
         })
         .collect();
-    let got = by_signature(&t, &Grevlex, &sigs, &mut generous()).unwrap();
+    let got = by_signature(&t, &Grevlex, &sigs, &mut budget(), Site::SigSort).unwrap();
     let mut want: Vec<RowId> = (0..sigs.len()).map(RowId::at).collect();
     want.sort_by(|&a, &b| {
         sigs[a.index()]
@@ -475,7 +448,7 @@ fn the_sorts_in_runs() {
     });
     assert_eq!(got, want);
     assert_eq!(
-        by_signature(&t, &Grevlex, &sigs, &mut passed_after(1)).err(),
+        by_signature(&t, &Grevlex, &sigs, &mut passed_after(1), Site::SigSort).err(),
         Some(Stop::Deadline)
     );
 }

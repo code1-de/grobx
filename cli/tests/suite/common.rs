@@ -1,10 +1,12 @@
 //! Test code shared by the CLI's tests: the binary, an instance file and a
 //! FIFO in a scratch directory, a run of the binary, the crate's call for
-//! the same arguments, and SIGINT's bit in `/proc/<pid>/status`. The FIFO
-//! and SIGINT are Unix's alone.
+//! the same arguments, the report's header and the kinds of its lines, and
+//! SIGINT's bit in `/proc/<pid>/status`. The FIFO and SIGINT are Unix's
+//! alone.
 
 #[cfg(unix)]
 use std::ffi::CString;
+use std::ffi::OsString;
 use std::fs;
 #[cfg(unix)]
 use std::io;
@@ -19,6 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use grobx::{Outcome, Params};
+use grobx_cli::Command as Parsed;
 
 /// The binary under test, built by cargo in this test's profile.
 pub const BIN: &str = env!("CARGO_BIN_EXE_grobx");
@@ -228,4 +231,31 @@ pub fn sigint(child: &Child) {
     // holds until it is waited for.
     let r = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
     assert_eq!(r, 0, "kill: {error}", error = io::Error::last_os_error());
+}
+
+/// The lines the binary writes above the call report.
+pub const HEADER_LINES: usize = 2;
+
+/// The header the binary writes above the report for `args`.
+pub fn header<S: AsRef<str>>(args: &[S]) -> String {
+    match grobx_cli::parse(args.iter().map(|a| OsString::from(a.as_ref()))) {
+        Ok(Parsed::Run(run)) => grobx_cli::header(&run),
+        other @ (Ok(Parsed::Help | Parsed::Version) | Err(_)) => panic!("{other:?}"),
+    }
+}
+
+/// The kinds of a report's lines below the header's, which each hold a
+/// time and a kind.
+pub fn kinds(report: &str) -> Vec<&str> {
+    assert!(report.ends_with('\n'), "{report:?}");
+    report
+        .lines()
+        .skip(HEADER_LINES)
+        .map(|l| {
+            let mut words = l.split(' ');
+            let time = words.next().unwrap();
+            assert!(time.contains('.'), "{l}");
+            words.next().expect("a kind")
+        })
+        .collect()
 }

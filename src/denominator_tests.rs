@@ -1,32 +1,24 @@
-//! q-zero-denominator, the scan and the lift: the text's first denominator
-//! 0 by its line, the line the reader gives over GF(7), and the lift's
-//! answer where a prime of its own divides a denominator beside a 0
-//! (plan.md, _Test code_).
+//! q-zero-denominator, the parse and the lift (q-denominator-line.1, .2):
+//! the text's first denominator 0 by its line, the line the reader gives
+//! over GF(7), and the lift's answer where a prime of its own divides a
+//! denominator beside a 0 (plan.md, _Test code_).
 
-use std::num::NonZeroUsize;
-
+use crate::Error;
+use crate::budget::Budget;
 use crate::field::is_prime_64;
 use crate::lift::{Report, lift_text};
+use crate::shared_tests::params;
 use crate::text::Header;
-use crate::{Error, MonomialOrder, Params, Threads};
-
-fn params(seed: u64) -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    )
-}
 
 /// P, the least prime above 2^30, which the lift is made to take first.
-fn least_prime() -> u64 {
+pub(crate) fn least_prime() -> u64 {
     ((1u64 << 30) + 1..)
         .find(|&n| is_prime_64(n))
         .expect("a prime above 2^30")
 }
 
 /// The texts over ℚ and the line of each one's first denominator 0.
-const TEXTS: &[(&str, Option<usize>)] = &[
+pub(crate) const TEXTS: &[(&str, Option<usize>)] = &[
     ("x\n0\nx+1/0\n", Some(3)),
     ("x,y\n0\nx+1/3,\ny-1/0\n", Some(4)),
     ("x\n0\nx+7/000\n", Some(3)),
@@ -40,15 +32,17 @@ const TEXTS: &[(&str, Option<usize>)] = &[
     ("x\n0\n", None),
 ];
 
-/// q-zero-denominator.2, .3: the scan gives the line of the first
+/// q-denominator-line.1: the parse gives the line of the first
 /// denominator 0, at its digits, and the reader over GF(7) stops at that
 /// line with `NoInverse`, as it does at every prime that divides no
 /// denominator before it.
 #[test]
 fn the_first_denominator_0() {
     for &(text, line) in TEXTS {
-        let header = Header::read(text).unwrap_or_else(|e| panic!("{e:?}\n{text}"));
+        let header = Header::read(text, &mut Budget::unbounded())
+            .unwrap_or_else(|e| panic!("{e:?}\n{text}"));
         assert!(header.rational(), "{text}");
+        header.parsed(&mut Budget::unbounded()).unwrap();
         assert_eq!(header.zero_denominator(), line, "{text}");
         let over7 = text.replacen("\n0\n", "\n7\n", 1);
         match line {
@@ -62,7 +56,7 @@ fn the_first_denominator_0() {
     }
 }
 
-/// q-zero-denominator.2: the lift's first prime forced to P. A denominator
+/// q-denominator-line.2: the lift's first prime forced to P. A denominator
 /// P skips P, and a denominator 0 returns `NoInverse` at its line: after
 /// the skip where P's denominator comes first, at P where the 0 comes
 /// first or shares the line. A denominator P beside none that is 0 skips

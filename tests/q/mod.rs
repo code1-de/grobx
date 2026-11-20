@@ -173,7 +173,7 @@ pub fn same_set_q(case: &str, ours: &str, theirs: &str, names: &[String], family
     );
 }
 
-// q-lift.39 design -- the random systems over Q have random_system's shapes, coefficients up to 10^6 with a random sign, one term in three with a denominator up to 1000, and each monomial once in a generator (not measured)
+// q-lift.39 design-checked -- the random systems over Q have random_system's shapes, coefficients up to 10^6 with a random sign, one term in three with a denominator up to 1000, and each monomial once in a generator (not measured)
 /// A random instance over Q: two to four of the variables x, y, z, w, one
 /// generator up to one more than the variables, each of one to five terms
 /// of degree four or less with a coefficient in [1, 10^6], a random sign,

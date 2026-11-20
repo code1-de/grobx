@@ -3,68 +3,32 @@
 //! spend units of work and stop inside their work, and a part's images are
 //! appended in place (plan.md, _Test code_, 1 to 5).
 
-use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
-
 use num_bigint::BigUint;
-use rand_core::{Rng, SeedableRng};
+use rand_core::Rng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
 use crate::cofactors::{CofactorRow, Cofactors, ENTRY, TERM, TERMS, Tracked};
-use crate::f4::Halt;
 use crate::field::{Field, Gf31};
-use crate::id::{ElementId, KeepId, MonoId, RowId};
-use crate::lift::{COMBINED, LIMB, MERGED, Part, Primes, Sparse, append, merge};
-use crate::matrix::{KEY, RUN};
+use crate::halt::Halt;
+use crate::id::{ElementId, KeepId, MonoId, RowId, RowSource};
+use crate::lift::{COMBINED, LIMB, MERGED, Part, Primes, append, merge};
 use crate::mixed_radix_tests::converted;
 use crate::monomial::{Dense16, Format};
 use crate::order::{Block, Grevlex, Lex, Order};
+use crate::poly::{Exponents, Sparse};
 use crate::rational::Crt;
-use crate::table::Table;
-use crate::trace::RowSource;
-use crate::{MonomialOrder, Params, Stop, Threads};
-
-const P: u64 = 65521;
+use crate::shared_tests::{P, budget, passed_after, rng};
+use crate::sort::{KEY, RUN};
+use crate::table::{Table, monomial_units};
+use crate::{MonomialOrder, Stop};
 
 /// The variables of every table here.
 const N: usize = 8;
 
-fn params() -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    )
-}
-
-/// A budget with no bound.
-fn generous() -> Budget {
-    Budget::new(Instant::now(), &params()).unwrap()
-}
-
-/// A budget whose deadline passed before the test began, and which has not
-/// been checked.
-fn passed() -> Budget {
-    let mut p = params();
-    p.deadline = Some(Duration::from_millis(1));
-    Budget::new(
-        Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
-        &p,
-    )
-    .unwrap()
-}
-
-/// `passed` with `units` of work between two full checks.
-fn passed_after(units: u64) -> Budget {
-    let mut b = passed();
-    b.set_work(units);
-    b
-}
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
+/// The units a multiplier's interning into the cofactor table spends
+/// (call-stop-latency.65).
+const INTERNED: usize = monomial_units(N);
 
 /// A table of `Dense16` on eight variables holding `count` distinct
 /// monomials of degree 1 or more, returned in the order made.
@@ -77,7 +41,11 @@ fn monomials(count: usize, seed: u64) -> (Table<Dense16>, Vec<MonoId>) {
                 if ids.len() == count {
                     break 'all;
                 }
-                ids.push(table.intern(&[a, b, c, 1, 0, 2, 0, 1]).unwrap());
+                ids.push(
+                    table
+                        .intern(&[a, b, c, 1, 0, 2, 0, 1], &mut Budget::unbounded())
+                        .unwrap(),
+                );
             }
         }
     }
@@ -100,9 +68,11 @@ fn element_of(
     seed: u64,
 ) -> (Tracked<Gf31, Dense16>, CofactorRow<Gf31>) {
     let mut cof = Tracked::new(field, Dense16::new(N), 2, &mut rng(seed));
-    let g0 = cof.input(0, field.coef(1));
+    let g0 = cof
+        .input(0, field.coef(1), &mut Budget::unbounded())
+        .expect("a budget without bounds never stops");
     let row = cof
-        .lift(&[(0, q.to_vec())], &[g0], table, &mut generous())
+        .lift(&[(0, q.to_vec())], &[g0], table, &mut budget())
         .unwrap();
     (cof, row)
 }
@@ -129,17 +99,18 @@ fn lengths() -> [usize; 6] {
 }
 
 /// Test 1, cofactor-stop-latency.1 to .3: a composition of one row returns
-/// its element's cofactors, and spends `ENTRY` an entry and `TERM` a term;
+/// its element's cofactors, and spends `ENTRY` an entry and `TERM` a term
+/// beside its multiplier's interning (call-stop-latency.65);
 /// with the budget passed after one chunk it stops once an entry holds
 /// `TERMS` terms or more: inside the entry where it holds more, at the next
 /// entry where it holds `TERMS`; a row of 1,000 empty entries spends `ENTRY`
-/// each.
+/// each beside the interning.
 #[test]
 fn a_composition_spends_its_terms() {
     let field = Gf31::prime(P);
     let (mut table, ids) = monomials(3 * TERMS + 7, 0x6373);
     // Row 0 of the matrix: element 0 times the monomial 1.
-    let unit = table.intern(&[0; N]).unwrap();
+    let unit = table.intern(&[0; N], &mut Budget::unbounded()).unwrap();
     let rows = [RowSource {
         element: ElementId::at(0),
         multiplier: unit,
@@ -156,17 +127,22 @@ fn a_composition_spends_its_terms() {
 
         cof.matrix(1);
         cof.start(RowId::at(0));
-        cof.keep();
-        let mut b = generous();
+        cof.keep(&mut Budget::unbounded())
+            .expect("a budget without bounds never stops");
+        let mut b = budget();
         let got = cof.compose(KeepId::at(0), &rows, &table, &mut b).unwrap();
         assert_eq!(
             text_of(&cof, std::slice::from_ref(&got)),
             want,
             "{len} terms"
         );
-        assert_eq!(b.spent(), (2 * ENTRY + TERM * len) as u64, "{len} terms");
+        assert_eq!(
+            b.spent(),
+            (INTERNED + 2 * ENTRY + TERM * len) as u64,
+            "{len} terms"
+        );
 
-        let units = (ENTRY + TERM * TERMS + 1) as u64;
+        let units = (INTERNED + ENTRY + TERM * TERMS + 1) as u64;
         let mut b = passed_after(units);
         let stopped = cof.compose(KeepId::at(0), &rows, &table, &mut b);
         if len < TERMS {
@@ -178,7 +154,7 @@ fn a_composition_spends_its_terms() {
                 "{len} terms"
             );
             assert!(
-                b.spent() <= (2 * ENTRY + 2 * TERM * TERMS) as u64,
+                b.spent() <= (INTERNED + 2 * ENTRY + 2 * TERM * TERMS) as u64,
                 "{len} terms: {spent} units",
                 spent = b.spent()
             );
@@ -186,26 +162,30 @@ fn a_composition_spends_its_terms() {
     }
 
     let mut wide = Tracked::new(field, Dense16::new(N), 1000, &mut rng(3));
-    let zeros = wide.lift(&[], &[], &table, &mut generous()).unwrap();
+    let zeros = wide.lift(&[], &[], &table, &mut budget()).unwrap();
     wide.push(zeros);
     wide.matrix(1);
     wide.start(RowId::at(0));
-    wide.keep();
-    let mut b = generous();
+    wide.keep(&mut Budget::unbounded())
+        .expect("a budget without bounds never stops");
+    let mut b = budget();
     wide.compose(KeepId::at(0), &rows, &table, &mut b).unwrap();
-    assert_eq!(b.spent(), 1000 * ENTRY as u64);
+    assert_eq!(b.spent(), (INTERNED + 1000 * ENTRY) as u64);
 }
 
 /// Test 2, cofactor-stop-latency.1 to .3: a lift by one quotient term m·c
 /// returns m·c times its element's cofactors, and spends as a composition
-/// does; with the budget passed after one chunk it stops once an entry
+/// does, its quotient's monomial interned as a composition's multiplier; with
+/// the budget passed after one chunk it stops once an entry
 /// holds `TERMS` terms or more: inside the entry where it holds more, at the
 /// next entry where it holds `TERMS`.
 #[test]
 fn a_lift_spends_its_terms() {
     let field = Gf31::prime(P);
     let (mut table, ids) = monomials(3 * TERMS + 7, 0x6c66);
-    let m = table.intern(&[1, 0, 0, 0, 1, 0, 0, 0]).unwrap();
+    let m = table
+        .intern(&[1, 0, 0, 0, 1, 0, 0, 0], &mut Budget::unbounded())
+        .unwrap();
     let c = field.coef(7);
     let mut r = rng(4);
     for len in lengths() {
@@ -217,16 +197,23 @@ fn a_lift_spends_its_terms() {
         // m·c·Σ c_u·u, the reference element, lifted from the input.
         let scaled: Vec<(MonoId, u32)> = q
             .iter()
-            .map(|&(u, a)| (table.mul(m, u).unwrap(), field.mul(c, a)))
+            .map(|&(u, a)| {
+                (
+                    table.mul(m, u, &mut Budget::unbounded()).unwrap(),
+                    field.mul(c, a),
+                )
+            })
             .collect();
-        let g0 = cof.input(0, field.coef(1));
+        let g0 = cof
+            .input(0, field.coef(1), &mut Budget::unbounded())
+            .expect("a budget without bounds never stops");
         let want_row = cof
-            .lift(&[(0, scaled)], &[g0], &table, &mut generous())
+            .lift(&[(0, scaled)], &[g0], &table, &mut budget())
             .unwrap();
         let want = text_of(&cof, std::slice::from_ref(&want_row));
 
         let quotient = [(0, vec![(m, c)])];
-        let mut b = generous();
+        let mut b = budget();
         let got = cof
             .lift(&quotient, std::slice::from_ref(&row), &table, &mut b)
             .unwrap();
@@ -235,9 +222,13 @@ fn a_lift_spends_its_terms() {
             want,
             "{len} terms"
         );
-        assert_eq!(b.spent(), (2 * ENTRY + TERM * len) as u64, "{len} terms");
+        assert_eq!(
+            b.spent(),
+            (INTERNED + 2 * ENTRY + TERM * len) as u64,
+            "{len} terms"
+        );
 
-        let units = (ENTRY + TERM * TERMS + 1) as u64;
+        let units = (INTERNED + ENTRY + TERM * TERMS + 1) as u64;
         let mut b = passed_after(units);
         let stopped = cof.lift(&quotient, std::slice::from_ref(&row), &table, &mut b);
         if len < TERMS {
@@ -248,7 +239,7 @@ fn a_lift_spends_its_terms() {
                 Some(Halt::Stop(Stop::Deadline)),
                 "{len} terms"
             );
-            assert!(b.spent() <= (2 * ENTRY + 2 * TERM * TERMS) as u64);
+            assert!(b.spent() <= (INTERNED + 2 * ENTRY + 2 * TERM * TERMS) as u64);
         }
     }
 }
@@ -265,7 +256,7 @@ fn reference_entry<O: Order<Dense16>>(
     let mut sorted = terms.to_vec();
     sorted.sort_unstable_by(|a, b| table.cmp(order, b.0, a.0));
     let mut sparse = Sparse {
-        exponents: Vec::new(),
+        exponents: Exponents::new(),
         coefs: Vec::new(),
     };
     for (u, c) in sorted {
@@ -285,16 +276,18 @@ fn images_as_sorted<O: Order<Dense16>>(
     entries: &[[Vec<(MonoId, u32)>; 2]],
 ) {
     let mut cof = Tracked::new(*field, Dense16::new(N), 2, &mut rng(6));
-    let inputs = [cof.input(0, field.coef(1)), cof.input(1, field.coef(1))];
+    let inputs = [0, 1].map(|j| {
+        cof.input(j, field.coef(1), &mut Budget::unbounded())
+            .expect("a budget without bounds never stops")
+    });
     let elements: Vec<CofactorRow<Gf31>> = entries
         .iter()
         .map(|[e0, e1]| {
             let quotients = [(0, e0.clone()), (1, e1.clone())];
-            cof.lift(&quotients, &inputs, table, &mut generous())
-                .unwrap()
+            cof.lift(&quotients, &inputs, table, &mut budget()).unwrap()
         })
         .collect();
-    let mut b = generous();
+    let mut b = budget();
     let got = cof.image(order, &elements, &mut b).unwrap();
     let want: Vec<Vec<Sparse>> = entries
         .iter()
@@ -405,7 +398,7 @@ fn the_merge_spends_and_merges() {
         assert_eq!(terms.len(), n);
         let mut part = Part::new();
         let mut image = image_of(&terms);
-        let gained = merge(&mut part, &mut image, None, &named, N, &mut generous()).unwrap();
+        let gained = merge(&mut part, &mut image, None, &named, N, &mut budget()).unwrap();
         assert_eq!(gained, n > 0, "{n} terms");
         assert_eq!(part.len(), n);
         assert!(part.images().all(<[u64]>::is_empty), "no image yet");
@@ -415,12 +408,12 @@ fn the_merge_spends_and_merges() {
         }
 
         let mut same = image_of(&terms);
-        let mut b = generous();
+        let mut b = budget();
         assert!(!merge(&mut part, &mut same, None, &named, N, &mut b).unwrap());
         assert!(b.spent() >= 1, "the comparison spends");
 
         // The images: the coefficients, at one prime.
-        append(&mut part, &image.coefs, &mut generous()).unwrap();
+        append(&mut part, &image.coefs, &mut budget()).unwrap();
         let old: Vec<Vec<u64>> = part.images().map(<[u64]>::to_vec).collect();
         assert_eq!(old, terms.iter().map(|t| vec![t.1]).collect::<Vec<_>>());
 
@@ -441,7 +434,7 @@ fn the_merge_spends_and_merges() {
             pa.cmp(&pb)
         });
         let mut image = image_of(&gains);
-        let mut b = generous();
+        let mut b = budget();
         assert!(merge(&mut part, &mut image, None, &named, N, &mut b).unwrap());
         let mut union: Vec<Vec<u32>> = terms.iter().map(|t| t.0.clone()).collect();
         for t in &gains {
@@ -451,7 +444,10 @@ fn the_merge_spends_and_merges() {
         }
         union.sort_by_key(|e| all.iter().position(|x| x == e).unwrap());
         assert_eq!(part.len(), union.len());
-        assert_eq!(image.exponents, union.concat());
+        assert_eq!(
+            image.exponents.values().collect::<Vec<u32>>(),
+            union.concat()
+        );
         for ((e, x), &c) in union.iter().zip(part.images()).zip(&image.coefs) {
             match terms.iter().position(|t| t.0 == *e) {
                 Some(k) => assert_eq!(x, &old[k][..], "an old term's images are kept"),
@@ -500,7 +496,7 @@ fn the_append_writes_in_place() {
             None,
             &named,
             N,
-            &mut generous(),
+            &mut budget(),
         )
         .unwrap();
         let mut crt = Crt::new();
@@ -512,7 +508,7 @@ fn the_append_writes_in_place() {
             let coefs: Vec<u64> = (0..n)
                 .map(|i| if i % 5 == 0 { 0 } else { r.next_u64() % p })
                 .collect();
-            let mut b = generous();
+            let mut b = budget();
             append(&mut part, &coefs, &mut b).unwrap();
             // The capacity, 1 at first, doubles where k primes fill it.
             let moved = if k.is_power_of_two() { k } else { 0 };
@@ -546,7 +542,7 @@ fn the_append_writes_in_place() {
         None,
         &named,
         N,
-        &mut generous(),
+        &mut budget(),
     )
     .unwrap();
     let coefs = vec![1; all.len()];

@@ -9,23 +9,15 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use grobx::{Cancel, CheckerMode, Params, Stop};
+use grobx::{Cancel, CheckerMode, Stop};
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, assert_accepted, dense, params, params_in, random_square, run, with_cofactors,
-    with_cofactors_in,
+    EDGE_GENERATORS, P, P31, assert_accepted, dense, generous, params, params_in, random_square,
+    run, with_cofactors, with_cofactors_in,
 };
 use crate::orders::{accepted_in, assert_canonical, lex_as_blocks, names};
 use crate::q::accepted_q;
-
-/// Every bound set, none of them reached.
-fn generous(mut p: Params) -> Params {
-    p.deadline = Some(Duration::from_secs(3600));
-    p.cancel = Some(Cancel::new());
-    p.memory = Some(1 << 40);
-    p
-}
 
 /// Test 4, .1 to .6: the square systems over 2^31 − 1 whose plain run
 /// went 11.0 s between two full checks in the test profile (log 0055-2),
@@ -116,27 +108,13 @@ fn every_bound_is_read_at_the_checks() {
     assert_accepted("cubic-3", &text, &outcome, Mode::Exact);
 }
 
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name and generators.
-const EDGE: [(&str, &str); 7] = [
-    ("the zero ideal", "0"),
-    ("F = (0, 0)", "0,\n0"),
-    ("no generator", ""),
-    ("the unit ideal", "x*z-1,\nx"),
-    ("already a Gröbner basis", "x+z,\nz^2+1"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-    ),
-    ("an eliminable variable", "x-y^2-z,\ny*z-1,\nz^2-y"),
-];
-
 /// Test 7, .1: the edge cases over GF(65521), GF(2^31 − 1), and ℚ, in
 /// grevlex, lex, and `block:1`. With generous bounds each basis is the one
 /// without bounds, canonical, and accepted with cofactors by the exact
 /// checker; with a deadline of zero each call stops with `Deadline`.
 #[test]
 fn the_edge_cases() {
-    for (case, generators) in EDGE {
+    for (case, generators) in EDGE_GENERATORS {
         for p in [P, P31, 0] {
             let text = format!("x,y,z\n{p}\n{generators}\n");
             for order in ["grevlex", "lex", "block:1"] {

@@ -6,28 +6,23 @@
 //! is the `block:1,…,1` basis where that call finishes within a deadline of
 //! 200 ms (plan.md, _Test code_; fglm-lex.24).
 
-use std::time::Duration;
-
 use grobx_checker::Mode;
 
-use crate::common::{PRIMES, Rng, msolve_with, params_in, random_system};
+use crate::common::{
+    BLOCKS_DEADLINE, LEX_DEADLINE, LEX_SEEDS, PRIMES, Rng, msolve_with, params_in, random_system,
+};
 use crate::orders::{finished_in, lex_as_blocks, names};
-
-const SEEDS: u64 = 2;
-const DEADLINE: Duration = Duration::from_secs(1);
-/// The deadline of the `block:1,…,1` call.
-const BLOCKS_DEADLINE: Duration = Duration::from_millis(200);
 
 #[test]
 fn lex_on_random_systems() {
     let mut finished = 0;
     let mut cases = 0;
     for p in PRIMES {
-        for seed in 0..SEEDS {
+        for seed in 0..LEX_SEEDS {
             cases += 1;
             let text = random_system(p, seed);
             let name = format!("orders-random-p{p}-{seed}");
-            let Some(outcome) = finished_in(&name, &text, "lex", Mode::Exact, DEADLINE) else {
+            let Some(outcome) = finished_in(&name, &text, "lex", Mode::Exact, LEX_DEADLINE) else {
                 continue;
             };
             let lex = outcome.basis.unwrap();
@@ -58,14 +53,14 @@ fn two_blocks_on_random_systems() {
     let mut compared = 0;
     let mut cases = 0;
     for p in PRIMES {
-        for seed in 0..SEEDS {
+        for seed in 0..LEX_SEEDS {
             cases += 1;
             let text = random_system(p, seed);
             let n = names(&text).len() as u64;
             let k = 1 + Rng::new(seed ^ p ^ 0xb10c).below(n - 1);
             let order = format!("block:{k}");
             let name = format!("orders-random-p{p}-{seed}");
-            let Some(outcome) = finished_in(&name, &text, &order, Mode::Exact, DEADLINE) else {
+            let Some(outcome) = finished_in(&name, &text, &order, Mode::Exact, LEX_DEADLINE) else {
                 continue;
             };
             let ours = outcome.basis.unwrap();
@@ -92,7 +87,7 @@ fn three_blocks_on_random_systems() {
     let mut finished = 0;
     let mut cases = 0;
     for p in PRIMES {
-        for seed in 0..2 * SEEDS {
+        for seed in 0..2 * LEX_SEEDS {
             let text = random_system(p, seed);
             let n = names(&text).len() as u64;
             if n < 3 {
@@ -104,7 +99,7 @@ fn three_blocks_on_random_systems() {
             let second = 1 + rng.below(n - 1 - first);
             let order = format!("block:{first},{second}");
             let name = format!("orders-random-p{p}-{seed}");
-            if finished_in(&name, &text, &order, Mode::Exact, DEADLINE).is_some() {
+            if finished_in(&name, &text, &order, Mode::Exact, LEX_DEADLINE).is_some() {
                 finished += 1;
             }
         }

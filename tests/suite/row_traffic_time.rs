@@ -10,36 +10,19 @@ use std::time::{Duration, Instant};
 use grobx::{CheckerMode, Stop};
 use grobx_checker::Mode;
 
-use crate::common::{P, P31, assert_accepted, dense, params, random_square, run, with_cofactors};
+use crate::common::{
+    EDGE_BASES, P, P31, assert_accepted, dense, params, random_square, run, with_cofactors,
+};
+use crate::large::over;
 use crate::orders::assert_canonical;
 use crate::q::accepted_q;
-
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name, generators, and the
-/// basis over GF(65521) in grevlex.
-const EDGE: [(&str, &str, &str); 7] = [
-    ("the zero ideal", "0", "[]:\n"),
-    ("F = (0, 0)", "0,\n0", "[]:\n"),
-    ("no generator", "", "[]:\n"),
-    ("the unit ideal", "x*z-1,\nx", "[1]:\n"),
-    ("already a Gröbner basis", "x+z,\nz^2+1", "[x+z,\nz^2+1]:\n"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-        "[y^2+65520*x,\nx*y+65520*z,\nx^2+65520*y*z]:\n",
-    ),
-    (
-        "an eliminable variable",
-        "x-y^2-z,\ny*z-1,\nz^2-y",
-        "[x+65519*z,\nz^2+65520*y,\ny*z+65520,\ny^2+65520*z]:\n",
-    ),
-];
 
 /// Test 5: the edge cases over 65521 and ℚ in grevlex, signatures on and
 /// off: each basis canonical and accepted in the exact mode, and over
 /// 65521 as written.
 #[test]
 fn the_edge_cases() {
-    for (case, generators, want) in EDGE {
+    for (case, generators, want) in EDGE_BASES {
         let text = format!("x,y,z\n{P}\n{generators}\n");
         for signatures in [true, false] {
             let mut params = with_cofactors(0x7a1e);
@@ -104,17 +87,6 @@ fn a_deadline_stops_a_long_call() {
         "{stem}: returned {late:?} past the deadline",
         late = took.saturating_sub(DEADLINE)
     );
-}
-
-/// `text` with its characteristic, its second line, set to `p`.
-fn over(text: &str, p: u64) -> String {
-    let mut lines = text.splitn(3, '\n');
-    let variables = lines.next().unwrap();
-    lines.next().unwrap();
-    format!(
-        "{variables}\n{p}\n{generators}",
-        generators = lines.next().unwrap_or("")
-    )
 }
 
 /// Test 12: generated systems with their

@@ -5,18 +5,19 @@
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::io;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use crate::blocks::{Allocator, LARGE, watch};
-use crate::budget::Budget;
-use crate::child_tests;
-use crate::entry::report_error;
+use crate::blocks::{Allocator, REPORTED, watch};
+use crate::budget::Site;
+use crate::call::{built, report_error};
+use crate::child_tests::measures_here;
 use crate::f4::Handover;
 use crate::report::{Report, Stage, field_value};
-use crate::{Error, MonomialOrder, Params, ReportSink, Threads};
+use crate::shared_tests::{budget, report};
+use crate::{CheckerMode, Error, MonomialOrder, Params, ReportSink, Threads, groebner};
 
 /// One line of a report: its time, its kind, and its fields.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,7 +128,8 @@ fn a_report_alone() {
     }
     assert_eq!(report.grown((15, 26)), (0, 0));
     report.line("end", format_args!(" result=basis bytes=12"));
-    let text = report.finish();
+    let (text, sink_error) = report.finish();
+    assert_eq!(sink_error, None, "a report without a sink");
     let read = lines(&text);
     let kinds: Vec<&str> = read.iter().map(|l| l.kind.as_str()).collect();
     assert_eq!(kinds, ["call", "read", "end"], "{text}");
@@ -245,7 +247,7 @@ fn the_error_line() {
     let mut params = Params::new(MonomialOrder::Grevlex, Threads::Count(NonZeroUsize::MIN), 1);
     params.report = true;
     params.report_sink = Some(ReportSink::new(sink.clone()));
-    report_error(None, &params, Instant::now(), &Error::Memory);
+    report_error(None, &params, Some(Instant::now()), &Error::Memory);
     let l = lines(&sink.text());
     assert_eq!(l.len(), 1, "{l:?}");
     assert!(
@@ -263,17 +265,17 @@ fn the_error_line() {
     );
 }
 
-/// error-report.4, .6: while a call watches, a request of `LARGE` bytes
+/// error-report.4, .6: while a call watches, a request of `REPORTED` bytes
 /// or more, served by `alloc`, `alloc_zeroed`, or `realloc`, and a refused
 /// one are `alloc` lines on its sink, each with its stack on Linux; a
-/// request below `LARGE` is none, and no request is one before the watch
-/// or after it. The blocks of `LARGE` bytes are never written, so they
+/// request below `REPORTED` is none, and no request is one before the watch
+/// or after it. The blocks of `REPORTED` bytes are never written, so they
 /// take no memory.
 #[test]
 fn the_alloc_lines() {
     let sink = Shared::default();
-    let below = Layout::from_size_align(LARGE - 1, 8).unwrap();
-    let large = Layout::from_size_align(LARGE, 8).unwrap();
+    let below = Layout::from_size_align(REPORTED - 1, 8).unwrap();
+    let large = Layout::from_size_align(REPORTED, 8).unwrap();
     let refused = Layout::from_size_align(1 << 62, 8).unwrap();
     // SAFETY: each block is freed at the layout it was served at.
     let unwatched = |sink: &Shared| unsafe {
@@ -291,26 +293,31 @@ fn the_alloc_lines() {
         let p = Allocator.alloc(below);
         assert!(!p.is_null());
         Allocator.dealloc(p, below);
-        assert_eq!(sink.text(), "", "a request below LARGE heard");
+        assert_eq!(sink.text(), "", "a request below REPORTED heard");
         let p = Allocator.alloc(large);
         assert!(!p.is_null());
-        let grown = Allocator.realloc(p, large, LARGE + 4096);
+        let grown = Allocator.realloc(p, large, REPORTED + 4096);
         assert!(!grown.is_null());
-        Allocator.dealloc(grown, Layout::from_size_align(LARGE + 4096, 8).unwrap());
+        Allocator.dealloc(grown, Layout::from_size_align(REPORTED + 4096, 8).unwrap());
         let p = Allocator.alloc_zeroed(large);
         assert!(!p.is_null());
         Allocator.dealloc(p, large);
-        assert!(Allocator.alloc(refused).is_null(), "2^62 bytes served");
+        // An allocation whose result is only compared with null may be
+        // elided, the comparison folded to non-null: the test profile's
+        // optimizer did so (log 0116-1, _Step 5_). The result passes
+        // through `black_box`, so the request is made.
+        let p = std::hint::black_box(Allocator.alloc(refused));
+        assert!(p.is_null(), "2^62 bytes served");
     }
     drop(watch);
     unwatched(&sink);
     let l = lines(&sink.text());
-    let large = LARGE.to_string();
+    let large = REPORTED.to_string();
     let expected: [&[(&str, &str)]; 4] = [
         &[("kind", "alloc"), ("bytes", &large), ("result", "served")],
         &[
             ("kind", "realloc"),
-            ("bytes", &(LARGE + 4096).to_string()),
+            ("bytes", &(REPORTED + 4096).to_string()),
             ("from", &large),
             ("result", "served"),
         ],
@@ -341,29 +348,21 @@ fn the_alloc_lines() {
 /// child.
 #[test]
 fn the_resident_sets() {
-    if child_tests::running() {
-        let report = Report::new(Instant::now(), None);
-        let size = 64 << 20;
-        let block = vec![1u8; size];
-        let (start, peak) = report.rss();
-        assert!(start > 0, "no resident set at the start");
-        assert!(
-            peak - start >= size,
-            "peak {peak} start {start} below {size}"
-        );
-        drop(std::hint::black_box(block));
+    if !measures_here("report_tests::the_resident_sets") {
         return;
     }
-    child_tests::run("report_tests::the_resident_sets");
-}
-
-fn budget() -> Budget {
-    let p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
+    let report = Report::new(Instant::now(), None);
+    let size = 64 << 20;
+    let block = vec![1u8; size];
+    let (start, peak) = report
+        .rss()
+        .expect("the resident set and its peak are readable here");
+    assert!(start > 0, "no resident set at the start");
+    assert!(
+        peak - start >= u64::try_from(size).unwrap(),
+        "peak {peak} start {start} below {size}"
     );
-    Budget::new(Instant::now(), &p).unwrap()
+    drop(std::hint::black_box(block));
 }
 
 /// Test 2, call-report.4: the budget counts the units spent as subtracted
@@ -379,14 +378,14 @@ fn the_budget_counts_its_row_operations() {
         let units = 1 + k % 37;
         match k % 3 {
             0 => {
-                b.spend(units).unwrap();
+                b.spend(units, Site::Row).unwrap();
             }
             1 => {
-                b.spend_subtracted(units).unwrap();
+                b.spend_subtracted(units, Site::Row).unwrap();
                 want.0 += units as u64;
             }
             _ => {
-                b.spend_added(units).unwrap();
+                b.spend_added(units, Site::Row).unwrap();
                 want.1 += units as u64;
             }
         }
@@ -411,7 +410,7 @@ fn read(
     Option<bool>,
     Option<usize>,
 ) {
-    let handed = h.after_round(early, gap, made, zeros, || n);
+    let handed = h.after_round(early, gap, made, zeros, || Ok(n)).unwrap();
     let t = h.tests();
     (handed, t.early, t.gap, t.outgrown, t.divisible)
 }
@@ -495,4 +494,33 @@ fn the_handover_records_its_tests() {
         read(&mut h, true, true, (100, 50, 60)),
         (false, Some(false), Some(false), Some(false), Some(60))
     );
+}
+
+/// A call on every thread with the cheap checker: its `call` line says `threads=all` and
+/// `checker=cheap`, and its `check` line `mode=cheap` with the points.
+#[test]
+fn the_report_names_all_threads_and_the_cheap_checker() {
+    let mut params = Params::new(MonomialOrder::Grevlex, Threads::All, 1);
+    params.cofactors = true;
+    params.checker = Some(CheckerMode::Cheap {
+        points: NonZeroU32::new(3).unwrap(),
+    });
+    params.report = true;
+    if built(&params).is_err() {
+        return;
+    }
+    let outcome = groebner("x,y\n65521\nx^2+y,\nx*y+1\n", &params).expect("the call");
+    let lines = report(&outcome);
+    let call = lines
+        .iter()
+        .find(|l| l.kind == "call")
+        .expect("a call line");
+    assert_eq!(call.get("threads"), Some("all"), "{lines:?}");
+    assert_eq!(call.get("checker"), Some("cheap"), "{lines:?}");
+    let check = lines
+        .iter()
+        .find(|l| l.kind == "check")
+        .expect("a check line");
+    assert_eq!(check.get("mode"), Some("cheap"), "{lines:?}");
+    assert_eq!(check.get("points"), Some("3"), "{lines:?}");
 }

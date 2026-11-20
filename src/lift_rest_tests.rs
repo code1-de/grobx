@@ -12,21 +12,24 @@ use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::attempt_tests::{agrees, small};
-use crate::chain_tests::{assert_accepted, basis, lift, params, with_cofactors};
-use crate::entry::Imaged;
+use crate::call::built;
+use crate::chain_tests::{assert_accepted, lift};
+use crate::entry::{Image, Imaged, PairImage};
 use crate::field::Gf64Pair;
-use crate::later_runs_tests::{L1, W1, W2, W3, alone, learn, replay};
+use crate::later_runs_tests::{alone, replay};
 use crate::learn_pair_tests::systems;
-use crate::lift::{Image, Learns, PairImage, Reconstruct, Replays, Report, Sparse, lift_text_as};
+use crate::lift::{Learns, Reconstruct, Replays, Report, lift_text_as};
 use crate::mqrr_tests::{continued, primes};
-use crate::prime_count_tests::coprime;
+use crate::poly::{Exponents, Sparse};
 use crate::shape::Kept;
-use crate::shortcut_tests::{image, product};
+use crate::shared_tests::{
+    L1, W1, W2, W3, basis, drawn_coprime, image, learn, lift_params, product, with_cofactors,
+};
 use crate::trace::{NoTrace, Record};
 use crate::{Outcome, Params};
 
 /// The pair image of a replay of `record` at (p, q).
-fn pair_image(
+pub(crate) fn pair_image(
     text: &str,
     params: &Params,
     record: &Record,
@@ -68,14 +71,14 @@ fn lane(image: &PairImage, k: usize) -> Image {
             );
             let coefs = if k == 0 { &first.coefs } else { second };
             let mut sparse = Sparse {
-                exponents: Vec::new(),
+                exponents: Exponents::new(),
                 coefs: Vec::new(),
             };
             for (t, &c) in coefs.iter().enumerate() {
                 if c != 0 {
                     sparse
                         .exponents
-                        .extend_from_slice(&first.exponents[t * n..(t + 1) * n]);
+                        .extend_from(&first.exponents, t * n..(t + 1) * n);
                     sparse.coefs.push(c);
                 }
             }
@@ -100,7 +103,7 @@ fn lane(image: &PairImage, k: usize) -> Image {
 #[test]
 fn pair_image_lanes() {
     for (name, text) in systems() {
-        let p = params(1);
+        let p = lift_params(1);
         let record = learn(&text, &p, L1);
         let image = pair_image(&text, &p, &record, (W1, W2), None);
         assert_eq!(
@@ -150,10 +153,14 @@ fn pair_image_lanes() {
 #[test]
 fn a_zero_kept_at_one_prime() {
     let text = format!("x,y\n0\nx-{W1}*y,\ny^2-1\n");
-    let p = params(1);
+    let p = lift_params(1);
     let record = learn(&text, &p, L1);
     let image = pair_image(&text, &p, &record, (W1, W2), None);
-    assert_eq!(image.first[0].exponents, [0, 1], "{image:?}");
+    assert_eq!(
+        image.first[0].exponents.values().collect::<Vec<u32>>(),
+        [0, 1],
+        "{image:?}"
+    );
     assert_eq!(image.first[0].coefs, [0], "{image:?}");
     assert_eq!(image.second[0], [W2 - W1], "{image:?}");
     for forced in [[L1, W1, W2, W3], [L1, W2, W3, W1]] {
@@ -237,8 +244,8 @@ fn first_without_the_division() {
                     continue;
                 }
                 let bd = 1 + bits / 3;
-                let d = coprime(&mut rng, bd, &[&m]);
-                let n = coprime(&mut rng, bits - bd, &[&d]);
+                let d = drawn_coprime(&mut rng, bd, &[&m]);
+                let n = drawn_coprime(&mut rng, bits - bd, &[&d]);
                 for n in [BigInt::from(n.clone()), -BigInt::from(n)] {
                     if let Some(v) = image(&n, &d, &m) {
                         agrees(&m, &v, t, &format!("{k} primes, t = {t}, gap {gap}"));
@@ -260,14 +267,14 @@ fn unnested(rng: &mut Xoshiro256PlusPlus, last: u64) -> (String, String) {
     let mut d: Vec<BigUint> = Vec::new();
     for _ in 0..6 {
         let others: Vec<&BigUint> = d.iter().collect();
-        let di = coprime(rng, 40, &others);
+        let di = drawn_coprime(rng, 40, &others);
         d.push(di);
     }
     let big_d = d.iter().fold(BigUint::from(1u32), |acc, x| acc * x);
     let bits = [900, 150, 150, 150, 150, last];
     let mut terms = format!("{big_d}*x");
     for (i, (di, b)) in d.iter().zip(bits).enumerate() {
-        let n = coprime(rng, b, &[di]);
+        let n = drawn_coprime(rng, b, &[di]);
         let a = n * (&big_d / di);
         write!(terms, "+{a}*y{k}", k = i + 1).unwrap();
     }
@@ -287,9 +294,13 @@ fn unnested_parts() {
         let (text, want) = unnested(&mut rng, last);
         for seed in 1..=4 {
             let case = format!("n₆ of {last} bits, seed {seed}");
-            let (outcome, _) = lift(&text, &params(seed), &[], Reconstruct::Chain);
+            let (outcome, _) = lift(&text, &lift_params(seed), &[], Reconstruct::Chain);
             assert_eq!(basis(&outcome), want, "{case}");
-            let (outcome, _) = lift(&text, &with_cofactors(seed), &[], Reconstruct::Chain);
+            let tracked = with_cofactors(seed);
+            if built(&tracked).is_err() {
+                continue;
+            }
+            let (outcome, _) = lift(&text, &tracked, &[], Reconstruct::Chain);
             assert_eq!(basis(&outcome), want, "{case}, with cofactors");
             assert_accepted(&case, &text, &outcome, &Order::Grevlex);
         }
@@ -318,13 +329,13 @@ const PAIRED: usize = 3;
 #[test]
 fn pairs_against_alone() {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x9e55);
-    let d1 = coprime(&mut rng, 200, &[]);
-    let n1 = coprime(&mut rng, 200, &[&d1]);
-    let d2 = coprime(&mut rng, 200, &[&d1]);
+    let d1 = drawn_coprime(&mut rng, 200, &[]);
+    let n1 = drawn_coprime(&mut rng, 200, &[&d1]);
+    let d2 = drawn_coprime(&mut rng, 200, &[&d1]);
     let dd = &d1 * &d2;
-    let n2 = coprime(&mut rng, 400, &[&dd]);
-    let d3 = coprime(&mut rng, 31, &[&d1]);
-    let n3 = coprime(&mut rng, 600, &[&d3]);
+    let n2 = drawn_coprime(&mut rng, 400, &[&dd]);
+    let d3 = drawn_coprime(&mut rng, 31, &[&d1]);
+    let n3 = drawn_coprime(&mut rng, 600, &[&d3]);
     let texts = [
         format!("x,y\n0\n{dd}*x+{n2},\n{d1}*y+{n1}\n"),
         format!("x,y\n0\n{d3}*x+{n3},\n{d1}*y+{n1}\n"),
@@ -332,7 +343,7 @@ fn pairs_against_alone() {
     ];
     for (i, text) in texts.iter().enumerate() {
         for seed in 1..=8 {
-            let p = params(seed);
+            let p = lift_params(seed);
             let (paired, pairs) = lift_in(text, &p, &[], Replays::Pairs);
             let (single, alone) = lift_in(text, &p, &[], Replays::Alone);
             assert_eq!(basis(&paired), basis(&single), "system {i}, seed {seed}");

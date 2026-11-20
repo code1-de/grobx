@@ -13,19 +13,18 @@ use std::num::NonZeroUsize;
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::budget::Budget;
 use crate::field::Gf31;
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::Grevlex;
 use crate::poly::Poly;
+use crate::shared_tests::{RANDOM_PRIMES, divides};
 use crate::systems::{dense, random_system};
 use crate::table::Table;
-use crate::text::Header;
+use crate::text::{Header, Unread};
 use crate::trace::{NoTrace, Record};
 use crate::{MonomialOrder, Outcome, Params, Threads};
-
-/// The primes of the random systems.
-const PRIMES: [u64; 5] = [2, 3, 7, 65521, 2_147_483_647];
 
 /// The edge cases of plan.md.
 const EDGE: &[&str] = &[
@@ -52,7 +51,7 @@ fn instances() -> Vec<(String, String)> {
     for (k, text) in EDGE.iter().enumerate() {
         list.push((format!("edge-{k}"), text.to_string()));
     }
-    for p in PRIMES {
+    for p in RANDOM_PRIMES {
         for seed in 0..2 {
             list.push((format!("random-p{p}-{seed}"), random_system(p, seed)));
         }
@@ -87,13 +86,15 @@ fn learned(name: &str, text: &str, signatures: bool) -> (Outcome, Record) {
 /// Per generator as parsed, the exponents of its leading monomial, None
 /// where it is zero.
 fn generator_leads(text: &str) -> Vec<Option<Vec<u32>>> {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let field = header.gf31().unwrap();
     let n = header.names.len();
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(1);
     let mut table = Table::new(Dense16::new(n), &mut rng);
-    let generators: Vec<Poly<Gf31, Rank1>> =
-        header.generators(&field, &mut table, &Grevlex).unwrap();
+    let generators: Vec<Poly<Gf31, Rank1>> = header
+        .generators(&field, &mut table, &Grevlex, &mut Budget::unbounded())
+        .map_err(Unread::unbounded)
+        .unwrap();
     generators
         .iter()
         .map(|g| (!g.is_zero()).then(|| (0..n).map(|i| table.exponent(g.lead(), i)).collect()))
@@ -111,10 +112,6 @@ fn grevlex(a: &[u32], b: &[u32]) -> Ordering {
         }
         Ordering::Equal
     })
-}
-
-fn divides(a: &[u32], b: &[u32]) -> bool {
-    a.iter().zip(b).all(|(x, y)| x <= y)
 }
 
 fn mul(a: &[u32], b: &[u32]) -> Vec<u32> {
@@ -243,6 +240,7 @@ fn every_step_is_whole() {
                 }
                 made += step.reductees.len();
             }
+            assert_eq!(record.matrices(), record.steps.len(), "{name}");
         }
     }
 }

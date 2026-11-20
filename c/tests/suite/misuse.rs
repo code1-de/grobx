@@ -43,7 +43,7 @@ fn what_the_interface_refuses() {
     for case in [
         "null-text",
         "null-params",
-        "order-3",
+        "order-4",
         "null-blocks",
         "text-not-utf8",
         "checker-3",

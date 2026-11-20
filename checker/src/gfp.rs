@@ -26,7 +26,7 @@ impl Numbers for Field {
     }
 
     fn over(&self, c: &mut u64, digits: &[u8], poll: &mut Poll) -> Option<()> {
-        poll.work(INVERSE);
+        poll.count(INVERSE);
         let inverse = self.inv(self.decimal(digits))?;
         *c = self.mul(*c, inverse);
         Some(())
@@ -122,7 +122,7 @@ impl Side for Gfp {
         mut elements: Vec<Poly<u64>>,
         poll: &mut Poll,
     ) -> Gfp {
-        // checker-gfp.15 design -- the Gröbner checks run on monic elements, one inverse per element (not measured)
+        // checker-gfp.15 design-checked -- the Gröbner checks run on monic elements, one inverse per element (not measured)
         // Each element is made monic in place and its leading coefficient kept,
         // so that G is held once.
         let mut leading = Vec::with_capacity(elements.len());
@@ -254,7 +254,7 @@ impl Side for Gfp {
 }
 
 impl Gfp {
-    // checker-gfp.14 cited: buchberger-1979 §2 -- the definition of reduction, and of a Gröbner basis as one modulo which every element of the ideal reduces to zero
+    // checker-gfp.14 practice-checked: top-reduction -- reduction to zero reduces only leading terms and ends at a leading term with no divisor, not a full reduction of every term
     /// Top-reduces the geobucket modulo G: whether it reaches zero, or the
     /// element of G whose multiple passed `u32`. Its work is counted for
     /// `poll` as it is done; where it stops, the answer means nothing.
@@ -270,7 +270,7 @@ impl Gfp {
             self.q.clear();
             poly::div_into(&self.m, self.elements[u].mono(0, w), &mut self.q);
             // The leading term c·m is already taken out, and g_u is monic.
-            // checker-orders.12 cited: bigatti-2025 §1.1, Remark 5 -- xy >_Lex z^1000: Lex is not degree compatible
+            // checker-orders.12 cited-checked: bigatti-2025 §1.1, Remark 1.5 -- term orders that are not degree compatible behave unorthodoxly: under Lex xy >_Lex z^n for every n, so infinitely many terms of higher degree lie below xy
             // A tail term may have a larger degree than the leading term, so
             // a product may pass deg m and `u32`.
             self.bucket

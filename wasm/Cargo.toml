@@ -1,0 +1,30 @@
+[package]
+name = "grobx-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# The module takes no crate beyond the engine, so that the loop, which builds
+# offline from the image's caches, finds every dependency of the workspace.
+[lib]
+name = "grobx_wasm"
+crate-type = ["cdylib"]
+doctest = false
+
+[dependencies]
+grobx = { path = "..", default-features = false }
+
+# The core's features, passed on: a build without one leaves it out of the
+# core (`../Cargo.toml`, `[features]`).
+[features]
+default = ["cofactors", "checker"]
+cofactors = ["grobx/cofactors"]
+checker = ["cofactors", "grobx/checker"]
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

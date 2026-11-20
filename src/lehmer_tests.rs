@@ -12,6 +12,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use crate::field::Gf31;
 use crate::lehmer::{Wang, coprime};
 use crate::rational::{Rational, bound, reconstruct};
+use crate::shared_tests::{image, integer, product, small_primes};
 
 /// The numbers of primes the moduli are products of: one prime, below
 /// 128 bits, past it, and up to 100.
@@ -30,29 +31,6 @@ fn primes(rng: &mut Xoshiro256PlusPlus, k: usize) -> Vec<u64> {
         }
     }
     used
-}
-
-fn product(primes: &[u64]) -> BigUint {
-    primes.iter().fold(BigUint::one(), |m, &p| m * p)
-}
-
-/// A random integer below 2^bits.
-fn integer(rng: &mut Xoshiro256PlusPlus, bits: u64) -> BigUint {
-    let mut x = BigUint::zero();
-    for _ in 0..bits.div_ceil(64) {
-        x = (x << 64u32) + BigUint::from(rng.next_u64());
-    }
-    x >> (bits.div_ceil(64) * 64 - bits)
-}
-
-/// n·d⁻¹ mod m; None where d is no unit mod m.
-fn image(n: &BigInt, d: &BigUint, m: &BigUint) -> Option<BigUint> {
-    let m = BigInt::from(m.clone());
-    let e = BigInt::from(d.clone()).extended_gcd(&m);
-    if !e.gcd.is_one() {
-        return None;
-    }
-    (n * e.x).mod_floor(&m).to_biguint()
 }
 
 /// `Wang` modulo m reconstructs u as `rational::reconstruct` does.
@@ -190,13 +168,6 @@ fn agrees_where_every_quotient_is_one() {
             }
         }
     }
-}
-
-/// The primes from 101 below `limit`, by trial division.
-fn small_primes(limit: u64) -> Vec<u64> {
-    (101..limit)
-        .filter(|&n| (2..).take_while(|d| d * d <= n).all(|d| n % d != 0))
-        .collect()
 }
 
 /// collins-1995 §2's case: the Euclidean algorithm stops at a d that is

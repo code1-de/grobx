@@ -21,7 +21,7 @@ use crate::field::shoup_factor;
 use crate::lehmer::{Mqrr, Scaled, threshold};
 use crate::mqrr_tests::{primes, scale_oracle};
 use crate::rational::{Converted, Crt, residue, scale_images};
-use crate::shortcut_tests::{image, integer, product};
+use crate::shared_tests::{image, integer, product};
 
 /// x mod p as a word.
 pub(crate) fn word(x: &BigUint, p: u64) -> u64 {

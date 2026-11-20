@@ -1,7 +1,7 @@
 [package]
 name = "grobx-python"
-version = "0.73.3"
-description = "Reduced Gröbner bases of polynomial ideals over GF(p) and over the rationals"
+version = "0.155.1"
+description.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,14 +15,23 @@ publish = false
 [lib]
 name = "grobx"
 crate-type = ["cdylib"]
-# test-build-time.5 design -- the lib, which holds no unit test, is compiled as no test binary, not as a test binary that lists no test (log 0019-1)
+# test-build-time.5 design-checked -- the lib, which holds no unit test, is compiled as no test binary, not as a test binary that lists no test (log 0019-1)
 test = false
+# hygiene.1 design-checked -- the lib, named grobx as the core's lib is, takes doc = false, which keeps their documentation from colliding, not the lib renamed, which would rename the extension module (not measured)
+doc = false
 
-# f4-gfp.32 design -- pyo3's abi3 for Python 3.12 and later, not a module built for the one interpreter found at build time (not measured)
-# f4-gfp.53 design -- pyo3's extension-module feature leaves libpython unlinked in every build, not the environment variable PYO3_BUILD_EXTENSION_MODULE that each build would have to set (not measured)
+# f4-gfp.32 practice-checked: Python stable ABI (abi3) -- pyo3's abi3 for Python 3.12 and later, not a module built for the one interpreter found at build time (not measured)
+# f4-gfp.53 design-checked -- pyo3's extension-module feature leaves libpython unlinked in every build, not the environment variable PYO3_BUILD_EXTENSION_MODULE that each build would have to set (not measured)
 [dependencies]
-grobx_core = { package = "grobx", path = ".." }
+grobx_core = { package = "grobx", path = "..", default-features = false }
 pyo3 = { version = "0.29", features = ["abi3-py312", "extension-module"] }
+
+# The core's features, passed on: a build without one leaves it out of the
+# core (`../Cargo.toml`, `[features]`).
+[features]
+default = ["cofactors", "checker"]
+cofactors = ["grobx_core/cofactors"]
+checker = ["cofactors", "grobx_core/checker"]
 
 [dev-dependencies]
 grobx-checker = { path = "../checker" }

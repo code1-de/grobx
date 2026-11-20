@@ -3,6 +3,8 @@
 //! An instance is in msolve's input format: a line of variable names, a
 //! line with the characteristic, then the generators, separated by commas.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::OnceCell;
 use std::io;
 use std::mem::MaybeUninit;
@@ -14,25 +16,27 @@ use num_bigint::BigUint;
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::budget::Budget;
-use crate::field::{Field, Gf31, Gf64, U64_DIGITS, decimal_value};
+use crate::budget::{Budget, INVERSE, PROBE, Site};
+use crate::field::{Field, Gf2, Gf31, Gf64, U64_DIGITS, decimal_value};
 use crate::id::MonoId;
-use crate::lehmer;
+use crate::limbs;
 use crate::module::{Module, Rank1};
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::narrow::{self, Narrow};
 use crate::order::{Grevlex, Order};
 use crate::os;
 use crate::poly::Poly;
-use crate::table::{Limit, Table};
+use crate::sort;
+use crate::table::{LOAD, Limit, Table, monomial_units, multipliers, sum_hash, touched_units};
 use crate::{Error, Stop};
 
-// q-lift.35 design -- the test code's reader refuses characteristic 0 as before, not the generators over Q written monic (not measured)
+// q-lift.35 design-checked -- the test code's reader refuses characteristic 0 as before, not the generators over Q written monic (not measured)
 /// The instance's nonzero generators, each monic with its terms in
 /// decreasing grevlex order, in the instance's order, as a bracketed list
 /// in the canonical basis text's spelling. For the test code of the reader.
 /// The instance is read in `Dense8`, `Dense16`, and `Dense32` in turn, as a
-/// call reads it, and the first that holds it writes the text.
+/// call over a field that starts in `Dense8` reads it, and the first that
+/// holds it writes the text, which every format writes alike.
 /// `Error::Characteristic` unless the characteristic is a prime below 2^64:
 /// it reads no instance over Q.
 ///
@@ -54,25 +58,34 @@ pub fn generators(text: &str) -> Result<String, Error> {
 
 /// As `generators`, in the format `M` alone.
 fn generators_in<M: Format>(text: &str) -> Result<String, Error> {
-    let header = Header::read(text)?;
+    // No call, so no bounds.
+    let mut budget = Budget::unbounded();
+    let header = Header::read(text, &mut budget).map_err(Unread::unbounded)?;
     match header.field()? {
-        Prime::Gf31(field) => generators_over::<M, _>(&header, field),
-        Prime::Gf64(field) => generators_over::<M, _>(&header, field),
+        Prime::Gf2(field) => generators_over::<M, _>(&header, field, &mut budget),
+        Prime::Gf31(field) => generators_over::<M, _>(&header, field, &mut budget),
+        Prime::Gf64(field) => generators_over::<M, _>(&header, field, &mut budget),
     }
 }
 
-/// As `generators_in`, over the field `field` of the header.
-fn generators_over<M: Format, F: Field>(header: &Header, field: F) -> Result<String, Error> {
+/// As `generators_in`, over the field `field` of the header, under
+/// `budget`, which has no bounds.
+fn generators_over<M: Format, F: Field>(
+    header: &Header,
+    field: F,
+    budget: &mut Budget,
+) -> Result<String, Error> {
     let format = M::new(header.names.len());
     // No call, so no seed: the multipliers decide no result.
     let mut table = Table::new(format, &mut Xoshiro256PlusPlus::seed_from_u64(NO_SEED));
-    let mut polys: Vec<Poly<F, Rank1>> = header.generators(&field, &mut table, &Grevlex)?;
+    let mut polys: Vec<Poly<F, Rank1>> = header
+        .generators(&field, &mut table, &Grevlex, budget)
+        .map_err(Unread::unbounded)?;
     polys.retain(|p| !p.is_zero());
     for p in &mut polys {
         p.make_monic(&field);
     }
     let mut out = String::new();
-    // No call, so no bounds.
     #[allow(
         clippy::expect_used,
         reason = "a budget without bounds never stops, and the writing fails only by a stop"
@@ -83,22 +96,24 @@ fn generators_over<M: Format, F: Field>(header: &Header, field: F) -> Result<Str
         &table,
         &field,
         polys.iter(),
-        &mut Budget::unbounded(),
+        budget,
     )
     .expect("a budget without bounds never stops");
     Ok(out)
 }
 
-/// The seed of a table whose hash multipliers decide no result: a table
-/// outside a call, and the parse's, which numbers the monomials in the order
-/// the text first writes them.
+/// The seed of hash multipliers that decide no result: a table's outside a
+/// call, and the parse's for the text's distinct monomials, which it numbers
+/// in the order the text first writes them.
 const NO_SEED: u64 = 0;
 
-// gfp-large-primes.2 cited: demin-2024 §4.2 -- all three flavours store the elements as machine integers, and the bit size of integers varies depending on the size of p
+// gfp-large-primes.2 design-checked -- `Gf31` stays for the primes below 2^31, and the entry point picks `Gf31` or `Gf64` from the characteristic, not `Gf64` for every prime (log 0015-1, 0015-2)
 /// The field a characteristic names (gfp-large-primes.2).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Prime {
-    /// A prime below 2^31.
+    /// The prime 2 (gf2-reduction-time.1).
+    Gf2(Gf2),
+    /// A prime below 2^31 but 2.
     Gf31(Gf31),
     /// A prime from 2^31 to 2^64.
     Gf64(Gf64),
@@ -107,6 +122,8 @@ pub(crate) enum Prime {
 /// An instance's first two lines, and where its generators start.
 pub(crate) struct Header<'a> {
     pub(crate) names: Vec<&'a str>,
+    /// The names indexed for the parse's lookups.
+    index: HashIndex,
     /// The characteristic's digits as written.
     pub(crate) characteristic: &'a str,
     /// The text after the characteristic's line.
@@ -116,23 +133,45 @@ pub(crate) struct Header<'a> {
 }
 
 impl<'a> Header<'a> {
-    pub(crate) fn read(text: &'a str) -> Result<Header<'a>, Error> {
+    // call-stop-latency.24 design-checked -- the reading of the instance takes the call's budget and spends as it goes, the header's bytes and names compared, the parse's bytes and monomials, and the map's terms, factors, digits, and monomials, and a stop inside it returns the call stopped, not the reading unspent before the call's first check (log 0138-6)
+    /// The header of `text`: its names, indexed, and its characteristic,
+    /// the bytes of its lines spent on `budget` a unit each and each name's
+    /// entry into the index `PROBE` units, at `Site::Names`, and a growth
+    /// of the index as `HashIndex::grow` spends. The text's error, or the
+    /// stop where the budget's check stops the call.
+    pub(crate) fn read(text: &'a str, budget: &mut Budget) -> Result<Header<'a>, Unread> {
         let mut c = Cursor::new(text);
         let mut names: Vec<&str> = Vec::new();
+        let mut index = HashIndex::new();
+        // The bytes spent so far.
+        let mut spent = 0;
         loop {
             c.skip_blanks();
             let name = c.name().ok_or_else(|| c.syntax("a variable name"))?;
-            if names.contains(&name) {
-                return Err(Error::RepeatedVariable {
-                    name: name.to_string(),
-                });
+            budget.spend(c.pos - spent + PROBE, Site::Names)?;
+            spent = c.pos;
+            // gf2-input-time.2 design-checked -- the header's test for a repeated name looks the name up in the names' index as the names enter it, not a comparison with every earlier name (log 0158-3)
+            let hash = name_hash(name);
+            match index.find(hash, |i| names[i] == name) {
+                Ok(_) => {
+                    return Err(Error::RepeatedVariable {
+                        name: name.to_string(),
+                    }
+                    .into());
+                }
+                Err(slot) => {
+                    names.push(name);
+                    narrow::id(names.len()).map_err(|_| Error::Size)?;
+                    index.insert(slot, hash, names.len(), budget, Site::Names, |i| {
+                        name_hash(names[i])
+                    })?;
+                }
             }
-            names.push(name);
             c.skip_blanks();
             match c.peek() {
                 Some(b',') => c.bump(),
                 Some(b'\n') => break,
-                Some(_) | None => return Err(c.syntax("a comma or a line feed")),
+                Some(_) | None => return Err(c.syntax("a comma or a line feed").into()),
             }
         }
         c.bump(); // the first line feed
@@ -142,10 +181,12 @@ impl<'a> Header<'a> {
         match c.peek() {
             Some(b'\n') => c.bump(),
             None => {}
-            Some(_) => return Err(c.syntax("a line feed")),
+            Some(_) => return Err(c.syntax("a line feed").into()),
         }
+        budget.spend(c.pos - spent, Site::Names)?;
         Ok(Header {
             names,
+            index,
             characteristic,
             rest: c,
             parsed: OnceCell::new(),
@@ -159,7 +200,7 @@ impl<'a> Header<'a> {
     }
 
     /// The characteristic as a field of the engine: `Error::Characteristic`
-    /// unless it is a prime below 2^64.
+    /// unless it is a prime below 2^64. The prime 2 takes `Gf2`.
     pub(crate) fn field(&self) -> Result<Prime, Error> {
         let digits = self.characteristic.trim_start_matches('0');
         let p = digits
@@ -167,6 +208,9 @@ impl<'a> Header<'a> {
             .ok()
             .or(digits.is_empty().then_some(0));
         let field = p.and_then(|p| {
+            if p == Gf2::P {
+                return Some(Prime::Gf2(Gf2::new()));
+            }
             Gf31::new(p)
                 .map(Prime::Gf31)
                 .or_else(|| Gf64::new(p).map(Prime::Gf64))
@@ -177,67 +221,243 @@ impl<'a> Header<'a> {
     }
 
     /// As `field`, `Error::Characteristic` unless the prime lies below
-    /// 2^31. Some of the crate's unit tests read their field through it.
+    /// 2^31, and `Gf31` at 2 for the prime 2. Some of the crate's unit
+    /// tests read their field through it.
     #[cfg(test)]
     pub(crate) fn gf31(&self) -> Result<Gf31, Error> {
         match self.field()? {
             Prime::Gf31(field) => Ok(field),
+            Prime::Gf2(_) => Gf31::new(Gf2::P).ok_or_else(|| Error::Characteristic {
+                value: self.characteristic.to_string(),
+            }),
             Prime::Gf64(_) => Err(Error::Characteristic {
                 value: self.characteristic.to_string(),
             }),
         }
     }
 
-    // q-zero-denominator.2 design -- the lift tells a denominator 0 from a prime that divides a denominator by the line of the text's first denominator 0, not by a reader that knows the instance is over Q (not measured)
-    /// The line of the first denominator 0 among the generators: a `/`,
-    /// whitespace, and decimal digits that are all `0`, at the digits'
-    /// line. None where no denominator is 0. `Cursor::factor` takes a
-    /// denominator with the same steps, and the `NoInverse` of
-    /// `Parsed::map` names the same line.
+    /// The line of the denominator 0 the parse stopped at, the `NoInverse`
+    /// of `Cursor::factor`, at the digits' line: None where the parse ran
+    /// through or stopped at another error, which comes first in the text.
+    /// The lift tells a read's `NoInverse` for a denominator 0 from one for
+    /// a prime that divides a denominator by it (q-denominator-line.2). A
+    /// read's `NoInverse` comes from the parsed form, so it follows the
+    /// parse.
+    // call-stop-latency.64 design-checked -- the parse's denominator 0 is read from the parse a read made, which every NoInverse follows, not a parse of its own under a budget the lift's test of the read's error would hold (not measured)
     pub(crate) fn zero_denominator(&self) -> Option<usize> {
-        let mut c = self.rest.clone();
-        while let Some(b) = c.peek() {
-            c.bump();
-            if b != b'/' {
-                continue;
-            }
-            c.skip_space();
-            if c.integer().is_some_and(|d| d.bytes().all(|b| b == b'0')) {
-                return Some(c.last);
-            }
+        let parsed = self.parsed.get();
+        debug_assert!(parsed.is_some(), "a NoInverse before the parse");
+        let (error, _) = parsed?.error.as_ref()?;
+        match error {
+            Error::NoInverse { line } => Some(*line),
+            Error::Syntax { .. }
+            | Error::UnknownVariable { .. }
+            | Error::RepeatedVariable { .. }
+            | Error::Characteristic { .. }
+            | Error::Overflow { .. }
+            | Error::Size
+            | Error::Order { .. }
+            | Error::Memory
+            | Error::Clock
+            | Error::Misfit { .. }
+            | Error::Drops { .. }
+            | Error::NotBuilt { .. } => None,
         }
-        None
     }
 
     /// Every generator, zero ones included, in the instance's order, over
     /// `field` in `table`, each with its terms in `order`: the parsed form
-    /// mapped to them (`Parsed::map`). The first error of the text over
-    /// this field and format; `Error::Size` where the generators, their
-    /// terms, their numeric factors, or their distinct monomials are more
-    /// than a u32 id numbers.
+    /// mapped to them (`Parsed::map`), the parse and the map spent on
+    /// `budget`. The first error of the text over this field and format;
+    /// `Error::Size` where the generators, their terms, their numeric
+    /// factors, or their distinct monomials are more than a u32 id numbers,
+    /// or a term starts at a line from `MINUS` on; or the stop where the
+    /// budget's check stops the call.
     pub(crate) fn generators<F: Field, M: Format, O: Order<M>, D: Module>(
         &self,
         field: &F,
         table: &mut Table<M>,
         order: &O,
-    ) -> Result<Vec<Poly<F, D>>, Error> {
-        self.parsed().map(field, table, order)
+        budget: &mut Budget,
+    ) -> Result<Vec<Poly<F, D>>, Unread> {
+        self.parsed(budget)?.map(field, table, order, budget)
     }
 
-    // run-generators-time.1 design -- the header parses the generators once per call into a form free of the field and the run's table, and each run maps that form to its field and table, not each run reading the instance text again (log 0087-1)
-    // run-generators-time.4 design -- the parsed form is made at the first run's read, the first call of `Header::parsed`, and kept in the header, in a OnceCell, not made in `Header::read` nor by the entry point and passed beside the header (not measured)
-    /// The generators as parsed: parsed at the first call and kept for
-    /// every later one. `Parsed::map` takes them to a run's field and table.
-    pub(crate) fn parsed(&self) -> &Parsed<'a> {
-        self.parsed.get_or_init(|| Parser::parse(self))
+    // run-generators-time.1 design-checked -- the header parses the generators once per call into a form free of the field and the run's table, and each run maps that form to its field and table, not each run reading the instance text again (log 0087-1)
+    // run-generators-time.4 practice-checked: lazy initialization -- the parsed form is made at the first run's read, the first call of `Header::parsed`, and kept in the header, in a OnceCell, not made in `Header::read` nor by the entry point and passed beside the header (not measured)
+    /// The generators as parsed: parsed at the first call, spent on
+    /// `budget`, and kept for every later one. `Parsed::map` takes them to a
+    /// run's field and table. The stop where the budget's check stops the
+    /// call, with nothing kept.
+    pub(crate) fn parsed(&self, budget: &mut Budget) -> Result<&Parsed<'a>, Stop> {
+        if let Some(parsed) = self.parsed.get() {
+            return Ok(parsed);
+        }
+        let parsed = Parser::parse(self, budget)?;
+        Ok(self.parsed.get_or_init(|| parsed))
     }
 }
 
-/// The names with their variable's index, sorted for binary search.
-fn sorted_names<'a>(names: &[&'a str]) -> Vec<(&'a str, usize)> {
-    let mut sorted: Vec<_> = names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
-    sorted.sort_unstable();
-    sorted
+// call-stop-latency.63 design-checked -- a reading returns its stop beside the text's errors in a type of its own, Unread, which a call turns into its stopped outcome, not a variant of the public Error, which names no stop, nor a Result of a Result (not measured)
+/// Why a reading of the instance returns no result: the text's error, or
+/// the stop of the call's budget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Unread {
+    Error(Error),
+    Stop(Stop),
+}
+
+impl From<Error> for Unread {
+    fn from(error: Error) -> Unread {
+        Unread::Error(error)
+    }
+}
+
+impl From<Stop> for Unread {
+    fn from(stop: Stop) -> Unread {
+        Unread::Stop(stop)
+    }
+}
+
+impl Unread {
+    /// The error of a reading under a budget without bounds, which never
+    /// stops.
+    #[allow(
+        clippy::unreachable,
+        reason = "a budget without bounds never stops, and its callers read under one alone"
+    )]
+    pub(crate) fn unbounded(self) -> Error {
+        match self {
+            Unread::Error(error) => error,
+            Unread::Stop(stop) => unreachable!("a budget without bounds stopped: {stop:?}"),
+        }
+    }
+}
+
+// gf2-input-time.3 practice-checked: hash table with linear probing -- a variable's name is found in a table of the names' indices under a hash of its bytes, the hash's top 32 bits beside each index and compared before the name, not by a binary search over the sorted names, whose string comparisons held much of the parse once its terms interned over their variables alone (log 0158-1, 0158-3)
+// instance-read-peak.2 design-checked -- the parse's distinct monomials are found by the index the names are found by, entries numbered from 0 under a hash the caller takes and compared by the caller's test, not an index of their own (log 0175-1, 0175-2)
+/// Entries numbered from 0, found by a 64-bit hash of each and the caller's
+/// test of an entry: per slot an entry's number plus one below the hash's
+/// top 32 bits, 0 where none, probed linearly from the hash's low bits, the
+/// slots a power of two in number and at least `LOAD` times the entries.
+/// The variables' names and the parse's distinct monomials are indexed so.
+#[derive(Clone)]
+struct HashIndex {
+    slots: Vec<u64>,
+}
+
+/// The slots of an empty hash index.
+const INDEX_SLOTS: usize = 1 << 4;
+
+impl HashIndex {
+    fn new() -> HashIndex {
+        HashIndex {
+            slots: vec![0; INDEX_SLOTS],
+        }
+    }
+
+    // gf2-input-time.5 design-checked -- a name's first slot is its hash's low bits, not its top bits, which FNV-1a mixes little on names of a few bytes, so that the names of an instance of many variables clustered (log 0158-1, 0158-3)
+    /// The first slot of an entry of hash `hash`, and its tag: the hash's
+    /// low bits, and its top 32 bits.
+    fn home(&self, hash: u64) -> (usize, u64) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the mask keeps the slot below the index's size"
+        )]
+        let slot = hash as usize & (self.slots.len() - 1);
+        (slot, hash >> u32::BITS << u32::BITS)
+    }
+
+    /// The number of the entry of hash `hash` for which `same` holds; or
+    /// the empty slot where it would stand. The tags are compared before
+    /// `same` is asked.
+    #[inline(always)]
+    fn find(&self, hash: u64, same: impl Fn(usize) -> bool) -> Result<usize, usize> {
+        let last = self.slots.len() - 1;
+        let (mut slot, tag) = self.home(hash);
+        loop {
+            let s = self.slots[slot];
+            if s == 0 {
+                return Err(slot);
+            }
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the low 32 bits hold an entry's number plus one"
+            )]
+            let i = (s as u32) as usize - 1;
+            if s >> u32::BITS << u32::BITS == tag && same(i) {
+                return Ok(i);
+            }
+            slot = (slot + 1) & last;
+        }
+    }
+
+    /// Enters entry `entries − 1`, of hash `hash`, at the empty slot `slot`
+    /// that `find` returned for it, the entries before it entered, and grows
+    /// the index where that takes it past half full; `hash_of` gives each
+    /// entry's hash. The entries number at most `u32::MAX`, which the
+    /// caller checks. The stop where the budget's check stops the call in a
+    /// growth, spent at `site`.
+    fn insert(
+        &mut self,
+        slot: usize,
+        hash: u64,
+        entries: usize,
+        budget: &mut Budget,
+        site: Site,
+        hash_of: impl Fn(usize) -> u64,
+    ) -> Result<(), Stop> {
+        debug_assert!(slot < self.slots.len(), "slot {slot}");
+        debug_assert!(
+            entries > 0 && u32::try_from(entries).is_ok(),
+            "{entries} entries"
+        );
+        let (_, tag) = self.home(hash);
+        self.slots[slot] = tag | entries as u64;
+        if LOAD * entries > self.slots.len() {
+            self.grow(entries, budget, site, hash_of)?;
+        }
+        Ok(())
+    }
+
+    /// Doubles the slots and enters each of the `entries` again by its hash,
+    /// `hash_of`: `PROBE` units an entry, at `site`.
+    fn grow(
+        &mut self,
+        entries: usize,
+        budget: &mut Budget,
+        site: Site,
+        hash_of: impl Fn(usize) -> u64,
+    ) -> Result<(), Stop> {
+        let doubled = 2 * self.slots.len();
+        self.slots.clear();
+        self.slots.resize(doubled, 0);
+        let last = doubled - 1;
+        for i in 0..entries {
+            let (mut slot, tag) = self.home(hash_of(i));
+            while self.slots[slot] != 0 {
+                slot = (slot + 1) & last;
+            }
+            self.slots[slot] = tag | (i as u64 + 1);
+        }
+        budget.spend(entries * PROBE, site)
+    }
+}
+
+// gf2-input-time.4 practice-checked: FNV-1a -- a name's hash is the 64-bit FNV-1a hash of its bytes, not a hash of the engine's own
+/// The 64-bit FNV-1a hash of `name`'s bytes.
+fn name_hash(name: &str) -> u64 {
+    name.bytes().fold(FNV_OFFSET, fnv_step)
+}
+
+/// FNV-1a's offset basis, the hash of no byte.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// FNV-1a's hash `h` of some bytes extended by the byte `b`.
+#[inline(always)]
+fn fnv_step(h: u64, b: u8) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    (h ^ u64::from(b)).wrapping_mul(PRIME)
 }
 
 /// A position in the text, with its line.
@@ -310,10 +530,27 @@ impl<'a> Cursor<'a> {
     }
 
     fn name(&mut self) -> Option<&'a str> {
-        self.run(
-            |b| b.is_ascii_alphabetic() || b == b'_',
-            |b| b.is_ascii_alphanumeric() || b == b'_',
-        )
+        self.run(name_first, name_byte)
+    }
+
+    // instance-read-time.4 design-checked -- a name's hash is taken as its bytes are scanned, and the names' index finds the name by that hash, not the name scanned and then hashed in a second pass over its bytes (log 0160-1, 0165-1, 0165-2)
+    /// A name and its hash (`name_hash`), taken in one pass over its bytes;
+    /// None where no name stands here.
+    fn hashed_name(&mut self) -> Option<(&'a str, u64)> {
+        let bytes = self.text.as_bytes();
+        let start = self.pos;
+        if !bytes.get(start).copied().is_some_and(name_first) {
+            return None;
+        }
+        let mut hash = FNV_OFFSET;
+        let mut end = start;
+        while let Some(&b) = bytes.get(end).filter(|&&b| name_byte(b)) {
+            hash = fnv_step(hash, b);
+            end += 1;
+        }
+        self.pos = end;
+        self.last = self.line;
+        Some((&self.text[start..end], hash))
     }
 
     fn integer(&mut self) -> Option<&'a str> {
@@ -332,46 +569,49 @@ impl<'a> Cursor<'a> {
         Some(negative)
     }
 
-    /// A numeric factor, `n` or `n/d` with whitespace around the `/`, its
-    /// denominator at the line of the denominator's digits; None where no
-    /// digit stands here.
+    /// A numeric factor, `n` or `n/d` (`denominator`); None where no digit
+    /// stands here.
     fn factor(&mut self) -> Result<Option<Factor<'a>>, Error> {
         let Some(digits) = self.integer() else {
             return Ok(None);
         };
-        let numerator = Literal::new(digits);
+        Ok(Some(Factor {
+            numerator: Literal::new(digits),
+            denominator: self.denominator()?,
+        }))
+    }
+
+    /// A denominator, `/d` with whitespace around the `/`: d and the line of
+    /// its digits; None where no `/` stands here. `Error::NoInverse` at the
+    /// digits' line where they are all `0`.
+    fn denominator(&mut self) -> Result<Option<(Literal<'a>, usize)>, Error> {
         self.skip_space();
         if self.peek() != Some(b'/') {
-            return Ok(Some(Factor {
-                numerator,
-                denominator: None,
-            }));
+            return Ok(None);
         }
         self.bump();
         self.skip_space();
         let digits = self.integer().ok_or_else(|| self.syntax("a denominator"))?;
-        Ok(Some(Factor {
-            numerator,
-            denominator: Some((Literal::new(digits), self.last)),
-        }))
+        // q-denominator-line.1 design-checked -- a denominator whose digits are all 0 is the parse's error, NoInverse at the digits' line, which every read returns at its place in the text's order whatever its prime, not a scan of the text for the first /0 after a read's NoInverse, which names a line and not the error a read reaches first on it
+        if digits.bytes().all(|b| b == b'0') {
+            return Err(Error::NoInverse { line: self.last });
+        }
+        Ok(Some((Literal::new(digits), self.last)))
     }
 
     /// A power of a variable, `x` or `x^e` with whitespace around the `^`:
     /// the variable's index and e, 1 where no `^` stands; None where no name
-    /// stands here. `names` is sorted by `sorted_names`.
+    /// stands here. `index` indexes `names`.
     /// `Error::UnknownVariable` at the name's line where it is none of them.
-    fn power(&mut self, names: &[(&str, usize)]) -> Result<Option<(usize, u64)>, Error> {
-        let Some(name) = self.name() else {
+    fn power(&mut self, names: &[&str], index: &HashIndex) -> Result<Option<(usize, u64)>, Error> {
+        let Some((name, hash)) = self.hashed_name() else {
             return Ok(None);
         };
-        let i = match names.binary_search_by(|(n, _)| n.cmp(&name)) {
-            Ok(k) => names[k].1,
-            Err(_) => {
-                return Err(Error::UnknownVariable {
-                    line: self.last,
-                    name: name.to_string(),
-                });
-            }
+        let Ok(i) = index.find(hash, |i| names[i] == name) else {
+            return Err(Error::UnknownVariable {
+                line: self.last,
+                name: name.to_string(),
+            });
         };
         self.skip_space();
         if self.peek() != Some(b'^') {
@@ -396,6 +636,17 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// Whether a name may begin with the byte b: a letter or `_`.
+fn name_first(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_'
+}
+
+/// Whether a name may hold the byte b after its first: a letter, a digit,
+/// or `_`.
+fn name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 /// Raises the exponent of variable i by e, cut at `u32::MAX`.
 fn raise(exponents: &mut [u32], i: usize, e: u64) {
     debug_assert!(
@@ -410,15 +661,16 @@ fn raise(exponents: &mut [u32], i: usize, e: u64) {
 }
 
 /// The error of a term at `line` whose monomial reaches a limit of the
-/// table.
-fn term_error(limit: Limit, line: usize) -> Error {
+/// table, or the stop that a growth of the table met.
+fn term_error(limit: Limit, line: usize) -> Unread {
     match limit {
-        Limit::Overflow => Error::Overflow { line: Some(line) },
-        Limit::Size => Error::Size,
+        Limit::Overflow => Unread::Error(Error::Overflow { line: Some(line) }),
+        Limit::Size => Unread::Error(Error::Size),
+        Limit::Stop(stop) => Unread::Stop(stop),
     }
 }
 
-// run-generators-time.2 design -- a literal of at most nineteen digits is kept as its value, whose residue is `Field::coef` of it, and a longer one as its digits, whose residue `Field::decimal` takes, not every literal's digits kept and read at each run nor every literal as a big integer's limbs (log 0087-1)
+// run-generators-time.2 design-checked -- a literal of at most nineteen digits is kept as its value, whose residue is `Field::coef` of it, and a longer one as its digits, whose residue `Field::decimal` takes, not every literal's digits kept and read at each run nor every literal as a big integer's limbs (log 0087-1)
 /// A numeric literal of the instance text: the value of at most
 /// `U64_DIGITS` digits, or the digits of a longer one.
 #[derive(Clone, Copy, Debug)]
@@ -445,10 +697,21 @@ impl<'a> Literal<'a> {
             Literal::Digits(digits) => field.decimal(digits),
         }
     }
+
+    /// The units of work of its residue at one lane: `PROBE`, a remainder,
+    /// for a value, and for digits a unit each and `PROBE` per
+    /// `U64_DIGITS` of them (`field::decimal_residue`).
+    fn units(self) -> usize {
+        match self {
+            Literal::Small(_) => PROBE,
+            Literal::Digits(digits) => digits.len() + digits.len().div_ceil(U64_DIGITS) * PROBE,
+        }
+    }
 }
 
-/// A numeric factor of a term, `n` or `n/d`: its numerator, and its
-/// denominator with the line of the denominator's digits.
+/// A numeric factor of a term, `n` or `n/d`, or `1/d` for a denominator
+/// after another factor: its numerator, and its denominator with the line
+/// of the denominator's digits.
 #[derive(Clone, Copy, Debug)]
 struct Factor<'a> {
     numerator: Literal<'a>,
@@ -457,8 +720,9 @@ struct Factor<'a> {
 
 impl Factor<'_> {
     /// Its value in the field: the numerator times the inverse of the
-    /// denominator, `Error::NoInverse` at the denominator's line where that
-    /// is 0 at a lane.
+    /// denominator, `Error::NoInverse` at the denominator's line where the
+    /// field has no inverse of it, a prime of the field that divides it.
+    /// The parse refuses a denominator that is 0 (`Cursor::factor`).
     fn value<F: Field>(&self, field: &F) -> Result<F::Coef, Error> {
         let numerator = self.numerator.residue(field);
         let Some((denominator, line)) = self.denominator else {
@@ -469,17 +733,87 @@ impl Factor<'_> {
             .ok_or(Error::NoInverse { line })?;
         Ok(field.mul(numerator, inverse))
     }
+
+    // call-stop-latency.61 design-checked -- a numeric factor's value spends PROBE units a literal, a remainder, its digits past a word's a unit each and PROBE per word, PROBE a product, and INVERSE a denominator's inversion, at each lane, not a unit per term and digit (log 0138-6)
+    /// The units of work of its value at one lane, beside the product that
+    /// takes it into its term's coefficient: its literals' residues, and
+    /// for a denominator its inversion and the product.
+    fn units(&self) -> usize {
+        let numerator = self.numerator.units();
+        match self.denominator {
+            None => numerator,
+            Some((denominator, _)) => numerator + denominator.units() + INVERSE + PROBE,
+        }
+    }
 }
 
-/// A term as parsed: its sign, its factors as a range of
-/// `Parsed::factors`, its monomial's id in `Parsed::monomials`, and the
-/// line it starts at. The id is `MonoId::NONE` where the monomial's degree
-/// passes `Dense32`, the widest format, and so every format.
-struct Term {
-    negative: bool,
-    factors: Range<u32>,
-    monomial: MonoId,
-    line: usize,
+#[cfg(test)]
+thread_local! {
+    // instance-read-peak.9 design-checked -- the test profile can give every distinct monomial a parse meets the hash 0, so that the test code reaches the index's comparison of the variables each monomial names, which random multipliers leave untaken, not that comparison tested on an index of its own (not measured)
+    /// Where true, every distinct monomial a parse on this thread meets
+    /// hashes to 0 (`monomial_hash`).
+    pub(crate) static ONE_HASH: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The hash of a distinct monomial of the parse from its variables and
+/// their exponents, each variable once: `table::sum_hash` under the
+/// parse's multipliers, and 0 in the test profile where `ONE_HASH` holds.
+fn monomial_hash(multipliers: &[u64], exponents: impl Iterator<Item = (usize, u32)>) -> u64 {
+    #[cfg(test)]
+    if ONE_HASH.get() {
+        return 0;
+    }
+    sum_hash(multipliers, exponents)
+}
+
+// instance-read-peak.5 design-checked -- a parsed term takes 12 bytes, the end of its factors' range, its monomial's number, and its line with its sign in the line's top bit, the range's start the end of the term before, not 24 bytes of a range, a line in a usize, and a sign beside them, as the call keeps every term for its runs (log 0175-1, 0175-2)
+/// A term as parsed: the end of its factors' range in `Parsed::factors`,
+/// which starts where the term before's ends; its monomial's number among
+/// the text's distinct monomials; and the line it starts at, with its sign
+/// in the line's top bit, `MINUS`, set for a minus. The number is
+/// `MonoId::NONE` where the monomial's degree passes `Dense32`, the widest
+/// format, and so every format.
+#[derive(Clone, Copy)]
+pub(crate) struct Term {
+    pub(crate) end: u32,
+    pub(crate) monomial: MonoId,
+    line: u32,
+}
+
+/// The bit of a term's line that marks a minus (`Term`).
+pub(crate) const MINUS: u32 = 1 << (u32::BITS - 1);
+
+impl Term {
+    /// The term whose factors end at `end`, of monomial `monomial`, starting
+    /// at `line`, a minus where `negative`: `Error::Size` where the line
+    /// reaches `MINUS`.
+    pub(crate) fn new(
+        end: u32,
+        monomial: MonoId,
+        line: usize,
+        negative: bool,
+    ) -> Result<Term, Error> {
+        let line = u32::try_from(line)
+            .ok()
+            .filter(|&l| l < MINUS)
+            .ok_or(Error::Size)?;
+        let sign = if negative { MINUS } else { 0 };
+        Ok(Term {
+            end,
+            monomial,
+            line: line | sign,
+        })
+    }
+
+    /// Whether the term's sign is a minus.
+    pub(crate) fn negative(self) -> bool {
+        self.line & MINUS != 0
+    }
+
+    /// The line the term starts at.
+    pub(crate) fn line(self) -> usize {
+        (self.line & !MINUS) as usize
+    }
 }
 
 /// The generators as parsed once, free of a run's field and table: per
@@ -491,10 +825,24 @@ pub(crate) struct Parsed<'a> {
     generators: Vec<Range<u32>>,
     terms: Vec<Term>,
     factors: Vec<Factor<'a>>,
-    // run-generators-time.9 design -- the parse numbers the text's distinct monomials in a table of its own in `Dense32`, in the order the text first writes them, and each run interns each of them once, at its first term, not each term's exponents kept and interned at every run (log 0087-2)
-    /// The terms' distinct monomials, numbered in the order the text first
-    /// writes them.
-    monomials: Table<Dense32>,
+    // run-generators-time.9 design-checked -- the parse numbers the text's distinct monomials in the order the text first writes them, and each run interns each of them once, at its first term, not each term's exponents kept and interned at every run (log 0087-2); amended by instance-read-peak.1: the numbers by `index`, in place of a table of their own in `Dense32`
+    /// The text's variables.
+    variables: usize,
+    // instance-read-peak.3 design-checked -- a distinct monomial's hash is Σ r_i e_i over the variables its term names, the table's own hash, its multipliers drawn as a table draws them, not a hash of the variables' and exponents' bytes nor a mix function of a variable's index, so that every spelling of a monomial hashes alike (not measured)
+    /// The distinct monomials' hash multipliers, a variable's each, drawn as
+    /// a table's from the seed `NO_SEED`.
+    multipliers: Vec<u64>,
+    // instance-read-peak.1 practice-checked: sparse monomial representation -- the parse finds a term's monomial among the text's distinct monomials by its hash and the variables and exponents each one's first term named, `named`, with no exponent vector kept for any, not each distinct monomial's exponents over every variable kept in a table in `Dense32`, four bytes a variable, which the call keeps for its runs (log 0175-1, 0175-2)
+    /// The distinct monomials by number, under the hashes of their `named`
+    /// exponents.
+    index: HashIndex,
+    // instance-read-time.3 practice-checked: sparse monomial representation -- each distinct monomial keeps the variables its first term names and their exponents, from which a run interns it over those variables alone (`Table::intern_touched`, gf2-input-time.1), not its exponents unpacked from `Dense32` and interned over every variable of the format (log 0160-1, 0165-1, 0165-2)
+    /// Per distinct monomial, by its number, the variables its first term
+    /// names with their exponents: `named[named_at[k]..named_at[k + 1]]`.
+    named: Vec<(u32, u32)>,
+    /// The bounds of each distinct monomial's variables in `named`, one
+    /// more than the monomials, from 0.
+    named_at: Vec<u32>,
     error: Option<(Error, Range<u32>)>,
 }
 
@@ -504,44 +852,113 @@ impl Parsed<'_> {
     /// zero terms dropped; or the first error of the text. The terms are
     /// taken in the text's order, each its factors' values in turn, then
     /// its monomial, so the error is the first in the text over this field
-    /// and format. A monomial is interned at its first term, so `table`
-    /// numbers the monomials in the order the text first writes them.
+    /// and format. A monomial is interned at its first term, over the
+    /// variables that term names, so `table` numbers the monomials in the
+    /// order the text first writes them. Once every term is taken, the
+    /// text's distinct monomials are sorted into decreasing `order` once,
+    /// and the terms are ordered by their monomials' ranks in that sort
+    /// (instance-read-time.1), then by their generators, by two counting
+    /// sorts (instance-read-peak.7). The map spends on `budget` at
+    /// `Site::Map`: the ids' array a unit an id, each term `PROBE` units and
+    /// its coefficient's (`coefficient_units`), each monomial interned what
+    /// `touched_units` says, the ranks what `ranks` spends, the counting
+    /// sorts what `sort::counting` spends, and each generator's sum what
+    /// `Poly::from_sorted` spends. The stop where the budget's check stops
+    /// the call.
     pub(crate) fn map<F: Field, M: Format, O: Order<M>, D: Module>(
         &self,
         field: &F,
         table: &mut Table<M>,
         order: &O,
-    ) -> Result<Vec<Poly<F, D>>, Error> {
-        let n = self.monomials.format().variables();
+        budget: &mut Budget,
+    ) -> Result<Vec<Poly<F, D>>, Unread> {
+        let n = self.variables;
         debug_assert_eq!(
             table.format().variables(),
             n,
             "a table of other variables than the text's"
         );
-        let mut ids = vec![MonoId::NONE; self.monomials.len()];
+        let mut ids = vec![MonoId::NONE; self.named_at.len() - 1];
+        budget.spend(ids.len(), Site::Map)?;
         let mut exponents = vec![0; n];
-        let mut polys = Vec::with_capacity(self.generators.len());
-        let mut terms = Vec::new();
-        for g in &self.generators {
-            for term in &self.terms[g.start as usize..g.end as usize] {
-                let coef = self.coefficient(&term.factors, field)?;
-                let m = self.monomial(term, table, &mut ids, &mut exponents)?;
-                terms.push((m, if term.negative { field.neg(coef) } else { coef }));
+        let mut touched = Vec::new();
+        // Every term's generator, its monomial's number among the distinct
+        // monomials, and its coefficient, generator after generator.
+        let mut terms: Vec<(u32, u32, F::Coef)> = Vec::with_capacity(self.terms.len());
+        let mut start = 0;
+        for (g, range) in (0u32..).zip(&self.generators) {
+            for &term in &self.terms[range.start as usize..range.end as usize] {
+                let factors = start..term.end;
+                start = term.end;
+                let coef = self.coefficient(&factors, field)?;
+                self.monomial(term, table, &mut ids, &mut exponents, &mut touched, budget)?;
+                let coef = if term.negative() {
+                    field.neg(coef)
+                } else {
+                    coef
+                };
+                terms.push((g, term.monomial.raw(), coef));
+                budget.spend(PROBE + self.coefficient_units::<F>(&factors), Site::Map)?;
             }
-            polys.push(Poly::from_terms(
-                &mut terms,
-                field,
-                table,
-                order,
-                D::Position::default(),
-            ));
         }
-        // run-generators-time.3 design -- a text that breaks the grammar keeps the terms before the break and the broken term's factors, which the map takes before it returns the parse's error, so that a denominator 0 mod p before the break stays the error, not the parse's error returned at once nor the reader kept for such texts (not measured)
+        // run-generators-time.3 design-checked -- a text that breaks the grammar keeps the terms before the break and the broken term's factors, which the map takes before it returns the parse's error, so that a denominator 0 mod p before the break stays the error, not the parse's error returned at once nor the reader kept for such texts (not measured)
         if let Some((error, broken)) = &self.error {
             self.coefficient(broken, field)?;
-            return Err(error.clone());
+            return Err(error.clone().into());
+        }
+        let rank = ranks(&ids, table, order, budget)?;
+        // instance-read-peak.7 practice-checked: LSD radix sort -- the terms' numbers are ordered by a stable counting sort by their monomials' ranks, then by a stable counting sort by their generators, which leaves each generator's terms by rank, not each generator's terms sorted by a comparison of their ranks (log 0175-1, 0175-2)
+        // instance-read-peak.8 practice-checked: indirect sort -- the counting sorts order the terms' numbers, four bytes a term, and each generator takes its terms through them, not the terms themselves moved, whose coefficient over ℚ takes 16 bytes in `Gf64Pair` (log 0175-1, 0175-2)
+        let mut counts = Vec::new();
+        let mut numbers: Vec<u32> = (0..terms.len()).map(Narrow::narrow).collect();
+        let mut by_rank = Vec::new();
+        sort::counting(
+            &numbers,
+            |&t| rank[terms[t as usize].1 as usize] as usize,
+            ids.len(),
+            &mut counts,
+            &mut by_rank,
+            budget,
+            Site::Map,
+        )?;
+        sort::counting(
+            &by_rank,
+            |&t| terms[t as usize].0 as usize,
+            self.generators.len(),
+            &mut counts,
+            &mut numbers,
+            budget,
+            Site::Map,
+        )?;
+        drop(by_rank);
+        let mut polys = Vec::with_capacity(self.generators.len());
+        let mut sorted = Vec::new();
+        // The generators' ranges follow each other from 0 over every term,
+        // so the sort by generator leaves a generator's terms at its range.
+        for g in &self.generators {
+            sorted.clear();
+            sorted.extend(numbers[g.start as usize..g.end as usize].iter().map(|&t| {
+                let (_, m, coef) = terms[t as usize];
+                (ids[m as usize], coef)
+            }));
+            polys.push(Poly::from_sorted(
+                &mut sorted,
+                field,
+                D::Position::default(),
+                budget,
+                Site::Map,
+            )?);
         }
         Ok(polys)
+    }
+
+    /// The units of work of the coefficient of these factors over the
+    /// field `F`: per factor its value's and a product's, `PROBE`, at each
+    /// lane (`Factor::units`).
+    fn coefficient_units<F: Field>(&self, factors: &Range<u32>) -> usize {
+        let factors = &self.factors[factors.start as usize..factors.end as usize];
+        let lane: usize = factors.iter().map(|f| f.units() + PROBE).sum();
+        F::LANES * lane
     }
 
     /// The product of the values of these factors, 1 for none, or the
@@ -557,95 +974,173 @@ impl Parsed<'_> {
     }
 
     /// The id in `table` of the term's monomial, interned at the monomial's
-    /// first term: `ids` holds per id of `monomials` its id in `table`,
-    /// `MonoId::NONE` before, and `exponents` is scratch of one exponent per
-    /// variable.
+    /// first term over the variables that term names (`named`,
+    /// `Table::intern_touched`) and spent there as `touched_units` says, at
+    /// `Site::Map`: `ids` holds per id of `monomials` its id in `table`,
+    /// `MonoId::NONE` before, `exponents` is scratch of one exponent per
+    /// variable, 0 before and after, and `touched` scratch of the variables
+    /// named. The stop where the budget's check stops the call.
     fn monomial<M: Format>(
         &self,
-        term: &Term,
+        term: Term,
         table: &mut Table<M>,
         ids: &mut [MonoId],
         exponents: &mut [u32],
-    ) -> Result<MonoId, Error> {
+        touched: &mut Vec<usize>,
+        budget: &mut Budget,
+    ) -> Result<MonoId, Unread> {
         if term.monomial == MonoId::NONE {
             return Err(Error::Overflow {
-                line: Some(term.line),
-            });
+                line: Some(term.line()),
+            }
+            .into());
         }
-        let known = ids[term.monomial.index()];
+        let k = term.monomial.index();
+        let known = ids[k];
         if known != MonoId::NONE {
             return Ok(known);
         }
-        self.monomials.unpack(term.monomial, exponents);
-        let id = table
-            .intern(exponents)
-            .map_err(|limit| term_error(limit, term.line))?;
-        ids[term.monomial.index()] = id;
+        let named = &self.named[self.named_at[k] as usize..self.named_at[k + 1] as usize];
+        touched.clear();
+        for &(i, e) in named {
+            exponents[i as usize] = e;
+            touched.push(i as usize);
+        }
+        let before = table.len();
+        let interned = table.intern_touched(exponents, touched, budget);
+        for &i in touched.iter() {
+            exponents[i] = 0;
+        }
+        let id = interned.map_err(|limit| term_error(limit, term.line()))?;
+        let units = touched_units(touched.len(), table.format().words(), table.len() > before);
+        budget.spend(units, Site::Map)?;
+        ids[k] = id;
         Ok(id)
     }
 }
 
-// f4-gfp.43 design -- the reader takes the tolerant grammar of checker-gfp.3, whitespace between any tokens, terms in any order, like terms combined, not the corpus's layout alone (not measured)
-/// Parses the generators into a `Parsed`: per term its sign, its numeric
-/// factors, and its monomial's number, free of a run's field and table.
-struct Parser<'a> {
-    c: Cursor<'a>,
-    names: Vec<(&'a str, usize)>,
-    /// The current term's exponents.
-    exponents: Vec<u32>,
-    parsed: Parsed<'a>,
+// instance-read-time.1 cited-checked: bachmann-1998 §4, attributes it to Macaulay [4] -- a monomial is compared by its rank, one integer whose order is the monomial order
+// instance-read-time.2 design-checked -- a monomial's rank is found by a binary search of its id among the text's ids sorted by id, not an array of ranks indexed by the run table's ids, which a replay over ℚ, reading into a table the run before it built, would size past the text's monomials, nor a hash map from id to rank (log 0160-1, 0165-1, 0165-2)
+/// Per number k of the text's distinct monomials, the rank of its monomial
+/// `ids[k]` of `table` in decreasing `order` among them, 0 the largest:
+/// `ids` sorted once (`sort::sort_decreasing`), and each id found by a
+/// search among them sorted by id (`sort::sort_runs`), all spent at
+/// `Site::Map`, a search `PROBE` units. The stop where the budget's check
+/// stops the call.
+fn ranks<M: Format, O: Order<M>>(
+    ids: &[MonoId],
+    table: &Table<M>,
+    order: &O,
+    budget: &mut Budget,
+) -> Result<Vec<u32>, Stop> {
+    debug_assert!(
+        ids.iter().all(|&m| m != MonoId::NONE),
+        "every monomial of the text interned"
+    );
+    let mut sorted = ids.to_vec();
+    sort::sort_decreasing(table, order, &mut sorted, budget, Site::Map)?;
+    // The text's numbers by id: the ids are distinct, as the numbers are.
+    let mut by_id: Vec<(MonoId, u32)> = ids.iter().zip(0..).map(|(&m, k)| (m, k)).collect();
+    sort::sort_runs(&mut by_id, |a, b| a.0.cmp(&b.0), budget, Site::Map)?;
+    let mut rank = vec![0; ids.len()];
+    for (chunk, start) in sorted.chunks(sort::RUN).zip((0u32..).step_by(sort::RUN)) {
+        for (&m, r) in chunk.iter().zip(start..) {
+            #[allow(
+                clippy::expect_used,
+                reason = "`sorted` holds the ids of `by_id`, each once"
+            )]
+            let at = by_id
+                .binary_search_by(|e| e.0.cmp(&m))
+                .expect("a sorted id among the text's ids");
+            rank[by_id[at].1 as usize] = r;
+        }
+        budget.spend(chunk.len() * PROBE, Site::Map)?;
+    }
+    Ok(rank)
 }
 
-impl<'a> Parser<'a> {
-    /// The generators of the text after the header's characteristic line.
-    fn parse(header: &Header<'a>) -> Parsed<'a> {
+// f4-gfp.43 design-checked -- the reader takes the tolerant grammar of checker-gfp.3, whitespace between any tokens, terms in any order, like terms combined, not the corpus's layout alone (not measured)
+/// Parses the generators into a `Parsed`: per term its sign, its numeric
+/// factors, and its monomial's number, free of a run's field and table.
+struct Parser<'h, 'a> {
+    c: Cursor<'a>,
+    names: &'h [&'a str],
+    index: &'h HashIndex,
+    /// The current term's exponents, 0 but at `touched`.
+    exponents: Vec<u32>,
+    /// The variables of the current term's nonzero exponents, each once.
+    touched: Vec<usize>,
+    parsed: Parsed<'a>,
+    /// The cursor's position at the last spend of the bytes it passed.
+    spent: usize,
+}
+
+impl<'h, 'a> Parser<'h, 'a> {
+    /// The generators of the text after the header's characteristic line,
+    /// spent on `budget` at `Site::Parse`: the bytes the cursor passes a
+    /// unit each, after each term and at the end, and each term's monomial
+    /// as `monomial_units` says of the variables it names. The stop where
+    /// the budget's check stops the call.
+    fn parse(header: &'h Header<'a>, budget: &mut Budget) -> Result<Parsed<'a>, Stop> {
         let n = header.names.len();
         let mut parser = Parser {
             c: header.rest.clone(),
-            names: sorted_names(&header.names),
+            names: &header.names,
+            index: &header.index,
             exponents: vec![0; n],
+            touched: Vec::new(),
             parsed: Parsed {
                 generators: Vec::new(),
                 terms: Vec::new(),
                 factors: Vec::new(),
-                monomials: Table::new(
-                    Dense32::new(n),
-                    &mut Xoshiro256PlusPlus::seed_from_u64(NO_SEED),
-                ),
+                variables: n,
+                multipliers: multipliers(n, &mut Xoshiro256PlusPlus::seed_from_u64(NO_SEED)),
+                index: HashIndex::new(),
+                named: Vec::new(),
+                named_at: vec![0],
                 error: None,
             },
+            spent: header.rest.pos,
         };
-        if let Err(error) = parser.generators() {
-            parser.broken(error);
+        match parser.generators(budget) {
+            Ok(()) => {}
+            Err(Unread::Error(error)) => parser.broken(error),
+            Err(Unread::Stop(stop)) => return Err(stop),
         }
-        parser.parsed
+        budget.spend(parser.c.pos - parser.spent, Site::Parse)?;
+        Ok(parser.parsed)
     }
 
     /// The generators: `Error::Size` where they are more than a u32 id
     /// numbers.
-    fn generators(&mut self) -> Result<(), Error> {
+    fn generators(&mut self, budget: &mut Budget) -> Result<(), Unread> {
         self.c.skip_space();
         if self.c.peek().is_none() {
             return Ok(());
         }
         loop {
             narrow::id(self.parsed.generators.len()).map_err(|_| Error::Size)?;
-            self.poly()?;
+            self.poly(budget)?;
             self.c.skip_space();
             match self.c.peek() {
                 None => return Ok(()),
                 Some(b',') => self.c.bump(),
-                Some(_) => return Err(self.c.syntax("a sign, a *, a comma, or the end")),
+                Some(_) => {
+                    return Err(self
+                        .c
+                        .syntax("a sign, a *, a /, a comma, or the end")
+                        .into());
+                }
             }
         }
     }
 
-    fn poly(&mut self) -> Result<(), Error> {
+    fn poly(&mut self, budget: &mut Budget) -> Result<(), Unread> {
         let start = self.parsed.terms.len().narrow();
         self.c.skip_space();
         let mut negative = self.c.sign().unwrap_or(false);
         loop {
-            self.term(negative)?;
+            self.term(negative, budget)?;
             self.c.skip_space();
             match self.c.sign() {
                 Some(n) => negative = n,
@@ -657,11 +1152,15 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Parses one term and adds it to `terms`: `Error::Size` where the
-    /// terms, their factors, or their distinct monomials are more than a
-    /// u32 id numbers.
-    fn term(&mut self, negative: bool) -> Result<(), Error> {
-        self.exponents.fill(0);
+    /// Parses one term and adds it to `terms`, and spends the bytes since
+    /// the last spend and its monomial: `Error::Size` where the terms,
+    /// their factors, or their distinct monomials are more than a u32 id
+    /// numbers, or the term's line reaches `MINUS` (`Term::new`).
+    fn term(&mut self, negative: bool, budget: &mut Budget) -> Result<(), Unread> {
+        for &i in &self.touched {
+            self.exponents[i] = 0;
+        }
+        self.touched.clear();
         self.c.skip_space();
         let line = self.c.line;
         loop {
@@ -669,10 +1168,31 @@ impl<'a> Parser<'a> {
             if let Some(factor) = self.c.factor()? {
                 narrow::id(self.parsed.factors.len()).map_err(|_| Error::Size)?;
                 self.parsed.factors.push(factor);
-            } else if let Some((i, e)) = self.c.power(&self.names)? {
+            } else if let Some((i, e)) = self.c.power(self.names, self.index)? {
+                if self.exponents[i] == 0 && e > 0 {
+                    self.touched.push(i);
+                }
                 raise(&mut self.exponents, i, e);
             } else {
-                return Err(self.c.syntax("a term"));
+                return Err(self.c.syntax("a term").into());
+            }
+            // instance-read-time.5 design-checked -- after a factor the term reads the next byte: a `*` steps to the next factor, and a sign, a comma, or the text's end ends the term, with no scan of spaces and denominators, which every other byte takes, not those scans after every factor (log 0160-1, 0165-1, 0165-2)
+            match self.c.peek() {
+                Some(b'*') => {
+                    self.c.bump();
+                    continue;
+                }
+                Some(b'+' | b'-' | b',') | None => break,
+                Some(_) => {}
+            }
+            // Any factor, a power among them, may be followed by denominators,
+            // each a factor 1/d of the term: `y/3`, `y^2/3*x`, `1/2/3`.
+            while let Some(denominator) = self.c.denominator()? {
+                narrow::id(self.parsed.factors.len()).map_err(|_| Error::Size)?;
+                self.parsed.factors.push(Factor {
+                    numerator: Literal::Small(1),
+                    denominator: Some(denominator),
+                });
             }
             self.c.skip_space();
             if self.c.peek() == Some(b'*') {
@@ -681,21 +1201,58 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        let monomial = match self.parsed.monomials.intern(&self.exponents) {
-            Ok(id) => id,
-            Err(Limit::Overflow) => MonoId::NONE,
-            Err(Limit::Size) => return Err(Error::Size),
-        };
+        let monomial = self.distinct(budget)?;
         narrow::id(self.parsed.terms.len()).map_err(|_| Error::Size)?;
-        let first = self.parsed.terms.last().map_or(0, |t| t.factors.end);
         let end = self.parsed.factors.len().narrow();
-        self.parsed.terms.push(Term {
-            negative,
-            factors: first..end,
-            monomial,
-            line,
-        });
+        self.parsed
+            .terms
+            .push(Term::new(end, monomial, line, negative)?);
+        let bytes = self.c.pos - self.spent;
+        self.spent = self.c.pos;
+        budget.spend(bytes + monomial_units(self.touched.len()), Site::Parse)?;
         Ok(())
+    }
+
+    /// The number of the current term's monomial among the text's distinct
+    /// monomials, in the order the text first writes them: found by its hash
+    /// over the variables the term names (`monomial_hash`) and the test
+    /// that a distinct monomial names as many variables with the term's
+    /// exponents, and, where none does, numbered next, its variables and
+    /// exponents appended to `named`. `MonoId::NONE` where its degree passes
+    /// `Dense32`. `Error::Size` where the distinct monomials, or their
+    /// variables, are more than a u32 id numbers; the stop where the
+    /// budget's check stops the call in a growth of the index, spent at
+    /// `Site::Parse`.
+    fn distinct(&mut self, budget: &mut Budget) -> Result<MonoId, Unread> {
+        let (exponents, touched) = (&self.exponents, &self.touched);
+        let degree: u64 = touched.iter().map(|&i| u64::from(exponents[i])).sum();
+        if degree > u64::from(Dense32::MAX_DEGREE) {
+            return Ok(MonoId::NONE);
+        }
+        let p = &mut self.parsed;
+        let hash = monomial_hash(&p.multipliers, touched.iter().map(|&i| (i, exponents[i])));
+        let found = p.index.find(hash, |k| {
+            let named = &p.named[p.named_at[k] as usize..p.named_at[k + 1] as usize];
+            named.len() == touched.len() && named.iter().all(|&(v, e)| exponents[v as usize] == e)
+        });
+        let slot = match found {
+            Ok(k) => return Ok(MonoId::at(k)),
+            Err(slot) => slot,
+        };
+        let distinct = p.named_at.len();
+        let id = MonoId::new(distinct - 1).map_err(|_| Error::Size)?;
+        // The variables number below 2^32, as the names' index does, and an
+        // exponent past u32::MAX is cut there (`raise`).
+        p.named
+            .extend(touched.iter().map(|&i| (i.narrow(), exponents[i])));
+        let at = narrow::id(p.named.len()).map_err(|_| Error::Size)?;
+        p.named_at.push(at);
+        p.index
+            .insert(slot, hash, distinct, budget, Site::Parse, |k| {
+                let named = &p.named[p.named_at[k] as usize..p.named_at[k + 1] as usize];
+                monomial_hash(&p.multipliers, named.iter().map(|&(v, e)| (v as usize, e)))
+            })?;
+        Ok(id)
     }
 
     /// Keeps the parse's error, the terms the broken generator read before
@@ -707,17 +1264,17 @@ impl<'a> Parser<'a> {
         if start < end {
             parsed.generators.push(start..end);
         }
-        let first = parsed.terms.last().map_or(0, |t| t.factors.end);
+        let first = parsed.terms.last().map_or(0, |t| t.end);
         parsed.error = Some((error, first..parsed.factors.len().narrow()));
     }
 }
 
-// text-stop-latency.2 design -- a writer over GF(p) spends the bytes of each chunk of CHUNK, 2^10, terms after it, the inner loop over a chunk's terms as before, not a spend per term nor a test of the term's index per term to decide the spend (log 0057-1)
+// text-stop-latency.2 design-checked -- a writer over GF(p) spends the bytes of each chunk of CHUNK, 2^10, terms after it, the inner loop over a chunk's terms as before, not a spend per term nor a test of the term's index per term to decide the spend (log 0057-1)
 /// The terms a writer over GF(p) writes between two spends of the bytes it
 /// wrote.
 pub(crate) const CHUNK: usize = 1 << 10;
 
-// text-stop-latency.3 design -- over Q each term spends, right after it, its bytes plus the square of the limbs of its numerator and of its denominator, not its bytes alone nor a spend per polynomial (log 0057-1)
+// text-stop-latency.3 design-checked -- over Q each term spends, right after it, its bytes plus the square of the limbs of its numerator and of its denominator, not its bytes alone nor a spend per polynomial (log 0057-1)
 /// The units of work of writing x in decimal beside its bytes: the square
 /// of its limbs, 0 for 0.
 pub(crate) fn decimal_units(x: &BigUint) -> usize {
@@ -734,7 +1291,7 @@ pub(crate) fn limbs(x: &BigUint) -> usize {
     x.bits().div_ceil(64) as usize
 }
 
-// text-stop-latency.1 design -- every text spends a unit of work a byte on the call's budget as it is written, and a writer stops where the budget's check stops the call, not a tick per polynomial or entry nor one full check after each text (log 0057-1)
+// text-stop-latency.1 design-checked -- every text spends a unit of work a byte on the call's budget as it is written, and a writer stops where the budget's check stops the call, not a tick per polynomial or entry nor one full check after each text (log 0057-1)
 /// Writes the polynomials as the canonical basis text: `[`, the polynomials
 /// separated by `,` and a line feed, `]:` and a line feed. Each polynomial
 /// spends a unit of `budget` per byte of its terms, after every `CHUNK`
@@ -749,7 +1306,7 @@ pub(crate) fn write_basis<'p, F: Field, M: Format, D: Module + 'p>(
     polys: impl Iterator<Item = &'p Poly<F, D>> + Clone,
     budget: &mut Budget,
 ) -> Result<(), Stop> {
-    // result-time.11 design -- the basis text over GF(p) is reserved once, before its `[`, at the sum of its terms' longest texts and its brackets and separators, not grown by doubling from the first term's reservation or as a String grows (log 0042-1)
+    // result-time.11 design-checked -- the basis text over GF(p) is reserved once, before its `[`, at the sum of its terms' longest texts and its brackets and separators, not grown by doubling from the first term's reservation or as a String grows (log 0042-1)
     let k = polys.clone().count();
     let terms: usize = polys.clone().map(|g| g.len().max(1)).sum();
     out.reserve(reservation(
@@ -767,9 +1324,9 @@ pub(crate) fn write_basis<'p, F: Field, M: Format, D: Module + 'p>(
     Ok(())
 }
 
-// text-time.1 design -- the basis text over GF(p) writes each distinct monomial's text once per call, into an arena, and copies it from there for each further term with that monomial, not each term's monomial from its exponents (log 0048-1)
-// text-time.2 design -- the arena's index is a vector of one u32 per id of the table, zeroed for each basis text, the offset of the text's length byte in the arena, not a hash map from id to offset or 8 bytes an id with the length beside the offset (log 0048-1)
-// text-time.3 design -- a monomial whose text passes 255 bytes is not kept, and each of its terms writes it from its exponents, not a length of two bytes or more (not measured)
+// text-time.1 practice-checked: memoization -- the basis text over GF(p) writes each distinct monomial's text once per call, into an arena, and copies it from there for each further term with that monomial, not each term's monomial from its exponents (log 0048-1)
+// text-time.2 practice-checked: direct-address table -- the arena's index is a vector of one u32 per id of the table, zeroed for each basis text, the offset of the text's length byte in the arena, not a hash map from id to offset or 8 bytes an id with the length beside the offset (log 0048-1)
+// text-time.3 design-checked -- a monomial whose text passes 255 bytes is not kept, and each of its terms writes it from its exponents, not a length of two bytes or more (not measured)
 /// The texts of the monomials one basis text has written, by id of the
 /// table: an arena of bytes and an index into it.
 struct Texts {
@@ -781,6 +1338,9 @@ struct Texts {
     arena: Vec<u8>,
     /// The exponents of the monomial last written from them.
     e: Vec<u32>,
+    /// The variables of the monomials written from their exponents since
+    /// the last `visited`, which the writer spends.
+    variables: usize,
 }
 
 /// The bytes the copy of a short text takes at once (text-time.4).
@@ -793,7 +1353,14 @@ impl Texts {
             at: vec![0; monomials],
             arena: vec![0; 1 + COPY],
             e: vec![0; variables],
+            variables: 0,
         }
+    }
+
+    /// The variables of the monomials written from their exponents since
+    /// the last call.
+    fn visited(&mut self) -> usize {
+        std::mem::take(&mut self.variables)
     }
 
     /// The offset of m's length byte in the arena, its text written there
@@ -813,6 +1380,7 @@ impl Texts {
     #[inline(never)]
     fn keep<M: Format>(&mut self, table: &Table<M>, names: &[&str], m: MonoId) -> Option<usize> {
         table.unpack(m, &mut self.e);
+        self.variables += self.e.len();
         let at = self.arena.len() - COPY;
         self.arena.truncate(at);
         self.arena.push(0);
@@ -836,8 +1404,9 @@ impl Texts {
     }
 }
 
-/// Writes a polynomial as `write_poly` writes it and spends as it spends,
-/// each monomial's text from `texts`.
+/// Writes a polynomial as `write_poly` writes it, each monomial's text from
+/// `texts`, and spends its bytes as it spends them, beside the variables of
+/// each monomial `texts` writes from its exponents, a unit each.
 fn write_kept<F: Field, M: Format, D: Module>(
     out: &mut String,
     names: &[&str],
@@ -851,12 +1420,12 @@ fn write_kept<F: Field, M: Format, D: Module>(
         out.push('0');
         return Ok(());
     }
-    // result-time.3 design -- the text is written as bytes into the vector under the String, ASCII and each name whole, not characters pushed into the String or a vector checked by `String::from_utf8` at the end (log 0042-1)
+    // result-time.3 design-checked -- the text is written as bytes into the vector under the String, ASCII and each name whole, not characters pushed into the String or a vector checked by `String::from_utf8` at the end (log 0042-1)
     // SAFETY: every byte written is ASCII or a byte of a name, and each name
     // is a `&str` written whole, so the String stays UTF-8.
     let bytes = unsafe { out.as_mut_vec() };
     let longest = term_longest(names);
-    // text-stop-latency.2 design -- a writer over GF(p) spends the bytes of each chunk of CHUNK, 2^10, terms after it, the inner loop over a chunk's terms as before, not a spend per term nor a test of the term's index per term to decide the spend (log 0057-1)
+    // text-stop-latency.2 design-checked -- a writer over GF(p) spends the bytes of each chunk of CHUNK, 2^10, terms after it, the inner loop over a chunk's terms as before, not a spend per term nor a test of the term's index per term to decide the spend (log 0057-1)
     let chunks = poly.monomials.chunks(CHUNK).zip(poly.coefs.chunks(CHUNK));
     for (j, (ms, cs)) in chunks.enumerate() {
         let mark = bytes.len();
@@ -892,20 +1461,23 @@ fn write_kept<F: Field, M: Format, D: Module>(
             // the reservation.
             unsafe { spare(bytes, longest, write) };
         }
-        budget.spend(bytes.len() - mark)?;
+        // call-stop-latency.29 design-checked -- a text spends the variables of each monomial it writes from its exponents, a basis text's first writing of each and each term of a cofactor text or a text over Q, beside its bytes, not its bytes alone (text-stop-latency.1, .2), as a monomial's writing scans every variable and writes the few it holds (log 0138-6)
+        budget.spend(bytes.len() - mark + texts.visited(), Site::Text)?;
     }
     Ok(())
 }
 
-// text-time.9 design -- the cofactor texts over GF(p) write each monomial from its exponents at each term, not through the basis text's arena of the monomials' texts (not measured)
-// text-stop-latency.1 design -- every text spends a unit of work a byte on the call's budget as it is written, and a writer stops where the budget's check stops the call, not a tick per polynomial or entry nor one full check after each text (log 0057-1)
+// text-time.9 design-checked -- the cofactor texts over GF(p) write each monomial from its exponents at each term, not through the basis text's arena of the monomials' texts (not measured)
+// text-stop-latency.1 design-checked -- every text spends a unit of work a byte on the call's budget as it is written, and a writer stops where the budget's check stops the call, not a tick per polynomial or entry nor one full check after each text (log 0057-1)
 /// Writes a polynomial in the canonical spelling, `0` for zero: its terms
 /// joined by `+`, each its coefficient in [1, p), then `*` and the monomial,
 /// where the coefficient 1 and the `*` are left out before a monomial and
 /// the monomial 1 after a coefficient. Spends a unit of `budget` per byte of
-/// its terms, after every `CHUNK` terms and at its end; the `0` of zero
+/// its terms and per variable of each term, whose monomial it writes from
+/// its exponents, after every `CHUNK` terms and at its end; the `0` of zero
 /// spends nothing. A stop where the budget's check stops the call, the
 /// text then cut short.
+#[cfg(any(feature = "cofactors", test))]
 pub(crate) fn write_poly<F: Field, M: Format, D: Module>(
     out: &mut String,
     names: &[&str],
@@ -918,13 +1490,13 @@ pub(crate) fn write_poly<F: Field, M: Format, D: Module>(
         out.push('0');
         return Ok(());
     }
-    // result-time.3 design -- the text is written as bytes into the vector under the String, ASCII and each name whole, not characters pushed into the String or a vector checked by `String::from_utf8` at the end (log 0042-1)
+    // result-time.3 design-checked -- the text is written as bytes into the vector under the String, ASCII and each name whole, not characters pushed into the String or a vector checked by `String::from_utf8` at the end (log 0042-1)
     // SAFETY: every byte written is ASCII or a byte of a name, and each name
     // is a `&str` written whole, so the String stays UTF-8.
     let bytes = unsafe { out.as_mut_vec() };
     let mut e = vec![0u32; table.format().variables()];
     let longest = term_longest(names);
-    // text-stop-latency.2 design -- a writer over GF(p) spends the bytes of each chunk of CHUNK, 2^10, terms after it, the inner loop over a chunk's terms as before, not a spend per term nor a test of the term's index per term to decide the spend (log 0057-1)
+    // text-stop-latency.2 design-checked -- a writer over GF(p) spends the bytes of each chunk of CHUNK, 2^10, terms after it, the inner loop over a chunk's terms as before, not a spend per term nor a test of the term's index per term to decide the spend (log 0057-1)
     let chunks = poly.monomials.chunks(CHUNK).zip(poly.coefs.chunks(CHUNK));
     for (j, (ms, cs)) in chunks.enumerate() {
         let mark = bytes.len();
@@ -943,7 +1515,7 @@ pub(crate) fn write_poly<F: Field, M: Format, D: Module>(
                     w.decimal(v);
                     w.byte(b'*');
                 }
-                // result-time.1 design -- the writers of a result read a monomial's exponents from its whole words, lane after lane, not one variable at a time through `exponent` (log 0033-1, 0042-1)
+                // result-time.1 design-checked -- the writers of a result read a monomial's exponents from its whole words, lane after lane, not one variable at a time through `exponent` (log 0033-1, 0042-1)
                 table.unpack(m, &mut e);
                 w.monomial(names, &e);
             };
@@ -951,7 +1523,8 @@ pub(crate) fn write_poly<F: Field, M: Format, D: Module>(
             // `*`, and the monomial, which `term_longest` counts.
             unsafe { spare(bytes, longest, write) };
         }
-        budget.spend(bytes.len() - mark)?;
+        // call-stop-latency.29 design-checked -- a text spends the variables of each monomial it writes from its exponents, a basis text's first writing of each and each term of a cofactor text or a text over Q, beside its bytes, not its bytes alone (text-stop-latency.1, .2), as a monomial's writing scans every variable and writes the few it holds (log 0138-6)
+        budget.spend(bytes.len() - mark + ms.len() * e.len(), Site::Text)?;
     }
     Ok(())
 }
@@ -970,7 +1543,7 @@ pub(crate) const TERM_MARKS: usize = 2;
 /// exponent: a `*` and a `^`.
 const POWER_MARKS: usize = 2;
 
-// text-reserve.1 design -- a basis text reserves at once its bound or RESERVE_CAP, whichever is less, and grows past it as its terms reserve their room, not its whole bound, which counts a coefficient of the widest field and ten digits for each variable's exponent in every term (not measured)
+// text-reserve.1 design-checked -- a basis text reserves at once its bound or RESERVE_CAP, whichever is less, and grows past it as its terms reserve their room, not its whole bound, which counts a coefficient of the widest field and ten digits for each variable's exponent in every term (not measured)
 // The whole bound passed the machine's memory in one request on
 // katsura-16 over p65521, whose basis text fits it, and the allocator's
 // refusal aborted the process (the call report of grobx 0.73.2).
@@ -1000,7 +1573,7 @@ pub(crate) fn monomial_longest(names: &[&str]) -> usize {
         .sum()
 }
 
-// result-time.4 design -- each term is written through a writer over the vector's spare capacity, reserved for the term's longest text, without bounds checks outside the test profile, and the vector's length is set once per term, not a push per byte that checks the capacity and stores the length (log 0033-1, 0042-1)
+// result-time.4 design-checked -- each term is written through a writer over the vector's spare capacity, reserved for the term's longest text, without bounds checks outside the test profile, and the vector's length is set once per term, not a push per byte that checks the capacity and stores the length (log 0033-1, 0042-1)
 /// A writer of bytes into a vector's spare capacity, from its start, that
 /// counts what it wrote. Its writes have no bounds check outside the test
 /// profile, whose debug assertions check them.
@@ -1031,7 +1604,7 @@ pub(crate) unsafe fn spare(out: &mut Vec<u8>, longest: usize, write: impl FnOnce
     unsafe { out.set_len(len + written) };
 }
 
-// result-time.5 practice: two-digit lookup table -- a number below 2^64 is written two digits at a time from a table of the hundred pairs, not one digit at a time into a buffer read back through `str::from_utf8`
+// result-time.5 practice-checked: two-digit lookup table -- a number below 2^64 is written two digits at a time from a table of the hundred pairs, not one digit at a time into a buffer read back through `str::from_utf8`
 /// The hundred pairs of digits `00` to `99`, two bytes each.
 const PAIRS: [u8; 200] = {
     let mut pairs = [0u8; 200];
@@ -1075,7 +1648,7 @@ impl Spare<'_> {
         self.len += bs.len();
     }
 
-    // text-time.4 design -- a kept text of at most 32 bytes is copied by one copy of the constant 32 bytes where the term's writer holds 32 bytes past what it has written, and every other by its length, not every copy by its length or a reservation 32 bytes larger per term (log 0048-1)
+    // text-time.4 design-checked -- a kept text of at most 32 bytes is copied by one copy of the constant 32 bytes where the term's writer holds 32 bytes past what it has written, and every other by its length, not every copy by its length or a reservation 32 bytes larger per term (log 0048-1)
     /// The text whose length byte starts `from`, which holds the text and
     /// `COPY` bytes past it. A text of at most `COPY` bytes is copied by one
     /// copy of `COPY` bytes where the reservation holds them past what is
@@ -1178,7 +1751,7 @@ pub(crate) fn push_decimal(out: &mut Vec<u8>, v: u64) {
     unsafe { spare(out, U64_LONGEST, |w| w.decimal(v)) };
 }
 
-// result-time.9 design -- the writers of a number and of a monomial stand in text.rs, and the writer over Q calls them, not the writer of a large number in rational.rs beside the writer over Q (log 0033-1)
+// result-time.9 design-checked -- the writers of a number and of a monomial stand in text.rs, and the writer over Q calls them, not the writer of a large number in rational.rs beside the writer over Q (log 0033-1)
 /// Appends x in decimal.
 pub(crate) fn push_big(out: &mut Vec<u8>, x: &BigUint) {
     let mut limbs = x.iter_u64_digits();
@@ -1189,12 +1762,12 @@ pub(crate) fn push_big(out: &mut Vec<u8>, x: &BigUint) {
     match limbs.next() {
         None => push_decimal(out, low),
         Some(_) if x.bits() <= 64 * SPLIT_LIMBS as u64 => push_passes(out, x),
-        // q-basis-text-time.1 cited: brent-2010 §1.7.2, Algorithm 1.26 -- for (Q, R) = DivRem(A, B^k), A is written as Q followed by R padded to k digits, in O(M(n) log n), where IntegerOutput's divisions by B take O(n²)
+        // q-basis-text-time.1 cited-checked: brent-2010 §1.7.2, Algorithm 1.26 -- for (Q, R) = DivRem(A, B^k), A is written as Q followed by R padded to k digits, in O(M(n) log n), where IntegerOutput's divisions by B take O(n²)
         Some(_) => push_split(out, x),
     }
 }
 
-// q-basis-text-time.8 tuned -- SPLIT_LIMBS is 12: an integer of 2 to 12 limbs is written by the passes as text-time.5 wrote it, not the passes up to 2, 4, 8, 16, or 24 limbs (log 0086-1)
+// q-basis-text-time.8 tuned-checked -- SPLIT_LIMBS is 12: an integer of 2 to 12 limbs is written by the passes as text-time.5 wrote it, not the passes up to 2, 4, 8, 16, or 24 limbs (log 0086-1)
 /// The most limbs of an integer `push_passes` writes. `push_split` writes
 /// a larger one.
 const SPLIT_LIMBS: usize = 12;
@@ -1242,7 +1815,7 @@ fn passes(limbs: &mut [u64], chunks: &mut [u64]) -> usize {
     while live > 0 {
         let mut remainder = 0u64;
         for limb in limbs[..live].iter_mut().rev() {
-            // text-time.6 design -- each step divides a u128 by the constant 10^19, which the compiler computes, not by Möller and Granlund's 2 by 1 division with a precomputed reciprocal (log 0048-1)
+            // text-time.6 design-checked -- each step divides a u128 by the constant 10^19, which the compiler computes, not by Möller and Granlund's 2 by 1 division with a precomputed reciprocal (log 0048-1)
             let dividend = u128::from(remainder) << 64 | u128::from(*limb);
             *limb = (dividend / u128::from(TEN19)).narrow();
             remainder = (dividend % u128::from(TEN19)).narrow();
@@ -1277,12 +1850,12 @@ fn push_chunks(out: &mut Vec<u8>, chunks: &[u64]) {
     };
 }
 
-// q-basis-text-time.9 tuned -- a part of at most LEAF_CHUNKS, 8, chunks is written by the passes, exactly its chunks with zeros at the top, not leaves of 2, 3, 4, 6, 16, or 32 chunks nor leaves by a fraction whose chunks come by multiplications (log 0086-1)
+// q-basis-text-time.9 tuned-checked -- a part of at most LEAF_CHUNKS, 8, chunks is written by the passes, exactly its chunks with zeros at the top, not leaves of 2, 3, 4, 6, 16, or 32 chunks nor leaves by a fraction whose chunks come by multiplications (log 0086-1)
 /// The most chunks of a part `leaf` writes. A part of 8 chunks is below
 /// 10^152 < 2^512, so of at most 8 limbs.
 const LEAF_CHUNKS: usize = 8;
 
-// q-basis-text-time.6 design -- the powers D_j = 10^(19·2^j) and their reciprocals are made once per process, at the first integer that needs level j, and kept in a static array of `OnceLock`s for every later call and thread, not made per call, per text, or per integer (not measured)
+// q-basis-text-time.6 practice-checked: lazy initialization -- the powers D_j = 10^(19·2^j) and their reciprocals are made once per process, at the first integer that needs level j, and kept in a static array of `OnceLock`s for every later call and thread, not made per call, per text, or per integer (not measured)
 /// A level of the splits: the power Dⱼ = 10^(19·2^j) and its reciprocal
 /// μⱼ = ⌊2^(128l)/Dⱼ⌋, l the limbs of Dⱼ, each on limbs, least
 /// significant first. Dⱼ has at most 2^j limbs, as 10^19 < 2^64. μⱼ has
@@ -1320,7 +1893,7 @@ fn level(j: usize) -> &'static Level {
     })
 }
 
-// q-basis-text-time.2 design -- a part of k chunks splits at h = 2^j, the largest power of two below k, by D_j, not at ⌈k/2⌉ by a power and a reciprocal per h (log 0086-1)
+// q-basis-text-time.2 design-checked -- a part of k chunks splits at h = 2^j, the largest power of two below k, by D_j, not at ⌈k/2⌉ by a power and a reciprocal per h (log 0086-1)
 /// The level of a part of k chunks, k ≥ 2: the j with 2^j < k ≤ 2^(j+1).
 fn level_of(k: usize) -> usize {
     debug_assert!(k >= 2, "a part of {k} chunks splits at no level");
@@ -1335,8 +1908,8 @@ fn scratch_limbs(j: usize) -> usize {
     (5 << j) + 2 * j + 3
 }
 
-// q-basis-text-time.1 cited: brent-2010 §1.7.2, Algorithm 1.26 -- for (Q, R) = DivRem(A, B^k), A is written as Q followed by R padded to k digits, in O(M(n) log n), where IntegerOutput's divisions by B take O(n²)
-// q-basis-text-time.7 design -- the scratch of a conversion, x's limbs, its chunks, and the splits' parts and columns, is one vector allocated per integer of more than SPLIT_LIMBS limbs, not a scratch kept from integer to integer, thread-local or a converter's own (not measured)
+// q-basis-text-time.1 cited-checked: brent-2010 §1.7.2, Algorithm 1.26 -- for (Q, R) = DivRem(A, B^k), A is written as Q followed by R padded to k digits, in O(M(n) log n), where IntegerOutput's divisions by B take O(n²)
+// q-basis-text-time.7 design-checked -- the scratch of a conversion, x's limbs, its chunks, and the splits' parts and columns, is one vector allocated per integer of more than SPLIT_LIMBS limbs, not a scratch kept from integer to integer, thread-local or a converter's own (not measured)
 /// Appends x, of more than `SPLIT_LIMBS` limbs, in decimal: its k chunks
 /// of nineteen digits by `split`, k = ⌊bits/63⌋ + 1, so that
 /// 10^(19k) > 2^(63k) > x.
@@ -1387,7 +1960,7 @@ fn split(x: &[u64], chunks: &mut [u64], scratch: &mut [u64]) {
     );
     let Level { power, reciprocal } = level(j);
     let (high, low) = chunks.split_at_mut(k - (1 << j));
-    if lehmer::cmp(x, power).is_lt() {
+    if limbs::cmp(x, power).is_lt() {
         high.fill(0);
         split(x, low, scratch);
         return;
@@ -1399,7 +1972,7 @@ fn split(x: &[u64], chunks: &mut [u64], scratch: &mut [u64]) {
     split(remainder, low, rest);
 }
 
-// q-basis-text-time.3 cited: barrett-1987 §Longmod procedure, Diagram Five, via vanderhoeven-2016 §2.2.1, Function 6 and Proposition 1 -- with R = b^(2n) div M, the n + 1 leading digits of W times R, their product's leading digits times M subtracted from W modulo b^(n+1), leave x below 3M, and at most two subtractions of M give W mod M
+// q-basis-text-time.3 cited-checked: barrett-1987 §Longmod procedure, Diagram Five, via vanderhoeven-2016 §2.2.1, Function 6 and Proposition 1 -- with R = b^(2n) div M, the n + 1 leading digits of W times R, their product's leading digits times M subtracted from W modulo b^(n+1), leave x below 3M, and at most two subtractions of M give W mod M
 /// x = q·D + r with r < D, for D ≤ x < D², D on l limbs and μ its level's
 /// reciprocal, into q and r of l + 1 limbs each; `scratch` holds l + 3
 /// limbs. q starts at Barrett's quotient, ⌊b·μ/2^(64(l+1))⌋ for
@@ -1423,7 +1996,7 @@ fn divide(
         r_len = r.len()
     );
     let high = &x[l - 1..];
-    // q-basis-text-time.4 cited: barrett-1987 §Longmod procedure -- each long multiplication of the reduction calculates only half its product, since the other half is not required
+    // q-basis-text-time.4 cited-checked: barrett-1987 §Longmod procedure -- each long multiplication of the reduction calculates only half its product, since the other half is not required
     let product = &mut scratch[..high.len() + reciprocal.len() - (l - 1)];
     columns(high, reciprocal, l - 1, product);
     // The columns from l + 1 up, the product shifted down by t bits.
@@ -1440,7 +2013,7 @@ fn divide(
         sub_in_place(r, product);
     }
     let mut corrections = 0;
-    while lehmer::cmp(trimmed(r), power).is_ge() {
+    while limbs::cmp(trimmed(r), power).is_ge() {
         sub_in_place(r, power);
         increment(q);
         corrections += 1;
@@ -1451,7 +2024,7 @@ fn divide(
     );
 }
 
-// q-basis-text-time.5 practice: Comba multiplication -- the products of a split are taken column by column, each column's products summed into a three-word accumulator and its low word stored, not row by row with each row's carries through the result in memory, nor by num-bigint's product, which allocates each
+// q-basis-text-time.5 practice-checked: Comba multiplication -- the products of a split are taken column by column, each column's products summed into a three-word accumulator and its low word stored, not row by row with each row's carries through the result in memory, nor by num-bigint's product, which allocates each
 /// The limbs `from` to `from + out.len()` of the sum of aᵢ·bₖ·2^(64(i + k))
 /// over i + k ≥ `from`, into `out`: the columns of a·b from `from` up, the
 /// columns below and their carries left out. Each column's products are
@@ -1481,7 +2054,7 @@ fn columns(a: &[u64], b: &[u64], from: usize, out: &mut [u64]) {
 }
 
 /// r − y modulo 2^(64·|r|) into r, y of at most r's limbs.
-fn sub_in_place(r: &mut [u64], y: &[u64]) {
+pub(crate) fn sub_in_place(r: &mut [u64], y: &[u64]) {
     debug_assert!(
         y.len() <= r.len(),
         "{y_len} limbs from {r_len}",
@@ -1542,10 +2115,10 @@ fn trimmed(x: &[u64]) -> &[u64] {
     &x[..live]
 }
 
-// text-copy-peak.1 design -- a text is handed over a chunk at a time, and the whole pages of it behind each chunk are given back to the system, not handed over whole and its pages given back when it is dropped, nor handed over after the measured call, nor written by the core into the receiver's memory (log 0081-1)
-// text-copy-peak.4 design -- the pages are given back by madvise(MADV_DONTNEED), not by shrinking the vector, which the allocator may move or keep whole (not measured)
-// text-copy-peak.6 design -- each chunk is checked ASCII before it is handed, and a byte past ASCII ends the hand-over with an error, not the text trusted unchecked, nor the whole text checked before the first chunk (not measured)
-// text-copy-peak.10 design -- the hand-over and its madvise are a function of the core's text, which the Python module calls with its copy, not the module calling madvise itself (not measured)
+// text-copy-peak.1 design-checked -- a text is handed over a chunk at a time, and the whole pages of it behind each chunk are given back to the system, not handed over whole and its pages given back when it is dropped, nor handed over after the measured call, nor written by the core into the receiver's memory (log 0081-1)
+// text-copy-peak.4 design-checked -- the pages are given back by madvise(MADV_DONTNEED), not by shrinking the vector, which the allocator may move or keep whole (not measured)
+// text-copy-peak.6 design-checked -- each chunk is checked ASCII before it is handed, and a byte past ASCII ends the hand-over with an error, not the text trusted unchecked, nor the whole text checked before the first chunk (not measured)
+// text-copy-peak.10 design-checked -- the hand-over and its madvise are a function of the core's text, which the Python module calls with its copy, not the module calling madvise itself (not measured)
 /// Hands `text` to `put` in chunks of at most `chunk` bytes, in order,
 /// each with its offset in the text, and gives back to the system the
 /// whole pages of the text behind each chunk, so that the text and what
@@ -1562,7 +2135,7 @@ pub fn hand_over(
     chunk: NonZeroUsize,
     mut put: impl FnMut(usize, &[u8]),
 ) -> io::Result<()> {
-    // text-copy-peak.9 practice: page size from sysconf -- the page size is the system's, read by sysconf, not 4096 as a constant
+    // text-copy-peak.9 design-checked -- the page size is the system's, read by sysconf, not 4096 as a constant (not measured)
     let page = os::page_size()
         .and_then(|p| usize::try_from(p).ok())
         .filter(|p| p.is_power_of_two())

@@ -10,8 +10,7 @@
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use rand_core::{Rng, SeedableRng};
-use rand_xoshiro::Xoshiro256PlusPlus;
+use rand_core::Rng;
 
 use crate::budget::Budget;
 use crate::field::{Field, Gf31, Gf64};
@@ -20,41 +19,14 @@ use crate::module::Rank1;
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::order::Grevlex;
 use crate::poly::Poly;
+use crate::shared_tests::{COUNTS8, COUNTS16, COUNTS32, drawn_exponents, rng};
 use crate::table::Table;
 use crate::text::{digits_bound, push_big, term_longest, write_basis, write_poly};
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
-
-/// The variable counts of each format, as `output_tests.rs` takes them:
-/// whole words, a last word with one lane, and a last word full.
-const COUNTS8: [usize; 9] = [1, 2, 7, 8, 9, 16, 17, 24, 54];
-const COUNTS16: [usize; 5] = [1, 3, 4, 5, 9];
-const COUNTS32: [usize; 4] = [1, 2, 3, 5];
 
 /// The primes of test 1: below 2^31 in `Gf31`, past it in `Gf64`, 2^64 − 59
 /// with coefficients of 20 digits.
 const PRIMES31: [u64; 4] = [2, 3, 65521, (1 << 31) - 1];
 const PRIMES64: [u64; 2] = [(1 << 61) - 1, 18_446_744_073_709_551_557];
-
-/// Drawn exponents of n variables of degree at most `bound`: most 0 to 3,
-/// some up to a tenth of the bound.
-fn exponents(rng: &mut impl Rng, n: usize, bound: u32) -> Vec<u32> {
-    let mut e = vec![0u32; n];
-    let mut left = bound;
-    for x in &mut e {
-        let r = rng.next_u32();
-        let want = match r % 8 {
-            0..=3 => 0,
-            4..=6 => r / 8 % 4,
-            _ => (r / 8) % (bound / 10 + 1),
-        };
-        *x = want.min(left);
-        left -= *x;
-    }
-    e
-}
 
 /// A table in the format `M` on n variables that holds the unit monomial,
 /// each variable alone at the degree bound, and drawn monomials; its ids,
@@ -62,15 +34,15 @@ fn exponents(rng: &mut impl Rng, n: usize, bound: u32) -> Vec<u32> {
 fn table_with<M: Format>(n: usize, seed: u64) -> (Table<M>, Vec<MonoId>) {
     let mut r = rng(seed);
     let mut table = Table::new(M::new(n), &mut r);
-    let mut ids = vec![table.intern(&vec![0; n]).unwrap()];
+    let mut ids = vec![table.intern(&vec![0; n], &mut Budget::unbounded()).unwrap()];
     for i in 0..n {
         let mut e = vec![0; n];
         e[i] = M::MAX_DEGREE;
-        ids.push(table.intern(&e).unwrap());
+        ids.push(table.intern(&e, &mut Budget::unbounded()).unwrap());
     }
     for _ in 0..300 {
-        let e = exponents(&mut r, n, M::MAX_DEGREE);
-        let id = table.intern(&e).unwrap();
+        let e = drawn_exponents(&mut r, n, M::MAX_DEGREE);
+        let id = table.intern(&e, &mut Budget::unbounded()).unwrap();
         if !ids.contains(&id) {
             ids.push(id);
         }
@@ -324,7 +296,7 @@ fn texts_of_every_length_around_the_bounds() {
         for &(i, k) in pairs {
             e[i] = k;
         }
-        table.intern(&e).unwrap()
+        table.intern(&e, &mut Budget::unbounded()).unwrap()
     };
     let wanted: [(&[(usize, u32)], usize); 8] = [
         (&[(0, 1)], 1),           // x
@@ -384,9 +356,11 @@ fn texts_of_every_length_around_the_bounds() {
     let names = ["x"];
     assert!(22 + 32 > term_longest(&names), "the copy has no room");
     let mut table: Table<Dense32> = Table::new(Dense32::new(1), &mut rng(0x7e4));
-    let top = table.intern(&[Dense32::MAX_DEGREE]).unwrap();
-    let x = table.intern(&[1]).unwrap();
-    let unit = table.intern(&[0]).unwrap();
+    let top = table
+        .intern(&[Dense32::MAX_DEGREE], &mut Budget::unbounded())
+        .unwrap();
+    let x = table.intern(&[1], &mut Budget::unbounded()).unwrap();
+    let unit = table.intern(&[0], &mut Budget::unbounded()).unwrap();
     let field = Gf64::new(18_446_744_073_709_551_557).unwrap();
     let p = field.characteristic();
     let polys: Vec<Poly<Gf64, Rank1>> = [p - 1, p - 2]

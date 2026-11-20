@@ -4,26 +4,12 @@
 //! cofactors, and the edge cases of `OBJECTIVES.md`
 //! (`iterations/0072-row-scan-time/plan.md`, _Test code_, 7 and 8).
 
-use grobx::Params;
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, assert_accepted, params_in, run, systems::random_binomials, with_cofactors_in,
+    P, P31, agree, assert_accepted, params_in, run, systems::random_binomials, with_cofactors_in,
 };
 use crate::many_variables_time::{EDGE, P62};
-
-/// The basis texts of `text` under `params` with signatures off and on:
-/// one text. Returns it.
-pub(crate) fn agree(case: &str, text: &str, params: &Params) -> String {
-    let mut plain = params.clone();
-    plain.signatures = false;
-    let mut signatures = params.clone();
-    signatures.signatures = true;
-    let got = run(text, &plain).basis.expect("a basis");
-    let want = run(text, &signatures).basis.expect("a basis");
-    assert_eq!(got, want, "{case}: signatures off and on\n{text}");
-    got
-}
 
 /// The checker accepts the result with cofactors in grevlex, signatures
 /// off and on, in the exact mode.

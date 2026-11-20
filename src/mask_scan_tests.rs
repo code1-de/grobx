@@ -10,17 +10,18 @@
 
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::band_tests::budget;
-use crate::build_tests::{SIZES, below, divides, exponents, lead, poly, queries, rng};
+use crate::budget::Budget;
+use crate::build_tests::{SIZES, lead, poly, queries};
+use crate::divisors::Divisors;
 use crate::field::{Field, Gf31};
-use crate::id::{ElementId, MonoId};
-use crate::matrix::{self, Divisors};
+use crate::id::{ElementId, MonoId, RowSource};
+use crate::matrix::{self, Buffers};
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Dense16, Dense32, Format};
 use crate::order::{Grevlex, Lex, Order};
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::{below, budget, divides, exponents, rng};
 use crate::table::Table;
-use crate::trace::RowSource;
 
 /// How a case draws its elements' terms (plan.md, _Edge cases_).
 #[derive(Clone, Copy, Debug)]
@@ -108,7 +109,7 @@ fn case<M: Format>(
         };
         let g = poly(r, &mut t, &field, &l, terms);
         let before = basis.min().len();
-        let e = basis.push_min(&t, g).unwrap();
+        let e = basis.push_min(&t, g, &mut Budget::unbounded()).unwrap().id;
         let entered = usize::from(basis.min().last() == Some(&e));
         left += u32::from(basis.min().len() < before + entered);
         elements.push((l, terms));
@@ -125,7 +126,11 @@ fn case<M: Format>(
 /// element of fewest terms whose leading monomial divides q, ties to the
 /// one made first. `elements` holds every element's leading exponents and
 /// terms in the order made.
-fn rule(min: &[ElementId], elements: &[(Vec<u32>, usize)], q: &[u32]) -> Option<ElementId> {
+pub(crate) fn rule(
+    min: &[ElementId],
+    elements: &[(Vec<u32>, usize)],
+    q: &[u32],
+) -> Option<ElementId> {
     let mut best: Option<ElementId> = None;
     for &e in min {
         let (l, terms) = &elements[e.index()];
@@ -162,16 +167,19 @@ fn search_agrees<M: Format>(n: usize, seed: u64) -> Met {
                 q[below(&mut r, n as u64) as usize] += 1;
                 qs.push(q);
             }
-            let ids: Vec<MonoId> = qs.iter().map(|q| t.intern(q).unwrap()).collect();
+            let ids: Vec<MonoId> = qs
+                .iter()
+                .map(|q| t.intern(q, &mut Budget::unbounded()).unwrap())
+                .collect();
             let min = basis.min().to_vec();
             // The order of terms, ties in the order made, by the test's own
             // keys.
             let mut by_terms = min.clone();
             by_terms.sort_by_key(|e| (elements[e.index()].1, e.index()));
-            let divisors = Divisors::new(&t, &basis);
+            let divisors = Divisors::new(&t, &basis, &mut Budget::unbounded()).unwrap();
             for (q, &u) in qs.iter().zip(&ids) {
                 let want = rule(&min, &elements, q);
-                let got = divisors.find(&t, u);
+                let (got, _) = divisors.find(&t, u);
                 assert_eq!(got, want, "{case_name}: {q:?}");
                 let divides_q = |e: &ElementId| divides(&elements[e.index()].0, q);
                 let first_made = min.iter().copied().find(divides_q);
@@ -253,7 +261,7 @@ fn random_basis<M: Format, O: Order<M>>(
                 e[below(r, n as u64) as usize] += 1;
                 degree -= 1;
             }
-            let m = t.intern(&e).unwrap();
+            let m = t.intern(&e, &mut Budget::unbounded()).unwrap();
             terms.push((m, field.coef(1 + below(r, 65520))));
         }
         let mut g: Poly<Gf31, Rank1> = Poly::from_terms(&mut terms, &field, &t, order, ());
@@ -261,7 +269,7 @@ fn random_basis<M: Format, O: Order<M>>(
             continue;
         }
         g.make_monic(&field);
-        basis.push_min(&t, g).unwrap();
+        basis.push_min(&t, g, &mut Budget::unbounded()).unwrap();
     }
     (t, basis)
 }
@@ -285,11 +293,13 @@ fn reducers_agree<M: Format, O: Order<M>>(n: usize, order: &O, seed: u64) -> u32
         if i == j {
             continue;
         }
-        let lcm = t.lcm(basis.lead(i), basis.lead(j)).unwrap();
+        let lcm = t
+            .lcm(basis.lead(i), basis.lead(j), &mut Budget::unbounded())
+            .unwrap();
         for g in [i, j] {
             given.push(RowSource {
                 element: g,
-                multiplier: t.div(lcm, basis.lead(g)).unwrap(),
+                multiplier: t.div(lcm, basis.lead(g), &mut Budget::unbounded()).unwrap(),
             });
         }
     }
@@ -297,7 +307,15 @@ fn reducers_agree<M: Format, O: Order<M>>(n: usize, order: &O, seed: u64) -> u32
         "{n} variables, seed {seed}, {len} given rows",
         len = given.len()
     );
-    let m = matrix::build(&mut t, &basis, order, 1, given, Vec::new(), &mut budget()).unwrap();
+    let m = matrix::build(
+        &mut t,
+        &basis,
+        order,
+        given,
+        &mut Buffers::new(),
+        &mut budget(),
+    )
+    .unwrap();
     let elements: Vec<(Vec<u32>, usize)> = (0..basis.len())
         .map(|i| {
             let e = ElementId::at(i);
@@ -307,7 +325,14 @@ fn reducers_agree<M: Format, O: Order<M>>(n: usize, order: &O, seed: u64) -> u32
     let leads: Vec<MonoId> = m
         .rows
         .iter()
-        .map(|row| t.mul(row.multiplier, basis.lead(row.element)).unwrap())
+        .map(|row| {
+            t.mul(
+                row.multiplier,
+                basis.lead(row.element),
+                &mut Budget::unbounded(),
+            )
+            .unwrap()
+        })
         .collect();
     let (given_leads, mut reducer_leads) = (leads[..m.given].to_vec(), leads[m.given..].to_vec());
     let mut reordered = 0;

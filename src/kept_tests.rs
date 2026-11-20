@@ -2,43 +2,7 @@
 //! vanishes at a forced prime, and the lift's bases of the edge cases
 //! (plan.md, _Test code_).
 
-use std::num::NonZeroUsize;
-
-use crate::lift::{Report, lift_text};
-use crate::{MonomialOrder, Outcome, Params, Threads};
-
-/// A prime near 2^30.5 that the case below makes a coefficient vanish at,
-/// as in `lift_tests.rs`.
-const U1: u64 = 1_518_500_279;
-/// Primes near 2^31, lucky for every case here.
-const L1: u64 = 2_147_483_647;
-const L2: u64 = 2_147_483_629;
-const L3: u64 = 2_147_483_587;
-
-fn params(seed: u64) -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        seed,
-    )
-}
-
-/// The lift of `text` with the primes `forced` first: its outcome, which
-/// must hold a basis.
-fn lift(text: &str, params: &Params, forced: &[u64]) -> Outcome {
-    let mut report = Report::default();
-    let outcome = lift_text(text, params, forced.to_vec(), &mut report)
-        .unwrap_or_else(|e| panic!("the lift failed: {e:?}\non\n{text}"));
-    assert!(
-        outcome.basis.is_some() && outcome.stopped.is_none(),
-        "the lift stopped: {outcome:?}\n{report:?}"
-    );
-    outcome
-}
-
-fn basis(outcome: &Outcome) -> &str {
-    outcome.basis.as_deref().unwrap()
-}
+use crate::shared_tests::{L1, L2, L3, U1, basis, lift, params};
 
 /// q-replay-time.4 to .6's case: the first step makes y − U1·z over Q and
 /// y modulo U1. The lift with U1 forced between lucky primes returns the

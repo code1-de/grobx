@@ -9,7 +9,7 @@ use grobx::{Outcome, Params};
 use grobx_checker::Mode;
 
 use crate::common::{
-    Listening, P, P31, assert_accepted, params, run,
+    EDGE_GENERATORS, Listening, P, P31, assert_accepted, params, run,
     systems::{random_binomials, random_sparse},
     with_cofactors,
 };
@@ -34,20 +34,6 @@ fn learn<T: grobx::trace::Trace>(text: &str, params: &Params, trace: &mut T) -> 
         record.expect("a learn that returns a basis has a record"),
     )
 }
-
-/// The edge cases of `OBJECTIVES.md` on x, y, z, generators alone.
-const EDGE: [(&str, &str); 7] = [
-    ("the zero ideal", "0"),
-    ("F = (0, 0)", "0,\n0"),
-    ("no generator", ""),
-    ("the unit ideal", "x*z-1,\nx"),
-    ("already a Gröbner basis", "x+z,\nz^2+1"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-    ),
-    ("an eliminable variable", "x-y^2-z,\ny*z-1,\nz^2-y"),
-];
 
 /// Test 8: learn-zero-time.1, .4, .5. `grobx::learn` with `NoTrace`, whose
 /// plain run takes the tests, against the learn with a listening trace,
@@ -159,7 +145,7 @@ fn calls_over_q_whose_learn_takes_tests() {
 /// basis and the same record.
 #[test]
 fn the_edge_cases() {
-    for (case, generators) in EDGE {
+    for (case, generators) in EDGE_GENERATORS {
         for signatures in [false, true] {
             let name = format!("{case}, signatures {signatures}");
             let q = format!("x,y,z\n0\n{generators}\n");

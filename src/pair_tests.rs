@@ -11,40 +11,31 @@
 
 use std::cmp::Ordering;
 use std::fmt::Write;
-use std::num::NonZeroUsize;
-use std::time::Instant;
 
-use rand_core::{Rng, SeedableRng};
+use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+use crate::Stats;
 use crate::budget::Budget;
 use crate::cofactors::NoCofactors;
-use crate::f4::{self, Elements, Halt};
+use crate::f4;
 use crate::field::{Field, Gf31};
-use crate::id::{ElementId, MonoId};
+use crate::halt::Halt;
+use crate::handover_tests::sig_basis;
+use crate::id::ElementId;
 use crate::module::Rank1;
 use crate::monomial::{Dense8, Dense16, Dense32, Format, Overflow};
 use crate::order::Grevlex;
-use crate::poly::{Basis, Poly};
+use crate::poly::{Basis, Elements, Poly};
+use crate::shared_tests::{
+    SIG_INDICES, SIG_VARIABLES, below, budget, divides, exponents, grevlex, id, minus, rng,
+    sig_cmp, sig_divides, sig_table,
+};
 use crate::sig::{self, Base, BaseDivisors, Formed, Pairs, Sig, Signatures, Triangle};
 use crate::systems::{dense, random_system};
 use crate::table::Table;
-use crate::text::{Header, write_basis};
+use crate::text::{Header, Unread, write_basis};
 use crate::trace::{NoLearner, NoTrace};
-use crate::{MonomialOrder, Params, Stats, Threads};
-
-/// The variables of the random worlds.
-const N: usize = 3;
-/// The indices of their signatures.
-const INDICES: u32 = 2;
-
-fn rng(seed: u64) -> Xoshiro256PlusPlus {
-    Xoshiro256PlusPlus::seed_from_u64(seed)
-}
-
-fn below(rng: &mut Xoshiro256PlusPlus, n: u64) -> u64 {
-    rng.next_u64() % n
-}
 
 /// A random exponent vector of `n` variables and total degree at most
 /// `degree`.
@@ -60,43 +51,6 @@ fn random_exps(rng: &mut Xoshiro256PlusPlus, n: usize, degree: u64) -> Vec<u32> 
     let shift = below(rng, n as u64) as usize;
     e.rotate_right(shift);
     e
-}
-
-fn divides(a: &[u32], b: &[u32]) -> bool {
-    a.iter().zip(b).all(|(x, y)| x <= y)
-}
-
-fn signed(e: &[u32]) -> Vec<i64> {
-    e.iter().map(|&x| i64::from(x)).collect()
-}
-
-fn minus(a: &[u32], b: &[u32]) -> Vec<i64> {
-    a.iter()
-        .zip(b)
-        .map(|(&x, &y)| i64::from(x) - i64::from(y))
-        .collect()
-}
-
-/// Grevlex on exponent vectors of any sign.
-fn grevlex(a: &[i64], b: &[i64]) -> Ordering {
-    let (da, db): (i64, i64) = (a.iter().sum(), b.iter().sum());
-    da.cmp(&db).then_with(|| {
-        for i in (0..a.len()).rev() {
-            if a[i] != b[i] {
-                return b[i].cmp(&a[i]);
-            }
-        }
-        Ordering::Equal
-    })
-}
-
-/// Schreyer's order on (exponents, index).
-fn sig_cmp(a: (&[u32], u32), b: (&[u32], u32)) -> Ordering {
-    grevlex(&signed(a.0), &signed(b.0)).then(a.1.cmp(&b.1))
-}
-
-fn sig_divides(a: (&[u32], u32), b: (&[u32], u32)) -> bool {
-    a.1 == b.1 && divides(a.0, b.0)
 }
 
 // ---------------------------------------------------------------------
@@ -115,12 +69,19 @@ fn words<M: Format>(format: &M, e: &[u32]) -> Vec<M::Word> {
     w
 }
 
+// unreached-test-paths.5 design-checked -- s, x, and y are drawn of degree up to the format's bound, so that both arms run and the test asserts each did, not of degree up to half the bound, where no quotient passes it and the arm of Overflow never runs (log 0151-1)
+/// `mul_quotient` on 3000 draws of s, x, and y, each of degree at most the format's bound, so that
+/// each fits: Overflow where the quotient's degree passes the bound, else the quotient and its
+/// degree. The quotient's degree is at most deg s + deg y, twice the bound, and each arm runs on
+/// at least `ARM` draws.
 fn check_quotients<M: Format>(format: M, seed: u64) {
+    /// The fewest of the draws that each arm runs on, below the fewest that any format and count
+    /// of variables here draws (log 0151-1).
+    const ARM: usize = 50;
     let n = format.variables();
     let mut rng = rng(seed);
-    // Degrees up to half the bound, at most 600, so that s, x, and y fit;
-    // the quotient, of degree at most deg s + deg y, stays within it.
-    let most = (u64::from(M::MAX_DEGREE) / 2).min(600);
+    let most = u64::from(M::MAX_DEGREE);
+    let (mut over, mut within) = (0, 0);
     for _ in 0..3000 {
         let (s, x, y) = (
             random_exps(&mut rng, n, most),
@@ -137,12 +98,18 @@ fn check_quotients<M: Format>(format: M, seed: u64) {
         let (want, degree) = quotient(&s, &x, &y);
         if degree > u64::from(M::MAX_DEGREE) {
             assert_eq!(got, Err(Overflow), "{s:?} {x:?} {y:?}");
+            over += 1;
             continue;
         }
         assert_eq!(got, Ok(degree as u32), "{s:?} {x:?} {y:?}");
         let read: Vec<u32> = (0..n).map(|k| format.exponent(&out, k)).collect();
         assert_eq!(read, want, "{s:?} {x:?} {y:?}");
+        within += 1;
     }
+    assert!(
+        over >= ARM && within >= ARM,
+        "{over} quotients past the bound and {within} within it, on {n} variables"
+    );
 }
 
 /// The bound exactly: s with one exponent at `MAX_DEGREE`, and a quotient
@@ -214,23 +181,11 @@ fn the_quotient_is_formed_exponent_by_exponent() {
 // A world of elements with signatures, built as `sig_tests.rs` builds its
 // world, each random exponent vector rotated.
 
-fn table(seed: u64) -> Table<Dense16> {
-    Table::new(Dense16::new(N), &mut rng(seed ^ 0x5197))
-}
-
-fn id(table: &mut Table<Dense16>, exps: &[u32]) -> MonoId {
-    table.intern(exps).unwrap()
-}
-
-fn exps(table: &Table<Dense16>, id: MonoId) -> Vec<u32> {
-    (0..N).map(|i| table.exponent(id, i)).collect()
-}
-
 fn random_sig(rng: &mut Xoshiro256PlusPlus, table: &mut Table<Dense16>, degree: u64) -> Sig {
-    let e = random_exps(rng, N, degree);
+    let e = random_exps(rng, SIG_VARIABLES, degree);
     Sig {
         monomial: id(table, &e),
-        index: below(rng, u64::from(INDICES)) as u32,
+        index: below(rng, u64::from(SIG_INDICES)) as u32,
     }
 }
 
@@ -247,7 +202,7 @@ fn random_poly(
     let mut monomials = vec![l];
     for _ in 0..below(rng, tail + 1) {
         let d: u64 = lead.iter().map(|&x| u64::from(x)).sum();
-        let m = id(table, &random_exps(rng, N, d));
+        let m = id(table, &random_exps(rng, SIG_VARIABLES, d));
         if table.cmp(&Grevlex, m, l).is_lt() && !monomials.contains(&m) {
             monomials.push(m);
         }
@@ -275,18 +230,19 @@ struct World {
 
 fn world(seed: u64, count: usize) -> World {
     let mut rng = rng(seed);
-    let mut table = table(seed);
+    let mut table = sig_table(seed);
     let field = Gf31::new(65521).unwrap();
     let mut basis = Basis::new();
-    let mut sigs = Signatures::new(INDICES as usize);
+    let mut sigs = Signatures::new(SIG_INDICES as usize);
     let mut elements = Vec::new();
     for _ in 0..count {
-        let lead = random_exps(&mut rng, N, 4);
+        let lead = random_exps(&mut rng, SIG_VARIABLES, 4);
         let poly = random_poly(&mut rng, &mut table, &field, &lead, 3);
         let sig = random_sig(&mut rng, &mut table, 6);
         basis.push(poly, false).unwrap();
-        sigs.push(&table, &Grevlex, &basis, sig).unwrap();
-        elements.push((exps(&table, sig.monomial), sig.index, lead));
+        sigs.push(&table, &Grevlex, &basis, sig, &mut Budget::unbounded())
+            .unwrap();
+        elements.push((exponents(&table, sig.monomial), sig.index, lead));
     }
     World {
         table,
@@ -313,8 +269,8 @@ fn pair_sig(w: &World, g: usize, h: usize) -> Option<(Vec<u32>, u32)> {
     let (sg, ig, lg) = w.elements[g].clone();
     let (sh, ih, lh) = w.elements[h].clone();
     let lcm: Vec<u32> = lg.iter().zip(&lh).map(|(a, b)| *a.max(b)).collect();
-    let mg: Vec<u32> = (0..N).map(|k| lcm[k] - lg[k] + sg[k]).collect();
-    let mh: Vec<u32> = (0..N).map(|k| lcm[k] - lh[k] + sh[k]).collect();
+    let mg: Vec<u32> = (0..SIG_VARIABLES).map(|k| lcm[k] - lg[k] + sg[k]).collect();
+    let mh: Vec<u32> = (0..SIG_VARIABLES).map(|k| lcm[k] - lh[k] + sh[k]).collect();
     match sig_cmp((&mg, ig), (&mh, ih)) {
         Ordering::Equal => None,
         Ordering::Greater => Some((mg, ig)),
@@ -338,15 +294,18 @@ fn the_formed_signature_is_the_pairs() {
                     (None, None) => {}
                     (Some(f), Some((e, index))) => {
                         let format = *w.table.format();
-                        let formed: Vec<u32> = (0..N)
+                        let formed: Vec<u32> = (0..SIG_VARIABLES)
                             .map(|k| format.exponent(w.table.formed(), k))
                             .collect();
                         assert_eq!(formed, e, "seed {seed}: pair {g}, {h}");
                         assert_eq!(f.index, index, "seed {seed}: pair {g}, {h}");
                         assert_eq!(f.degree, e.iter().sum::<u32>(), "seed {seed}");
                         assert_eq!(f.mask, format.mask(w.table.formed()), "seed {seed}");
-                        let interned = w.table.intern_formed(f.degree).unwrap();
-                        assert_eq!(exps(&w.table, interned), e, "seed {seed}");
+                        let interned = w
+                            .table
+                            .intern_formed(f.degree, &mut Budget::unbounded())
+                            .unwrap();
+                        assert_eq!(exponents(&w.table, interned), e, "seed {seed}");
                         assert_eq!(interned, id(&mut w.table, &e), "seed {seed}");
                         assert_eq!(w.table.mask(interned), f.mask, "seed {seed}");
                     }
@@ -382,7 +341,7 @@ fn largest(w: &World, t: usize, candidate: impl Fn(usize) -> bool) -> Vec<usize>
 fn x_v(w: &World, a: usize, t: usize) -> Vec<u32> {
     let (sa, _, la) = &w.elements[a];
     let (st, _, lt) = &w.elements[t];
-    (0..N)
+    (0..SIG_VARIABLES)
         .map(|k| {
             let p = la[k] + st[k] - sa[k];
             if lt[k] <= p {
@@ -399,7 +358,14 @@ fn the_base_divisors_have_the_largest_ratio() {
     for seed in 0..20 {
         let w = world(seed ^ 0xbd, 30);
         for t in 0..w.elements.len() {
-            let got = BaseDivisors::of(&w.table, &w.basis, &w.sigs, ElementId::at(t));
+            let got = BaseDivisors::of(
+                &w.table,
+                &w.basis,
+                &w.sigs,
+                ElementId::at(t),
+                &mut Budget::unbounded(),
+            )
+            .unwrap();
             let high = largest(&w, t, |e| divides(&w.elements[e].2, &w.elements[t].2));
             match got.high {
                 None => assert!(high.is_empty(), "seed {seed}: t {t}: {high:?}"),
@@ -420,7 +386,7 @@ fn the_base_divisors_have_the_largest_ratio() {
                         "seed {seed}: t {t}: {a} not in {low:?}"
                     );
                     let format = w.table.format();
-                    let v: Vec<u32> = (0..N).map(|k| format.exponent(v, k)).collect();
+                    let v: Vec<u32> = (0..SIG_VARIABLES).map(|k| format.exponent(v, k)).collect();
                     assert_eq!(v, x_v(&w, a.index(), t), "seed {seed}: t {t}");
                 }
             }
@@ -431,7 +397,7 @@ fn the_base_divisors_have_the_largest_ratio() {
 /// A triangle of `n` elements with every bit set.
 fn full(n: usize) -> Triangle {
     let mut triangle = Triangle::new();
-    triangle.grow(n);
+    triangle.grow(n, &mut Budget::unbounded()).unwrap();
     for j in 0..n {
         for i in 0..j {
             triangle.set(ElementId::at(i), ElementId::at(j));
@@ -448,10 +414,12 @@ fn the_base_divisors_eliminate_only_multiples() {
         let n = w.elements.len();
         let all = full(n);
         let mut none = Triangle::new();
-        none.grow(n);
+        none.grow(n, &mut Budget::unbounded()).unwrap();
         for t in 0..n {
             let te = ElementId::at(t);
-            let divisors = BaseDivisors::of(&w.table, &w.basis, &w.sigs, te);
+            let divisors =
+                BaseDivisors::of(&w.table, &w.basis, &w.sigs, te, &mut Budget::unbounded())
+                    .unwrap();
             for g in 0..t {
                 let ge = ElementId::at(g);
                 let got = divisors.eliminates(&w.table, &w.basis, &w.sigs, &all, te, ge);
@@ -522,7 +490,7 @@ fn the_triangle_holds_each_pair_once() {
     let mut rng = rng(5);
     let n = 200usize;
     let mut triangle = Triangle::new();
-    triangle.grow(n);
+    triangle.grow(n, &mut Budget::unbounded()).unwrap();
     let mut model = vec![vec![false; n]; n];
     for _ in 0..3000 {
         let i = below(&mut rng, n as u64) as usize;
@@ -551,18 +519,23 @@ fn the_triangle_holds_each_pair_once() {
 fn the_syzygy_query_agrees_with_a_scan() {
     for seed in 0..20 {
         let mut rng = rng(seed ^ 0x5c4);
-        let mut table = table(seed);
+        let mut table = sig_table(seed);
         let one = id(&mut table, &[0, 0, 0]);
-        let mut sigs = Signatures::new(INDICES as usize);
+        let mut sigs = Signatures::new(SIG_INDICES as usize);
         let mut pushed: Vec<(Vec<u32>, u32)> = Vec::new();
         for _ in 0..2000 {
             let s = random_sig(&mut rng, &mut table, 6);
-            let se = exps(&table, s.monomial);
+            let se = exponents(&table, s.monomial);
             let known = pushed
                 .iter()
                 .any(|(e, i)| sig_divides((e, *i), (&se, s.index)));
             for _ in 0..2 {
-                assert_eq!(sigs.is_syzygy(&table, s), known, "seed {seed}: {se:?}");
+                assert_eq!(
+                    sigs.is_syzygy(&mut table, s, &mut Budget::unbounded())
+                        .unwrap(),
+                    known,
+                    "seed {seed}: {se:?}"
+                );
                 let degree = table.form_quotient(s.monomial, one, one).unwrap();
                 let formed = Formed {
                     index: s.index,
@@ -571,13 +544,19 @@ fn the_syzygy_query_agrees_with_a_scan() {
                 };
                 assert_eq!(degree, se.iter().sum::<u32>());
                 assert_eq!(
-                    sigs.is_syzygy_formed(&table, &formed),
+                    sigs.is_syzygy_formed(&mut table, &formed, &mut Budget::unbounded())
+                        .unwrap(),
                     known,
                     "seed {seed}: {se:?}"
                 );
             }
             if below(&mut rng, 4) == 0 {
-                assert_eq!(sigs.push_syzygy(&table, s), !known, "seed {seed}: {se:?}");
+                assert_eq!(
+                    sigs.push_syzygy(&mut table, s, &mut Budget::unbounded())
+                        .unwrap(),
+                    !known,
+                    "seed {seed}: {se:?}"
+                );
                 pushed.push((se, s.index));
             }
         }
@@ -587,26 +566,19 @@ fn the_syzygy_query_agrees_with_a_scan() {
 // ---------------------------------------------------------------------
 // The signature run with base divisors on and off.
 
-fn budget() -> Budget {
-    let params = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    );
-    Budget::new(Instant::now(), &params).unwrap()
-}
-
 /// The signature run over `text`, in grevlex, in the format `M`, with base
 /// divisors where `bases`, to its end: the basis text, or the halt.
 fn run<M: Format>(text: &str, bases: bool) -> Result<String, Halt> {
-    let header = Header::read(text).unwrap();
+    let header = Header::read(text, &mut Budget::unbounded()).unwrap();
     let field = header.gf31().unwrap();
     let mut table = Table::new(
         M::new(header.names.len()),
         &mut Xoshiro256PlusPlus::seed_from_u64(1),
     );
-    let generators: Vec<Poly<Gf31, Rank1>> =
-        header.generators(&field, &mut table, &Grevlex).unwrap();
+    let generators: Vec<Poly<Gf31, Rank1>> = header
+        .generators(&field, &mut table, &Grevlex, &mut Budget::unbounded())
+        .map_err(Unread::unbounded)
+        .unwrap();
     let mut stats = Stats::default();
     let mut pairs = Pairs::new(bases);
     let got: Result<Elements<Gf31, Rank1, ()>, Halt> = f4::run_sig(
@@ -622,7 +594,8 @@ fn run<M: Format>(text: &str, bases: bool) -> Result<String, Halt> {
         None,
         &mut pairs,
         1,
-    );
+    )
+    .map(sig_basis);
     got.map(|elements| {
         let mut out = String::new();
         write_basis(

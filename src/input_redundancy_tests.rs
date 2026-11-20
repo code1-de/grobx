@@ -12,7 +12,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use rand_core::SeedableRng;
@@ -20,37 +19,22 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
 use crate::echelon::{Echelon, echelon};
-use crate::f4::{Halt, Handover};
+use crate::f4::Handover;
 use crate::field::{Field, Gf31, Gf31Pair, Gf64};
+use crate::halt::Halt;
 use crate::id::MonoId;
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::{Block, Grevlex, Lex, Order};
 use crate::poly::Poly;
+use crate::shared_tests::{P, P31, P61, budget, params};
 use crate::systems::Rng;
 use crate::table::Table;
-use crate::text::Header;
-use crate::{Cancel, MonomialOrder, Params, Stop, Threads};
+use crate::text::{Header, Unread};
+use crate::{Cancel, Stop};
 
-const P: u64 = 65521;
-/// The largest prime below 2^31.
-const P31: u64 = 2_147_483_647;
 /// A second prime below 2^31.
 const Q31: u64 = 2_147_483_629;
-/// The Mersenne prime 2^61 − 1, past 2^31.
-const P61: u64 = (1 << 61) - 1;
-
-fn params() -> Params {
-    Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    )
-}
-
-pub(crate) fn budget() -> Budget {
-    Budget::new(Instant::now(), &params()).unwrap()
-}
 
 /// A table for the variables `names`.
 pub(crate) fn table(names: &str) -> Table<Dense16> {
@@ -68,8 +52,11 @@ pub(crate) fn read<F: Field, O: Order<Dense16>>(
     generators: &str,
 ) -> Vec<Poly<F, Rank1>> {
     let text = format!("{names}\n0\n{generators}\n");
-    let header = Header::read(&text).unwrap();
-    header.generators(field, table, order).unwrap()
+    let header = Header::read(&text, &mut Budget::unbounded()).unwrap();
+    header
+        .generators(field, table, order, &mut Budget::unbounded())
+        .map_err(Unread::unbounded)
+        .unwrap()
 }
 
 /// `echelon` on the generators, which must succeed.
@@ -499,7 +486,7 @@ fn a_stop_in_the_echelon() {
     let field = Gf31::prime(P);
     let mut t = table(names);
     let g = read(&field, &mut t, &Grevlex, names, &text);
-    let mut cancelled = params();
+    let mut cancelled = params(1);
     let cancel = Cancel::new();
     cancel.set();
     cancelled.cancel = Some(cancel);
@@ -521,15 +508,35 @@ fn an_early_round_without_a_zero() {
     let calls = Cell::new(0);
     let count = || {
         calls.set(calls.get() + 1);
-        0
+        Ok(0)
     };
-    assert!(Handover::new(false).after_round(true, false, 100, 0, count));
+    assert!(
+        Handover::new(false)
+            .after_round(true, false, 100, 0, count)
+            .unwrap()
+    );
     assert_eq!(calls.get(), 0, "the zero test hands over before the count");
-    assert!(!Handover::new(false).after_round(true, false, 99, 0, || 0));
+    assert!(
+        !Handover::new(false)
+            .after_round(true, false, 99, 0, || Ok(0))
+            .unwrap()
+    );
     // minrank-ks10r3k15-p65521's early round in echelon form.
-    assert!(Handover::new(false).after_round(true, false, 4165, 0, || 0));
+    assert!(
+        Handover::new(false)
+            .after_round(true, false, 4165, 0, || Ok(0))
+            .unwrap()
+    );
     // An early round that is the gap round hands over.
-    assert!(Handover::new(false).after_round(true, true, 100, 0, || 0));
+    assert!(
+        Handover::new(false)
+            .after_round(true, true, 100, 0, || Ok(0))
+            .unwrap()
+    );
     // A round that is no early round: the outgrown test alone.
-    assert!(!Handover::new(false).after_round(false, false, 100, 0, || 0));
+    assert!(
+        !Handover::new(false)
+            .after_round(false, false, 100, 0, || Ok(0))
+            .unwrap()
+    );
 }

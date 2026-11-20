@@ -3,26 +3,12 @@
 //! the checker on their results, and the edge cases of `OBJECTIVES.md`
 //! (`iterations/0071-plain-update-time/plan.md`, _Test code_, 5 and 6).
 
-use grobx::Params;
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, assert_accepted, params_in, random_square, random_system, run, with_cofactors_in,
+    P, P31, agree, assert_accepted, params_in, random_square, random_system, run, with_cofactors_in,
 };
 use crate::many_variables_time::{EDGE, P62};
-
-/// The basis texts of `text` under `params` with signatures off, the plain
-/// run from the start, and on: one text. Returns it.
-fn agree(case: &str, text: &str, params: &Params) -> String {
-    let mut plain = params.clone();
-    plain.signatures = false;
-    let mut signatures = params.clone();
-    signatures.signatures = true;
-    let got = run(text, &plain).basis.expect("a basis");
-    let want = run(text, &signatures).basis.expect("a basis");
-    assert_eq!(got, want, "{case}: signatures off and on\n{text}");
-    got
-}
 
 /// The checker accepts the plain run's result with cofactors in grevlex,
 /// in the exact mode.

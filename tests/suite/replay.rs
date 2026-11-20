@@ -11,29 +11,13 @@ use grobx::{Cancel, CheckerMode, Error, MonomialOrder, Outcome, Params, Stop};
 use grobx_checker::Mode;
 
 use crate::common::{
-    P, P31, PRIMES, assert_accepted, degree_bound, dense, params, points, random_system,
+    P, P31, PRIMES, TRACE_REPLAY_EDGE, assert_accepted, degree_bound, dense, dense_systems, params,
+    points, random_system, with,
 };
+use crate::large::over;
 
 /// The primes above 2^30 the generated systems are replayed over.
 const OTHER: [u64; 3] = [2_147_483_647, 2_147_483_629, 1_073_741_827];
-
-/// The parameters of a measured call, with or without signatures and
-/// cofactors.
-fn with(seed: u64, signatures: bool, cofactors: bool) -> Params {
-    let mut p = params(seed);
-    p.signatures = signatures;
-    p.cofactors = cofactors;
-    p
-}
-
-/// The instance with its characteristic, the second line, replaced by p.
-fn over(text: &str, p: u64) -> String {
-    let mut lines = text.splitn(3, '\n');
-    let variables = lines.next().unwrap();
-    lines.next();
-    let rest = lines.next().unwrap_or("");
-    format!("{variables}\n{p}\n{rest}")
-}
 
 /// The record of a learn run that returns a basis, and its outcome.
 fn learn(name: &str, text: &str, params: &Params) -> (Outcome, Record) {
@@ -63,13 +47,6 @@ fn basis(text: &str) -> String {
     outcome.basis.expect("the run returns a basis")
 }
 
-/// The dense cubic systems on two to four variables over GF(65521).
-fn dense_systems() -> Vec<(String, String)> {
-    (2..=4)
-        .map(|m| (format!("cubic-{m}"), dense(m, 3, P, m as u64)))
-        .collect()
-}
-
 /// The tiny instance, the dense systems, and random systems over every
 /// prime of `PRIMES`: name and text.
 fn small_instances(seeds: u64) -> Vec<(String, String)> {
@@ -90,7 +67,10 @@ fn small_instances(seeds: u64) -> Vec<(String, String)> {
 /// read over another prime, each is another ideal, with other leading
 /// monomials.
 const OTHER_IDEAL: &[(&str, &str)] = &[
-    ("a vanishing leading term", "x,y\n65521\n65521*x^3+x*y-1,\ny^2-x\n"),
+    (
+        "a vanishing leading term",
+        "x,y\n65521\n65521*x^3+x*y-1,\ny^2-x\n",
+    ),
     ("a vanishing tail", "x,y\n65521\nx^2+65521*y,\nx*y+1\n"),
 ];
 
@@ -105,18 +85,6 @@ fn leads(basis: &str) -> Vec<String> {
         })
         .collect()
 }
-
-/// The edge cases of plan.md: name and instance over GF(65521).
-const EDGE: &[(&str, &str)] = &[
-    ("zero", "x,y\n65521\n0\n"),
-    ("no generator", "x,y\n65521\n"),
-    ("unit", "x,y\n65521\nx*y-1,\nx\n"),
-    ("constant", "x,y\n65521\n1\n"),
-    ("constant among others", "x,y\n65521\nx^2+y,\nx*y+1,\n7\n"),
-    ("already a basis", "x,y\n65521\nx+y,\ny^2+1\n"),
-    ("zero generator", "x,y,z\n65521\nx*y-z,\n0,\ny^2-x\n"),
-    ("eliminable", "x,y,z\n65521\nx-y^2-z,\ny*z-1,\nz^2-y\n"),
-];
 
 #[test]
 fn a_replay_over_the_learn_prime_returns_the_learned_basis() {
@@ -176,7 +144,7 @@ fn a_record_of_another_ideal_does_not_fit() {
 #[test]
 fn the_checker_accepts_a_replay() {
     let mut cases = dense_systems();
-    for (name, text) in EDGE {
+    for (name, text) in TRACE_REPLAY_EDGE {
         cases.push((name.to_string(), text.to_string()));
     }
     for seed in 0..5 {
@@ -277,7 +245,7 @@ fn a_record_that_does_not_fit_is_detected() {
 
 #[test]
 fn the_edge_cases() {
-    for (name, text) in EDGE {
+    for (name, text) in TRACE_REPLAY_EDGE {
         for signatures in [false, true] {
             let name = format!("{name}, signatures {signatures}");
             let (_, record) = learn(&name, text, &with(1, signatures, false));

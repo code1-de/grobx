@@ -4,6 +4,7 @@
 //! format, the monomial order, the module of the rows, the cofactor
 //! tracking, and the trace.
 
+// hygiene.2 design-checked -- an index or a bracketed list in a doc comment, `dens[0]`, stands in a code span, which rustdoc reads as no link, not its brackets escaped (not measured)
 #![cfg_attr(
     test,
     allow(
@@ -27,41 +28,149 @@
 #[cfg(test)]
 mod attempt_tests;
 #[cfg(test)]
+mod back_substitution_tests;
+#[cfg(test)]
 mod band_tests;
+mod bitmap;
+#[cfg(test)]
+mod bivium_gap_tests;
+#[cfg(test)]
+mod bivium_rest_gap_tests;
+#[cfg(test)]
+mod bivium_signature_gap_tests;
 mod blocks;
 mod budget;
 #[cfg(test)]
 mod build_tests;
+mod call;
+#[cfg(test)]
+mod call_stop_item_tests;
+#[cfg(test)]
+mod call_stop_lift_tests;
+#[cfg(test)]
+mod call_stop_plain_tests;
+#[cfg(test)]
+mod call_stop_read_tests;
+#[cfg(test)]
+mod call_stop_reduce_tests;
+#[cfg(test)]
+mod call_stop_sig_tests;
+#[cfg(test)]
+mod call_stop_sites_tests;
+#[cfg(test)]
+mod call_stop_tests;
+#[cfg(test)]
+mod carried_entry_stage_tests;
+#[cfg(test)]
+mod carried_run_tests;
 #[cfg(test)]
 mod catch_up_tests;
+#[cfg(test)]
+mod ccode_newton_gap_tests;
 #[cfg(test)]
 mod chain_tests;
 #[cfg(test)]
 mod child_tests;
 #[cfg(test)]
+mod clock_tests;
+#[cfg(all(test, feature = "cofactors"))]
 mod cofactor_stop_tests;
 pub mod cofactors;
 #[cfg(test)]
+mod column_index_peak_tests;
+#[cfg(test)]
+mod column_merge_tests;
+#[cfg(test)]
+mod column_ops_tests;
+mod columns;
+#[cfg(all(test, feature = "cofactors"))]
 mod combine_tests;
 #[cfg(test)]
+mod cooper_rest_gap_tests;
+#[cfg(test)]
+mod cpu_brand_nul_tests;
+#[cfg(test)]
 mod cyclic_gap_tests;
+#[cfg(test)]
+mod dead_monomial_peak_tests;
+#[cfg(test)]
+mod deglex_order_tests;
+#[cfg(test)]
+mod denominator_line_tests;
 #[cfg(test)]
 mod denominator_tests;
 #[cfg(test)]
 mod divisibility_tests;
+mod divisors;
 #[cfg(test)]
 mod early_handover_tests;
 mod echelon;
 #[cfg(test)]
+mod echelon_lane_tests;
+#[cfg(test)]
 mod echelon_replay_tests;
 mod entry;
+#[cfg(test)]
+mod error_tests;
 mod f4;
+#[cfg(test)]
+mod fallen_pair_losses_tests;
 mod fglm;
 #[cfg(test)]
 mod fglm_tests;
 pub mod field;
 #[cfg(test)]
 mod format_tests;
+#[cfg(test)]
+mod freed_heap_text_peak_tests;
+#[cfg(test)]
+mod gf2_bound_losses_tests;
+#[cfg(test)]
+mod gf2_build_rest_time_tests;
+#[cfg(test)]
+mod gf2_build_time_tests;
+#[cfg(test)]
+mod gf2_chain_criteria_time_tests;
+#[cfg(test)]
+mod gf2_echelon_losses_tests;
+// gf2-fglm-restart-test.1 design-checked -- the test of the change's start over in Dense4 is a file of the core's unit tests, which calls the call in the widths it names and fglm::staircase in Dense4, not a file of grobx's suite, whose grobx::groebner takes every width and cannot call the call in Dense8 alone (not measured)
+#[cfg(test)]
+mod gf2_fglm_restart_tests;
+#[cfg(test)]
+mod gf2_field_tests;
+#[cfg(test)]
+mod gf2_forced_zeros_tests;
+#[cfg(test)]
+mod gf2_input_time_tests;
+#[cfg(test)]
+mod gf2_monomial_time_tests;
+#[cfg(test)]
+mod gf2_packed_backsub_time_tests;
+#[cfg(test)]
+mod gf2_packed_forward_time_tests;
+#[cfg(test)]
+mod gf2_pair_queries_time_tests;
+#[cfg(test)]
+mod gf2_pair_update_time_tests;
+#[cfg(test)]
+mod gf2_signature_losses_tests;
+#[cfg(test)]
+mod gf2_split_rest_time_tests;
+#[cfg(test)]
+mod gf2_start_over_tests;
+#[cfg(test)]
+mod gf2_symbolic_speculation_time_tests;
+#[cfg(test)]
+mod gf2_symbolic_time_tests;
+#[cfg(test)]
+mod gf2_tails_time_tests;
+#[cfg(test)]
+mod gf2_update_rest_time_tests;
+#[cfg(test)]
+mod gf2_update_time_tests;
+#[cfg(test)]
+mod gf2_wide_round_time_tests;
+mod halt;
 #[cfg(test)]
 mod handover_tests;
 #[cfg(test)]
@@ -70,11 +179,17 @@ pub mod id;
 #[cfg(test)]
 mod input_redundancy_tests;
 #[cfg(test)]
+mod instance_read_peak_tests;
+#[cfg(test)]
+mod instance_read_time_tests;
+#[cfg(test)]
 mod kept_tests;
 #[cfg(test)]
 mod kept_unchecked_tests;
 #[cfg(test)]
 mod key_tests;
+#[cfg(test)]
+mod large_round_tests;
 #[cfg(test)]
 mod later_runs_tests;
 #[cfg(test)]
@@ -89,6 +204,13 @@ mod lift_growth_tests;
 mod lift_rest_tests;
 #[cfg(test)]
 mod lift_tests;
+mod limbs;
+#[cfg(test)]
+mod linear_substitution_time_tests;
+#[cfg(test)]
+mod linear_tail_time_tests;
+#[cfg(test)]
+mod local_column_tests;
 #[cfg(test)]
 mod lookup_tests;
 #[cfg(test)]
@@ -109,16 +231,32 @@ pub mod monomial;
 #[cfg(test)]
 mod mqrr_tests;
 mod narrow;
+#[cfg(test)]
+mod narrow_matrix_tests;
+#[cfg(test)]
+mod not_built_tests;
+mod numerators;
+#[cfg(test)]
+mod numerators_tests;
 pub mod order;
 mod os;
-#[cfg(test)]
+#[cfg(all(test, feature = "cofactors"))]
 mod outgrown_round_tests;
 #[cfg(test)]
 mod output_tests;
+mod packed;
+#[cfg(test)]
+mod packed_reduction_tests;
 #[cfg(test)]
 mod packed_tests;
 #[cfg(test)]
+mod pair_index_upkeep_time_tests;
+#[cfg(test)]
 mod pair_tests;
+#[cfg(test)]
+mod pair_update_arith_tests;
+#[cfg(test)]
+mod pair_update_rest_tests;
 #[cfg(test)]
 mod pair_work_ratio_tests;
 #[cfg(test)]
@@ -133,6 +271,8 @@ mod plain_band_tests;
 #[cfg(test)]
 mod plain_update_tests;
 #[cfg(test)]
+mod plain_zero_pairs_time_tests;
+#[cfg(test)]
 mod plain_zero_tests;
 mod poly;
 #[cfg(test)]
@@ -142,6 +282,14 @@ mod prime_count_tests;
 #[cfg(test)]
 mod q_basis_text_tests;
 #[cfg(test)]
+mod q_image_exponents_peak_tests;
+#[cfg(test)]
+mod q_replay_reduction_time_tests;
+#[cfg(test)]
+mod q_teardown_tests;
+// call-stop-latency.59 design-checked -- the pending signatures are a module of its own, which sorts a round's signatures by `sort::by_signature`, not a part of `sig`, which `sort` reads, nor a queue that hands its rounds unsorted to the run to sort (not measured)
+mod queue;
+#[cfg(test)]
 mod radix_tests;
 mod rational;
 #[cfg(test)]
@@ -149,10 +297,22 @@ mod rational_tests;
 #[cfg(test)]
 mod read_tests;
 #[cfg(test)]
+mod rebuilt_reducer_sig_tests;
+#[cfg(test)]
+mod rebuilt_reducer_tests;
+#[cfg(test)]
+mod record_guard_tests;
+#[cfg(test)]
 mod record_tests;
+#[cfg(test)]
+mod redundant_round_pairs_tests;
+#[cfg(test)]
+mod release_forced_tests;
 mod report;
 #[cfg(test)]
 mod report_lift_tests;
+#[cfg(test)]
+mod report_peak_inherited_tests;
 #[cfg(test)]
 mod report_tests;
 #[cfg(test)]
@@ -163,16 +323,32 @@ mod shape;
 #[cfg(test)]
 mod shape_tests;
 #[cfg(test)]
+mod shared_tests;
+#[cfg(test)]
+mod short_row_probe_tests;
+#[cfg(test)]
+mod short_row_tests;
+#[cfg(test)]
 mod shortcut_tests;
 mod sig;
 #[cfg(test)]
 mod sig_tests;
 #[cfg(test)]
+mod signature_run_losses_tests;
+#[cfg(test)]
 mod signature_zero_tests;
 #[cfg(test)]
+mod silent_fallbacks_tests;
+// gf2-forced-zeros-time.14 design-checked -- the sketch is a module of its own that reads its rows through the caller and knows no matrix, not its words and echelon in matrix.rs's reducer (log 0134-2)
+mod sketch;
+#[cfg(test)]
 mod slack_tests;
-#[cfg(all(test, target_os = "linux"))]
-mod small_block_tests;
+mod sort;
+#[cfg(test)]
+mod sort_ties_tests;
+#[cfg(test)]
+mod split_piece_time_tests;
+mod substitute;
 #[cfg(test)]
 #[path = "../tests/common/systems.rs"]
 mod systems;
@@ -180,11 +356,15 @@ mod table;
 pub mod text;
 #[cfg(test)]
 mod text_copy_peak_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "cofactors"))]
 mod text_stop_tests;
 #[cfg(test)]
 mod text_time_tests;
 pub mod trace;
+#[cfg(test)]
+mod unreached_test_paths_tests;
+#[cfg(test)]
+mod wide_format_products_tests;
 #[cfg(test)]
 mod zero_rows_tests;
 
@@ -198,10 +378,10 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-pub use blocks::{Allocator, MMAP_THRESHOLD, SMALL, TOP_PAD};
+pub use blocks::Allocator;
 pub use order::MonomialOrder;
 
-// small-block-time.4 design -- the crate's unit tests set the crate's allocator as their global allocator, not the crate setting it for every program that links it (not measured)
+// small-block-time.4 design-checked -- the crate's unit tests set the crate's allocator as their global allocator, not the crate setting it for every program that links it (not measured)
 #[cfg(test)]
 #[global_allocator]
 static GLOBAL: Allocator = Allocator;
@@ -223,19 +403,14 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// second divides a denominator of the lifted basis, and the checker, where
 /// the call asks for it, rules on it with the lifted cofactors.
 ///
-/// The first call of a process, of this entry point or of any other, sets
-/// glibc's `M_TOP_PAD` to `TOP_PAD` and `M_MMAP_THRESHOLD` to
-/// `MMAP_THRESHOLD` for the process, which keeps them after the call.
-///
 /// # Errors
 ///
 /// Every `Error` but `Misfit`: a text that breaks the grammar, a
 /// characteristic or order that does not fit, a degree overflow, a count
 /// past what a u32 id numbers, a denominator with no inverse, a memory
-/// ceiling with no resident set, over Q the lift's drops, and a `mallopt`
-/// that refused the first call's parameters.
+/// ceiling with no resident set, and over Q the lift's drops.
 pub fn groebner(text: &str, params: &Params) -> Result<Outcome, Error> {
-    entry::groebner(text, params, &mut trace::NoTrace, &mut trace::NoLearner)
+    call::groebner(text, params, &mut trace::NoTrace, &mut trace::NoLearner)
 }
 
 /// As `groebner`, and `trace` hears of every matrix the run's rounds and
@@ -257,10 +432,10 @@ pub fn groebner_with<T: trace::Trace>(
     params: &Params,
     trace: &mut T,
 ) -> Result<Outcome, Error> {
-    entry::groebner(text, params, trace, &mut trace::NoLearner)
+    call::groebner(text, params, trace, &mut trace::NoLearner)
 }
 
-// trace-replay.13 cited: demin-2024 §3 -- Groebner.jl learns the trace of a computation once and applies it by a function of its own, groebner_apply!
+// trace-replay.13 design-checked -- learning and replaying are two functions of the API, `learn` and `replay`, each with a trace, not a field of `Params` that turns the mode off, learns, or applies a record (not measured)
 /// As `groebner_with`, and, where the run returns a basis, the record of
 /// its matrices that `replay` replays over another prime. A lex call's
 /// record is that of the run that made the basis: the grevlex run's where
@@ -283,8 +458,8 @@ pub fn learn<T: trace::Trace>(
     trace: &mut T,
 ) -> Result<(Outcome, Option<trace::Record>), Error> {
     let mut recording = trace::Recording::new();
-    let outcome = entry::groebner(text, params, trace, &mut recording)?;
-    // trace-replay.15 design -- a learn run that returns no basis returns no record, not the record of the rounds that finished (not measured)
+    let outcome = call::groebner(text, params, trace, &mut recording)?;
+    // trace-replay.15 design-checked -- a learn run that returns no basis returns no record, not the record of the rounds that finished (not measured)
     let record = outcome
         .basis
         .is_some()
@@ -310,7 +485,7 @@ pub fn replay<T: trace::Trace>(
     record: &trace::Record,
     trace: &mut T,
 ) -> Result<Outcome, Error> {
-    entry::replay(text, params, record, trace)
+    call::replay(text, params, record, trace)
 }
 
 /// SHA-256 of the text, 64 lowercase hex digits.
@@ -343,43 +518,58 @@ pub struct Params {
     pub cancel: Option<Cancel>,
     /// A ceiling on the process's resident set, in bytes.
     pub memory: Option<u64>,
+    /// The checker's mode; `Error::NotBuilt` in a build without the
+    /// feature `checker`.
     pub checker: Option<CheckerMode>,
-    /// Whether the outcome carries the cofactors.
+    /// Whether the outcome carries the cofactors; `Error::NotBuilt` in a
+    /// build without the feature `cofactors`.
     pub cofactors: bool,
-    // signature-pruning.18 design -- a switch keeps f4-gfp's engine beside the signature run (not measured)
+    // signature-pruning.18 design-checked -- a switch keeps f4-gfp's engine beside the signature run (not measured)
     /// Whether the run prunes pairs by the signatures of its rows. On by
     /// default: the signature run, which may hand the call over to the
-    /// engine of f4-gfp, started over, where the run tracks no cofactors:
+    /// engine of f4-gfp where the run tracks no cofactors:
     /// over GF(p) where the call asks for no cofactors and no checker, and
     /// over Q in every learn run and in the verification's run. It decides
     /// at the first round that makes an element whose signature degree
     /// passes its degree by 2 or more, where that round made 25 elements or
     /// more, or 100 where the plain run would reduce each row alone, at the
-    /// first by 4 or more, at every round that made an element, and at
+    /// first by 4 or more, at every round that made an element, at every
+    /// round of 150 elements or more, and at
     /// every round whose update would form 1,000 S-pairs or more
     /// (early-handover-time.1, .2, and .5 to .7, threshold-recheck.16,
     /// input-redundancy-time.7, handover-time.1 to .5, .7, and .8,
-    /// outgrown-round-size.1 to .5, pair-work-handover.1, .2, and .4 to .6,
-    /// pair-work-ratio.1 and .2). Off runs
-    /// the engine of f4-gfp. In lex it decides the
+    /// outgrown-round-size.1 to .5, cyclic-9-unsolved.2 to .6,
+    /// pair-work-handover.1, .2, and .4 to .6, pair-work-ratio.1 and .2).
+    /// The plain run goes on from the signature run's work where neither the
+    /// trace nor the learner listens and the signature run subtracted
+    /// 100,000 entries or more, and starts over otherwise
+    /// (signature-run-losses.1, .6). Off runs
+    /// the engine of f4-gfp. In deglex it decides the engine as in grevlex.
+    /// In lex it decides the
     /// grevlex run's engine, as in grevlex. In a block order, and in lex
     /// where F4 runs in lex, the call runs the engine of f4-gfp, whatever
     /// this says.
     pub signatures: bool,
-    // input-redundancy-time.8 design -- the echelon is a parameter of the call, on by default, that a run follows where it tracks no cofactors, a replay as its record says, and the lift turns off for all its runs where the call asks for cofactors or the checker, not each run deciding by its own cofactor tracking (log 0068-1)
+    // input-redundancy-time.8 design-checked -- the echelon is a parameter of the call, on by default, that a run follows where it tracks no cofactors and, over a field that packs, where it is no bounded or plain run (gf2-echelon-losses.1), a replay as its record says, and the lift turns off for all its runs where the call asks for cofactors or the checker, not each run deciding by its own cofactor tracking (log 0068-1)
     /// Whether the runs take the generators in reduced row echelon form, as
     /// vectors over their monomials (`echelon::echelon`). On by default. A
     /// run that tracks cofactors takes them as read whatever this says, and
     /// over Q so does every run of a call that asks for cofactors or the
-    /// checker. A replay that tracks none takes them as its record's learn
-    /// run took them, whatever this says.
+    /// checker. Over GF(2), whose rounds reduce in packed rows, the bounded
+    /// run and the plain run take them as read whatever this says, and the
+    /// signature run alone follows it. A replay that tracks none takes them
+    /// as its record's learn run took them, whatever this says. A run that
+    /// takes them in reduced row echelon form first substitutes the
+    /// variables its linear generators lead in its other generators, where
+    /// that makes them shorter (`substitute::substitute`).
     pub echelon: bool,
     /// Whether the outcome carries the call report (`Outcome::report`).
     pub report: bool,
     /// Where `report` is on, a writer that takes each report line as the
     /// call meets it, flushed after the line, so a call that never returns
-    /// leaves its report so far. The first write error ends the writing;
-    /// `Outcome::report` holds every line either way.
+    /// leaves its report so far. The first write error ends the writing,
+    /// and `Outcome::sink_error` holds it; `Outcome::report` holds every
+    /// line either way.
     pub report_sink: Option<ReportSink>,
 }
 
@@ -513,16 +703,22 @@ pub struct Outcome {
     /// its `call` line to its `end` line. A call that returns an error
     /// returns no report.
     pub report: Option<String>,
+    // silent-fallbacks.5 design-checked -- the sink's first write error rides the outcome as text beside the report, not an error of the call at the failed write, a Stop, or an io::ErrorKind
+    /// The first error `Params::report_sink`'s writer returned, after which
+    /// the call wrote no line to it; None where every line reached it, or
+    /// the call had no sink or no report.
+    pub sink_error: Option<String>,
 }
 
-// signature-pruning.19 design -- the outcome carries the counts of its rounds (not measured)
+// signature-pruning.19 design-checked -- the outcome carries the counts of its rounds (not measured)
 /// What a run did, counted over its rounds; the inter-reduction's matrix is
 /// not counted. A run a bound stopped counts the rounds whose matrices it
 /// reduced. A lex
 /// call counts the run that made its basis: the grevlex run where FGLM
 /// changed its basis, the lex run where the call started over. A call that
 /// starts over in a wider monomial format counts its last run, and one
-/// whose signature run hands over the run it hands over to. A call over Q
+/// whose signature run hands over the run it hands over to, both where the
+/// plain run goes on from the signature run's work. A call over Q
 /// counts the learn run whose record its replays replayed, and one a bound
 /// stopped the run the bound stopped, or that learn run where the stop came
 /// between two primes or after the last, and zero where no record stood at
@@ -542,6 +738,18 @@ pub struct Stats {
     pub reduced: u64,
     /// The reductions of those that reduced to zero.
     pub zero: u64,
+}
+
+impl Stats {
+    /// The counts of two runs that made one basis, each count summed and
+    /// held at its type's largest value.
+    pub(crate) fn and(self, other: Stats) -> Stats {
+        Stats {
+            rounds: self.rounds.saturating_add(other.rounds),
+            reduced: self.reduced.saturating_add(other.reduced),
+            zero: self.zero.saturating_add(other.zero),
+        }
+    }
 }
 
 /// The bound that stopped a run.
@@ -593,9 +801,10 @@ pub enum Error {
     },
     /// More generators, terms, numeric factors, or monomials in the
     /// instance, or monomials, rows, terms, elements, or record steps in
-    /// the run, than a u32 id numbers, 2^32 − 1.
+    /// the run, than a u32 id numbers, 2^32 − 1; or a term of the instance
+    /// at a line past 2^31 − 1.
     Size,
-    // q-zero-denominator.1 design -- over Q a denominator 0 is NoInverse, the error a denominator 0 mod p is over GF(p), not a variant of its own or a syntax error (not measured)
+    // q-zero-denominator.1 design-checked -- over Q a denominator 0 is NoInverse, the error a denominator 0 mod p is over GF(p), not a variant of its own or a syntax error (not measured)
     /// A denominator at `line` that is 0 mod p over GF(p), or 0 over Q.
     NoInverse {
         line: usize,
@@ -608,7 +817,10 @@ pub enum Error {
     },
     /// A memory ceiling where the resident set cannot be read.
     Memory,
-    // trace-replay.7 design -- a replay that does not fit is an error that names its step, not an outcome without a basis whose field says why (not measured)
+    /// A deadline or the call report where the system has no clock: wasm32
+    /// in a browser.
+    Clock,
+    // trace-replay.7 design-checked -- a replay that does not fit is an error that names its step, not an outcome without a basis whose field says why (not measured)
     /// A replay's record does not fit the instance over its prime: at the
     /// inputs, under another order than the record's, or where the replay
     /// tracks cofactors of a record whose learn run took the echelon, step
@@ -618,7 +830,7 @@ pub enum Error {
     Misfit {
         step: u32,
     },
-    // lift-misfit-loop.5 design -- the lift's drops at the bound are an error of their own that counts them by why, not Error::Misfit again, an outcome without a basis whose stopped names a new Stop, or the variant without its counts (not measured)
+    // lift-misfit-loop.5 design-checked -- the lift's drops at the bound are an error of their own that counts them by why, not Error::Misfit again, an outcome without a basis whose stopped names a new Stop, or the variant without its counts (not measured)
     /// The lift over Q dropped `DROPS` records in the call: `misfits` after
     /// two misfits in a row, `leads` at a verification whose leading
     /// monomials differ, and `verification` at one at which an element
@@ -629,13 +841,10 @@ pub enum Error {
         leads: u32,
         verification: u32,
     },
-    /// glibc's `mallopt` refused the value the first call of the process
-    /// sets for `param`, `"M_TOP_PAD"` or `"M_MMAP_THRESHOLD"` (`TOP_PAD`,
-    /// `MMAP_THRESHOLD`), and every later call of the process returns it
-    /// too. glibc takes both values, so a malloc that is not glibc's makes
-    /// it.
-    Malloc {
-        param: &'static str,
+    /// The call asks for the cofactors or the checker, and the crate was
+    /// built without the Cargo feature `feature` that computes them.
+    NotBuilt {
+        feature: &'static str,
     },
 }
 
@@ -654,9 +863,10 @@ impl Error {
             Error::NoInverse { .. } => "NoInverse",
             Error::Order { .. } => "Order",
             Error::Memory => "Memory",
+            Error::Clock => "Clock",
             Error::Misfit { .. } => "Misfit",
             Error::Drops { .. } => "Drops",
-            Error::Malloc { .. } => "Malloc",
+            Error::NotBuilt { .. } => "NotBuilt",
         }
     }
 }
@@ -681,7 +891,7 @@ impl fmt::Display for Error {
             Error::Size => write!(
                 f,
                 "more generators, terms, numeric factors, monomials, rows, elements, or record \
-                 steps than a u32 id numbers, 2^32 - 1"
+                 steps than a u32 id numbers, 2^32 - 1, or a term at a line past 2^31 - 1"
             ),
             Error::NoInverse { line } => {
                 write!(f, "line {line}: a denominator that is 0, or 0 mod p")
@@ -693,6 +903,10 @@ impl fmt::Display for Error {
                 )
             }
             Error::Memory => write!(f, "a memory ceiling where the resident set cannot be read"),
+            Error::Clock => write!(
+                f,
+                "a deadline or the call report where the system has no clock"
+            ),
             Error::Misfit { step } => write!(f, "the record does not fit at step {step}"),
             Error::Drops {
                 misfits,
@@ -707,10 +921,10 @@ impl fmt::Display for Error {
                      {verification} at one at which an element differs"
                 )
             }
-            Error::Malloc { param } => write!(
+            Error::NotBuilt { feature } => write!(
                 f,
-                "glibc's mallopt refused the value of {param} that the first call of the \
-                 process sets"
+                "{feature}: not implemented in this build, which leaves out the Cargo feature \
+                 {feature}"
             ),
         }
     }

@@ -20,13 +20,16 @@ pub const HEADER_DIR: &str = env!("CARGO_MANIFEST_DIR");
 pub const PROGRAMS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
 /// The C compiler. On Windows clang takes the flags cc takes and links
 /// against the C runtime of Visual Studio.
-const CC: &str = if cfg!(windows) { "clang" } else { "cc" };
+pub const CC: &str = if cfg!(windows) { "clang" } else { "cc" };
 /// The C++ compiler.
-const CXX: &str = if cfg!(windows) { "clang++" } else { "c++" };
+pub const CXX: &str = if cfg!(windows) { "clang++" } else { "c++" };
+/// The warnings every C and C++ file of the test code is compiled with,
+/// each an error.
+pub const WARNINGS: [&str; 4] = ["-Wall", "-Wextra", "-Werror", "-pedantic"];
 
 /// The file of the C interface's library: `libgrobxc.so`,
 /// `libgrobxc.dylib`, or `grobxc.dll`.
-fn lib_file() -> String {
+pub fn lib_file() -> String {
     format!("{DLL_PREFIX}grobxc{DLL_SUFFIX}")
 }
 
@@ -90,13 +93,15 @@ pub fn program(file: &str) -> PathBuf {
         #[cfg(unix)]
         cmd.arg("-pthread");
     }
-    cmd.args(["-Wall", "-Wextra", "-Werror", "-pedantic", "-I", HEADER_DIR])
+    cmd.args(WARNINGS)
+        .args(["-I", HEADER_DIR])
         .arg(Path::new(PROGRAMS).join(file));
+    // c-suite-library-path.1 design-checked -- the program links the library by its file in deps/ and records that path, so the loader opens it and searches no directory, not -L and -l with a DT_RPATH that the loader searches before LD_LIBRARY_PATH (log 0119-1)
+    // c-suite-library-path.2 design-checked -- the program's link fixes the library it loads, not LD_LIBRARY_PATH removed from each program the suite starts (not measured)
+    // c-suite-library-path.3 design-checked -- the rpath stays beside the path on every unix, not dropped where the path makes it unread (not measured)
     #[cfg(unix)]
-    cmd.arg("-L")
-        .arg(lib)
-        .arg(format!("-Wl,-rpath,{lib}", lib = lib.display()))
-        .arg("-lgrobxc");
+    cmd.arg(lib.join(lib_file()))
+        .arg(format!("-Wl,-rpath,{lib}", lib = lib.display()));
     // The C runtime of Visual Studio deprecates strdup and fopen, among
     // others, in favour of its own names. The program links against the
     // library's import library, which cargo writes beside the DLL.
@@ -119,14 +124,15 @@ pub fn program(file: &str) -> PathBuf {
 
 /// Runs `exe` with `args` and fails where it does not exit 0.
 pub fn run(exe: &Path, args: &[String]) -> Output {
-    let out = Command::new(exe)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("{exe}: {e}", exe = exe.display()));
+    run_command(Command::new(exe).args(args))
+}
+
+/// Runs `cmd` and fails where it does not exit 0.
+pub fn run_command(cmd: &mut Command) -> Output {
+    let out = cmd.output().unwrap_or_else(|e| panic!("{cmd:?}: {e}"));
     assert!(
         out.status.success(),
-        "{exe} {args:?}: {status}\n--- stdout\n{stdout}\n--- stderr\n{stderr}",
-        exe = exe.display(),
+        "{cmd:?}: {status}\n--- stdout\n{stdout}\n--- stderr\n{stderr}",
         status = out.status,
         stdout = String::from_utf8_lossy(&out.stdout),
         stderr = String::from_utf8_lossy(&out.stderr)
@@ -220,6 +226,7 @@ impl Args {
         let or_dash = |v: Option<u64>| v.map_or("-".to_string(), |v| v.to_string());
         let (order, blocks) = match &self.order {
             MonomialOrder::Grevlex => (GROBX_GREVLEX, "-".to_string()),
+            MonomialOrder::Deglex => (GROBX_DEGLEX, "-".to_string()),
             MonomialOrder::Lex => (GROBX_LEX, "-".to_string()),
             MonomialOrder::Block(sizes) => (
                 GROBX_BLOCK,
@@ -332,6 +339,7 @@ pub fn mapped(got: Result<Outcome, Error>) -> Driven {
                 Error::Order { .. } => GROBX_ORDER,
                 Error::Memory => GROBX_MEMORY,
                 Error::Drops { .. } => GROBX_DROPS,
+                Error::NotBuilt { .. } => GROBX_NOT_BUILT,
                 _ => GROBX_ERROR,
             },
             stopped: GROBX_STOP_NONE,

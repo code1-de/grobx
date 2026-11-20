@@ -13,11 +13,8 @@ use grobx_checker::{
 
 use crate::agree;
 use crate::common::{
-    Case, Rng, matrix_text, mutations, plus, quadrics, random_system, random_system_q,
+    Case, PER, Rng, matrix_text, mutations, plus, quadrics, random_system, random_system_q,
 };
-
-/// The batch sizes tests 1 and 2 run, from one point to a batch.
-const PER: [usize; 4] = [1, 2, 3, 5];
 
 /// `common::quadrics` over characteristic `p`, solved by the oracle.
 fn solved_quadrics(p: u64) -> Case {

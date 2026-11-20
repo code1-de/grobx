@@ -2,41 +2,19 @@
 //! code_). The tests of `Wang::shortcut` went with it in iteration 0076
 //! (its plan.md, _The test code of earlier items_).
 
-use num_bigint::{BigInt, BigUint};
+use num_bigint::BigUint;
 use num_integer::Integer;
 use num_traits::{One, Zero};
 use rand_core::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::lehmer::gcd;
-
-pub(crate) fn product(primes: &[u64]) -> BigUint {
-    primes.iter().fold(BigUint::one(), |m, &p| m * p)
-}
-
-/// A random integer below 2^bits.
-pub(crate) fn integer(rng: &mut Xoshiro256PlusPlus, bits: u64) -> BigUint {
-    let mut x = BigUint::zero();
-    for _ in 0..bits.div_ceil(64) {
-        x = (x << 64u32) + BigUint::from(rng.next_u64());
-    }
-    x >> (bits.div_ceil(64) * 64 - bits)
-}
+use crate::shared_tests::integer;
 
 /// A random integer of 1 to `bits` bits, at least 1.
 fn positive(rng: &mut Xoshiro256PlusPlus, bits: u64) -> BigUint {
     let b = 1 + rng.next_u64() % bits.max(1);
     integer(rng, b).max(BigUint::one())
-}
-
-/// n·d⁻¹ mod m; None where d is no unit mod m.
-pub(crate) fn image(n: &BigInt, d: &BigUint, m: &BigUint) -> Option<BigUint> {
-    let m = BigInt::from(m.clone());
-    let e = BigInt::from(d.clone()).extended_gcd(&m);
-    if !e.gcd.is_one() {
-        return None;
-    }
-    (n * e.x).mod_floor(&m).to_biguint()
 }
 
 /// q-rational-time.9: Lehmer's gcd on limbs equals num-integer's.

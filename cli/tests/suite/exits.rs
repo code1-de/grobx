@@ -72,12 +72,12 @@ fn usage_errors_exit_2() {
         &["--seed", "18446744073709551616"],
         &["--seed", ""],
         &["--deadline", "1.5", "--seed", "1"],
-        &["--memory", "1G", "--seed", "1"],
+        &["--memory", "1GB", "--seed", "1"],
         &["--checker", "0", "--seed", "1"],
         &["--checker", "sometimes", "--seed", "1"],
         &["--seed", "1", "--seed", "2"],
         &["--seed=1", "--order=lex", "--order", "grevlex"],
-        &["--seed", "1", "--order", "deglex"],
+        &["--seed", "1", "--order", "degneglex"],
         &["--seed", "1", "--order=block:0"],
         &["--help=x"],
         &["--version=x"],
@@ -141,6 +141,27 @@ fn the_usage_messages() {
             )
         );
     }
+    for value in [
+        "1.5",
+        "1.5g",
+        "1GB",
+        "1kb",
+        "k",
+        "G",
+        "-1k",
+        "16777216t",
+        "16777216T",
+        "18446744073709551616",
+    ] {
+        assert_eq!(
+            usage(&["--memory", value]),
+            format!(
+                "--memory {value:?}: a decimal number of bytes, or one followed by k, m, g, or t \
+                 in either case, up to {max} bytes",
+                max = u64::MAX
+            )
+        );
+    }
     assert_eq!(
         usage(&["--checker", "sometimes"]),
         "--checker \"sometimes\": exact, or a decimal number of points from 1 to 4294967295"
@@ -150,8 +171,8 @@ fn the_usage_messages() {
         "--checker \"0\": exact, or a decimal number of points from 1 to 4294967295"
     );
     assert_eq!(
-        usage(&["--order", "deglex"]),
-        "--order \"deglex\": grevlex, lex, or block:k1,...,km"
+        usage(&["--order", "degneglex"]),
+        "--order \"degneglex\": grevlex, deglex, lex, or block:k1,...,km"
     );
     assert_eq!(
         usage(&["a.ms", "b.ms", "--seed", "1"]),
@@ -182,7 +203,7 @@ fn an_unreadable_instance_exits_2() {
 #[test]
 fn an_instance_the_crate_refuses_exits_2() {
     let dir = scratch("refused");
-    // test-mq-systems.10 design -- the order error of block:5 takes the dense cubic system on five variables, all of which block:5 puts in one block, not the map's on three (not measured)
+    // test-mq-systems.10 design-checked -- the order error of block:5 takes the dense cubic system on five variables, all of which block:5 puts in one block, not the map's on three (not measured)
     let five = dense(5, 3, 65521, 1);
     let cases = [
         ("", "grevlex"),
@@ -241,6 +262,7 @@ fn outcome(stopped: Option<Stop>, certified: Option<bool>, flaw: Option<&str>) -
         flaw: flaw.map(str::to_string),
         stats: Stats::default(),
         report: None,
+        sink_error: None,
     }
 }
 

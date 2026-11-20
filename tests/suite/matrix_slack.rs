@@ -11,36 +11,18 @@ use std::process::Command;
 use grobx::CheckerMode;
 use grobx_checker::Mode;
 
-use crate::common::{P, assert_accepted, dense, params, run, with_cofactors};
+#[cfg(target_os = "linux")]
+use crate::common::resident;
+use crate::common::{EDGE_BASES, P, assert_accepted, dense, params, run, with_cofactors};
 use crate::orders::assert_canonical;
 use crate::q::accepted_q;
-
-/// The edge cases of `OBJECTIVES.md` on x, y, z: name, generators, and the
-/// basis over GF(65521) in grevlex.
-const EDGE: [(&str, &str, &str); 7] = [
-    ("the zero ideal", "0", "[]:\n"),
-    ("F = (0, 0)", "0,\n0", "[]:\n"),
-    ("no generator", "", "[]:\n"),
-    ("the unit ideal", "x*z-1,\nx", "[1]:\n"),
-    ("already a Gröbner basis", "x+z,\nz^2+1", "[x+z,\nz^2+1]:\n"),
-    (
-        "the zero polynomial among the generators",
-        "x*y-z,\n0,\ny^2-x",
-        "[y^2+65520*x,\nx*y+65520*z,\nx^2+65520*y*z]:\n",
-    ),
-    (
-        "an eliminable variable",
-        "x-y^2-z,\ny*z-1,\nz^2-y",
-        "[x+65519*z,\nz^2+65520*y,\ny*z+65520,\ny^2+65520*z]:\n",
-    ),
-];
 
 /// Test 6: the edge cases in grevlex, over 65521 with signatures on and
 /// off and over ℚ with them on: each basis canonical and accepted in the exact mode, and over
 /// 65521 as written.
 #[test]
 fn the_edge_cases() {
-    for (case, generators, want) in EDGE {
+    for (case, generators, want) in EDGE_BASES {
         let text = format!("x,y,z\n{P}\n{generators}\n");
         for signatures in [true, false] {
             let mut params = with_cofactors(0x51a0);
@@ -74,18 +56,6 @@ fn the_checker_certifies_in_the_cheap_mode() {
     );
 }
 
-/// The process's resident set in bytes, `VmRSS` of `/proc/self/status`.
-#[cfg(target_os = "linux")]
-fn resident() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap();
-    let line = status
-        .lines()
-        .find(|l| l.starts_with("VmRSS:"))
-        .expect("a VmRSS line");
-    let kib: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
-    kib * 1024
-}
-
 /// The variable that tells a child process to run the call.
 #[cfg(target_os = "linux")]
 const CHILD: &str = "GROBX_SLACK_CHILD";
@@ -99,7 +69,7 @@ const CHILD: &str = "GROBX_SLACK_CHILD";
 #[test]
 fn a_ceiling_past_the_written_pages_holds() {
     if std::env::var_os(CHILD).is_some() {
-        // test-mq-systems.8 design -- the dense quartic system on five variables, whose largest matrix passes RESERVE_PAST under the test's seed where the map's dense cubic one on six variables stays below it (log 0084-1)
+        // test-mq-systems.8 design-checked -- the dense quartic system on five variables, whose largest matrix passes RESERVE_PAST under the test's seed where the map's dense cubic one on six variables stays below it (log 0084-1)
         let text = dense(5, 4, P, 2);
         let mut p = params(0x51a4);
         p.memory = Some(resident() + (24 << 20));

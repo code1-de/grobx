@@ -11,35 +11,22 @@
     reason = "test code: its casts narrow small indices, counts, and draws"
 )]
 
-use std::num::NonZeroUsize;
-use std::time::Instant;
-
 use rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::budget::Budget;
 use crate::cofactors::NoCofactors;
 use crate::field::{Field, Gf31, Gf64};
-use crate::id::{ElementId, MonoId, RowId};
+use crate::id::{ElementId, MonoId, RowId, RowSource};
 use crate::matrix::{self, Buffers, Combine, Matrix, Pivot, Reduction, zero_combinations};
 use crate::module::Rank1;
 use crate::monomial::{Dense16, Format};
 use crate::order::Grevlex;
 use crate::poly::{Basis, Poly};
+use crate::shared_tests::budget;
 use crate::sig::Sig;
 use crate::systems::Rng;
 use crate::table::Table;
-use crate::trace::RowSource;
-use crate::{MonomialOrder, Params, Threads};
-
-fn budget() -> Budget {
-    let p = Params::new(
-        MonomialOrder::Grevlex,
-        Threads::Count(NonZeroUsize::new(1).unwrap()),
-        1,
-    );
-    Budget::new(Instant::now(), &p).unwrap()
-}
 
 /// A signature round over a field: a basis, the matrix of its rows, the
 /// reductants first, and each row's signature. Every signature has the
@@ -63,7 +50,7 @@ impl<F: Field> Round<F> {
         reducers: Vec<(RowSource, u32)>,
     ) -> Round<F> {
         let mut table = table;
-        let one = table.intern(&[0; 4]).unwrap();
+        let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
         let given = reductants.len();
         let (rows, indices): (Vec<RowSource>, Vec<u32>) =
             reductants.into_iter().chain(reducers).unzip();
@@ -71,9 +58,8 @@ impl<F: Field> Round<F> {
             &mut table,
             &basis,
             &Grevlex,
-            1,
             rows,
-            Vec::new(),
+            &mut Buffers::new(),
             &mut budget(),
         )
         .unwrap();
@@ -126,7 +112,7 @@ impl<F: Field> Round<F> {
             if long {
                 for e in exponents(6) {
                     if rng.below(2) == 0 {
-                        let m = table.intern(&e).unwrap();
+                        let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                         terms.push((m, field.coef(1 + rng.below(p - 1))));
                     }
                 }
@@ -139,7 +125,7 @@ impl<F: Field> Round<F> {
                     *x = k;
                     degree -= k;
                 }
-                let m = table.intern(&e).unwrap();
+                let m = table.intern(&e, &mut Budget::unbounded()).unwrap();
                 terms.push((m, field.coef(1 + rng.below(p - 1))));
             }
             let mut g = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
@@ -162,8 +148,10 @@ impl<F: Field> Round<F> {
                 *x = k;
                 degree -= k;
             }
-            let t = table.intern(&e).unwrap();
-            let lead = table.mul(t, basis.lead(g)).unwrap();
+            let t = table.intern(&e, &mut Budget::unbounded()).unwrap();
+            let lead = table
+                .mul(t, basis.lead(g), &mut Budget::unbounded())
+                .unwrap();
             if leads.contains(&lead) {
                 continue;
             }
@@ -192,7 +180,9 @@ impl<F: Field> Round<F> {
                     let g = divisors[rng.below(divisors.len() as u64) as usize];
                     RowSource {
                         element: g,
-                        multiplier: table.div(lead, basis.lead(g)).unwrap(),
+                        multiplier: table
+                            .div(lead, basis.lead(g), &mut Budget::unbounded())
+                            .unwrap(),
                     }
                 }
             };
@@ -208,7 +198,13 @@ impl<F: Field> Round<F> {
         // A reducer moved past a reductant that leads at its column breaks
         // the order the reductant needs: such reductants take its time + 1.
         for (row, index) in &mut reductant_rows {
-            let lead = table.mul(row.multiplier, basis.lead(row.element)).unwrap();
+            let lead = table
+                .mul(
+                    row.multiplier,
+                    basis.lead(row.element),
+                    &mut Budget::unbounded(),
+                )
+                .unwrap();
             let k = leads.iter().position(|&l| l == lead).unwrap();
             if *index <= reducer_rows[k].1 {
                 *index = reducer_rows[k].1 + 1;
@@ -408,8 +404,10 @@ fn the_number_of_combinations() {
 /// 1, the matrix's last column.
 pub(crate) fn failing<F: Field>(field: F, copies: usize, last: bool) -> Round<F> {
     let mut table = Table::new(Dense16::new(4), &mut Xoshiro256PlusPlus::seed_from_u64(9));
-    let x = table.intern(&[1, 0, 0, 0]).unwrap();
-    let one = table.intern(&[0; 4]).unwrap();
+    let x = table
+        .intern(&[1, 0, 0, 0], &mut Budget::unbounded())
+        .unwrap();
+    let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
     let mut basis: Basis<F, Rank1> = Basis::new();
     for c in [1, 2] {
         let mut terms = vec![(x, field.coef(1)), (one, field.coef(c))];
@@ -472,11 +470,16 @@ fn banded(copies: usize, last: bool) -> Round<Gf31> {
     }
     let mut terms: Vec<(MonoId, u32)> = monomials[..80]
         .iter()
-        .map(|e| (table.intern(e).unwrap(), field.coef(1 + rng.below(65520))))
+        .map(|e| {
+            (
+                table.intern(e, &mut Budget::unbounded()).unwrap(),
+                field.coef(1 + rng.below(65520)),
+            )
+        })
         .collect();
     let mut g = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());
     g.make_monic(&field);
-    let one = table.intern(&[0; 4]).unwrap();
+    let one = table.intern(&[0; 4], &mut Budget::unbounded()).unwrap();
     let mut terms: Vec<(MonoId, u32)> = g.monomials.iter().copied().zip(g.coefs.clone()).collect();
     terms.push((one, field.coef(1)));
     let h = Poly::from_terms(&mut terms, &field, &table, &Grevlex, ());

@@ -1,61 +1,14 @@
 //! Sub-item 3: the trace hooks (f4-gfp.39) with the trace off and with a
 //! recording trace of the test's own.
 
-use grobx::id::RowId;
-use grobx::trace::{NoTrace, RowSource, Trace};
+use grobx::trace::NoTrace;
 
-use crate::common::{P, basis, dense, params, random_system};
-
-#[derive(Debug, PartialEq, Eq)]
-enum Event {
-    Matrix(Vec<RowSource>),
-    Counted(Vec<RowId>),
-}
-
-#[derive(Default)]
-struct Recorder(Vec<Event>);
-
-impl Trace for Recorder {
-    fn matrix(&mut self, rows: &[RowSource]) {
-        self.0.push(Event::Matrix(rows.to_vec()));
-    }
-
-    fn counted(&mut self, rows: &[RowId]) {
-        self.0.push(Event::Counted(rows.to_vec()));
-    }
-}
+use crate::common::{Event, P, Recorder, assert_well_formed, basis, dense, params, random_system};
 
 fn record(text: &str) -> (String, Vec<Event>) {
     let mut recorder = Recorder::default();
     let outcome = grobx::groebner_with(text, &params(1), &mut recorder).expect("the call runs");
     (outcome.basis.expect("a basis"), recorder.0)
-}
-
-/// matrix and counted alternate, the counted rows lie in their matrix and
-/// increase.
-fn assert_well_formed(name: &str, events: &[Event]) {
-    assert!(
-        events.len().is_multiple_of(2),
-        "{name}: {len} events",
-        len = events.len()
-    );
-    for pair in events.chunks(2) {
-        let (rows, counted) = match (&pair[0], &pair[1]) {
-            (Event::Matrix(rows), Event::Counted(counted)) => (rows, counted),
-            (Event::Matrix(_) | Event::Counted(_), Event::Matrix(_) | Event::Counted(_)) => {
-                panic!("{name}: matrix and counted do not alternate: {pair:?}")
-            }
-        };
-        assert!(
-            counted.windows(2).all(|w| w[0] < w[1]),
-            "{name}: {counted:?}"
-        );
-        assert!(
-            counted.iter().all(|&r| r.index() < rows.len()),
-            "{name}: {counted:?} of {len}",
-            len = rows.len()
-        );
-    }
 }
 
 #[test]

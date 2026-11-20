@@ -2,7 +2,7 @@
 //! that an id of one kind cannot stand where another kind belongs.
 //! `u32::MAX` marks no item. The crate numbers its items; a trace reads
 //! their ids, and a caller of the field contract numbers its dense rows'
-//! columns by `MonoId::from_raw`.
+//! columns by `MonoId::from_raw`, or as `u16` (`Column`).
 
 use std::fmt;
 
@@ -77,4 +77,49 @@ ids! {
     /// A monomial of a staircase's border, numbered by increasing source
     /// order.
     pub(crate) BorderId;
+}
+
+/// A column of a sparse row as the row stores it: a `MonoId`, or a `u16`
+/// where every column of the row lies below 2^16. The row operations of
+/// the field contract read either (`field::Field::load`).
+pub trait Column: Copy + fmt::Debug + Send + Sync + 'static {
+    /// The column as an index.
+    fn column(self) -> usize;
+
+    /// The column of index `i`, which the type holds.
+    fn of(i: usize) -> Self;
+}
+
+impl Column for MonoId {
+    #[inline]
+    fn column(self) -> usize {
+        self.index()
+    }
+
+    #[inline]
+    fn of(i: usize) -> MonoId {
+        MonoId::at(i)
+    }
+}
+
+impl Column for u16 {
+    #[inline]
+    fn column(self) -> usize {
+        usize::from(self)
+    }
+
+    #[inline]
+    fn of(i: usize) -> u16 {
+        i.narrow()
+    }
+}
+
+/// Where a row of a matrix comes from: the basis element `element` times the
+/// monomial `multiplier`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowSource {
+    /// A basis element.
+    pub element: ElementId,
+    /// A monomial of the run's table.
+    pub multiplier: MonoId,
 }
