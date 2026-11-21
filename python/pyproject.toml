@@ -6,6 +6,7 @@ build-backend = "maturin"
 
 [project]
 name = "grobx"
+requires-python = ">=3.12"
 keywords = [
     "groebner",
     "gröbner",
@@ -20,6 +21,8 @@ keywords = [
 ]
 classifiers = [
     "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Rust",

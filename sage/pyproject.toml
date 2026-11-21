@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "grobx-sage"
-version = "0.73.3"
+version = "0.155.1"
 description = "Fast reduced Gröbner (Groebner) bases for SageMath polynomial ideals, computed by grobx"
 readme = "README.md"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-dependencies = ["grobx>=0.73.3"]
+dependencies = ["grobx>=0.155.1"]
 keywords = [
     "sagemath",
     "sage",

@@ -1,7 +1,9 @@
 # grobx
 
 grobx computes reduced Gröbner bases of polynomial ideals over prime fields
-GF(p), p a prime below 2^64, and over the rationals ℚ. It is a Rust crate
+GF(p), p a prime below 2^64, and over the rationals ℚ. GF(2) takes a path of
+its own, with rows packed into machine words, and is much faster than the
+other primes. grobx is a Rust crate
 with a command-line program, a Python extension module, and a C interface.
 All four take the ideal's generators as text and return the basis as text.
 
@@ -29,7 +31,38 @@ The input is msolve's format: the variables on line 1, the characteristic
 on line 2, a prime below 2^64 for GF(p) or 0 for ℚ, then the generators,
 separated by commas.
 
-## Command line, Python, C, and Maple
+## Python
+
+```sh
+pip install grobx
+```
+
+The wheels are for Python 3.12 and later on Linux and Windows on x86-64 and on macOS on Apple
+Silicon.
+
+```python
+import grobx
+
+r = grobx.groebner("x,y\n7\nx^2+y,\nx*y-1\n")
+r.basis    # '[y^2+x,\nx*y+6,\nx^2+y]:\n'
+```
+
+## Sage
+
+```sh
+sage -pip install grobx-sage
+```
+
+```sage
+import grobx_sage
+R.<x,y> = PolynomialRing(GF(7))
+grobx_sage.groebner_basis(R.ideal(x^2 + y, x*y - 1))
+# [x^2 + y, x*y - 1, y^2 + x]
+```
+
+[sage/README.md](sage/README.md) describes the orders and keywords it takes.
+
+## Command line, C, and Maple
 
 These build from a clone of the repository:
 
@@ -43,23 +76,6 @@ The command-line program:
 ```sh
 cargo build --release -p grobx-cli
 target/release/grobx instance.ms > basis.txt
-```
-
-The Python extension module, for Python 3.12 and later:
-
-```sh
-cargo build --release -p grobx-python
-cp target/release/libgrobx.so grobx.so
-```
-
-On macOS the library is `libgrobx.dylib`, copied as `grobx.so`; on Windows
-it is `grobx.dll`, copied as `grobx.pyd`.
-
-```python
-import grobx
-
-r = grobx.groebner("x,y\n7\nx^2+y,\nx*y-1\n")
-r.basis    # '[y^2+x,\nx*y+6,\nx^2+y]:\n'
 ```
 
 The C library: `cargo build --release -p grobx-c` writes
