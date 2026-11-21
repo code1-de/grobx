@@ -5,7 +5,7 @@ GF(p), p a prime below 2^64, and over the rationals ℚ. This is its Python
 module. It takes the ideal's generators as text and returns the basis as
 text.
 
-Over ℚ and over GF(p), grobx is 4× faster than Maple and msolve.
+Over ℚ and over GF(p), grobx is 7× faster than Maple, msolve, or Macaulay2.
 [grobx.com/benchmarks.html](https://grobx.com/benchmarks.html) gives the time and memory of every
 instance.
 

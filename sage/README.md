@@ -5,7 +5,7 @@ grobx's Python module. Its `groebner_basis(I)` is called as Sage's `I.groebner_b
 fields and orders grobx computes in, returns what Sage's returns, and raises an error for anything
 else.
 
-Over ℚ and over GF(p), grobx is 4× faster than Maple and msolve.
+Over ℚ and over GF(p), grobx is 7× faster than Maple, msolve, or Macaulay2.
 [grobx.com/benchmarks.html](https://grobx.com/benchmarks.html) gives the time and memory of every
 instance.
 
