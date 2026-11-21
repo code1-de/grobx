@@ -11,8 +11,7 @@ Over ℚ and over GF(p), grobx is 7× faster than Maple, msolve, or Macaulay2.
 [grobx.com/benchmarks.html](https://grobx.com/benchmarks.html) gives the time and memory of every
 instance.
 
-grobx runs on Linux and Windows on x86-64. It builds for macOS on Apple
-Silicon, where it is untested.
+grobx runs on Linux and Windows on x86-64 and on macOS on Apple Silicon.
 It also builds for the browser, `wasm32-unknown-unknown`, as the module in `wasm/`, which
 [grobx.com/live.html](https://grobx.com/live.html) runs.
 

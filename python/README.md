@@ -9,7 +9,8 @@ Over ℚ and over GF(p), grobx is 7× faster than Maple, msolve, or Macaulay2.
 [grobx.com/benchmarks.html](https://grobx.com/benchmarks.html) gives the time and memory of every
 instance.
 
-The package is a wheel for Linux on x86-64 and CPython 3.12 and later.
+The package is a wheel for CPython 3.12 and later on Linux and Windows on x86-64, and on macOS on
+Apple Silicon.
 
 ## Install
 
